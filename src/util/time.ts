@@ -3,12 +3,13 @@ export function minutes(n: number): number {
 }
 
 export function fmtDuration(ms: number): string {
-  if (ms < 1000) return `${ms} ms`;
+  if (ms < 1000) return `${Math.round(ms)} ms`;
   const s = Math.round(ms / 1000);
   if (s < 60) return `${s} s`;
   const m = Math.floor(s / 60);
   const rest = s % 60;
   if (m < 60) return rest ? `${m} min ${rest} s` : `${m} min`;
   const h = Math.floor(m / 60);
-  return `${h} h ${m % 60} min`;
+  const restMin = m % 60;
+  return restMin ? `${h} h ${restMin} min` : `${h} h`;
 }
