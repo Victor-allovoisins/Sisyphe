@@ -17,7 +17,8 @@ export function decidePath(worktreePath: string, filePath: string | undefined, p
   const abs = isAbsolute(filePath) ? resolve(filePath) : resolve(root, filePath);
   const rel = relative(root, abs);
   if (rel === '..' || rel.startsWith(`..${sep}`)) return { allowed: false, reason: `Écriture hors du worktree refusée : ${filePath}` };
-  if (rel === '.git' || rel.startsWith(`.git${sep}`)) return { allowed: false, reason: `Écriture dans .git refusée : ${rel}` };
+  const low = rel.toLowerCase();
+  if (low === '.git' || low.startsWith(`.git${sep}`)) return { allowed: false, reason: `Écriture dans .git refusée : ${rel}` };
   if (matchProtectedPaths([rel], protectedPatterns).length > 0) return { allowed: false, reason: `Chemin protégé par sisyphe.yml : ${rel}` };
   return { allowed: true };
 }

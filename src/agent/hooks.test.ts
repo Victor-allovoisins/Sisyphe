@@ -19,6 +19,7 @@ describe('decidePath', () => {
     expect(decidePath(wt, '..config', [])).toEqual({ allowed: true });
     expect(decidePath(wt, '.git', []).allowed).toBe(false);
     expect(decidePath(wt, '.git/config', []).allowed).toBe(false);
+    expect(decidePath(wt, '.GIT/config', []).allowed).toBe(false);
     expect(decidePath(wt, '.gitignore', [])).toEqual({ allowed: true });
   });
   it('refuse les chemins protégés', () => {
