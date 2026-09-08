@@ -9,16 +9,21 @@ export interface SecretFinding {
   line: number;
 }
 
-export type GitleaksRunner = (patchFile: string, reportFile: string) => Promise<{ exitCode: number; output: string }>;
+export interface ScanOptions {
+  signal?: AbortSignal;
+  timeoutMs: number;
+}
+
+export type GitleaksRunner = (patchFile: string, reportFile: string, opts: ScanOptions) => Promise<{ exitCode: number; output: string }>;
 
 /** Code de sortie demandé à gitleaks quand il trouve une fuite, pour le distinguer d'une erreur (1). */
 export const LEAK_EXIT_CODE = 2;
 
-export const runGitleaks: GitleaksRunner = async (patchFile, reportFile) => {
+export const runGitleaks: GitleaksRunner = async (patchFile, reportFile, opts) => {
   const r = await execa(
     'gitleaks',
     ['dir', patchFile, '--no-banner', '--exit-code', String(LEAK_EXIT_CODE), '--report-format', 'json', '--report-path', reportFile],
-    { reject: false, all: true },
+    { reject: false, all: true, timeout: opts.timeoutMs, cancelSignal: opts.signal },
   );
   // `message` porte « Command failed with ENOENT » quand gitleaks n'est pas installé.
   return { exitCode: r.exitCode ?? -1, output: r.all || r.message || '' };
@@ -68,8 +73,8 @@ export function isAddedLine(patchText: string, line: number): boolean {
  * Scanne le patch et ne retient que les secrets sur des lignes ajoutées : un secret déjà présent
  * dans le repo (ligne de contexte ou supprimée) n'est pas l'œuvre de l'agent et ne doit pas bloquer le job.
  */
-export async function scanPatch(patchFile: string, reportFile: string, run: GitleaksRunner = runGitleaks): Promise<SecretFinding[]> {
-  const { exitCode, output } = await run(patchFile, reportFile);
+export async function scanPatch(patchFile: string, reportFile: string, opts: ScanOptions, run: GitleaksRunner = runGitleaks): Promise<SecretFinding[]> {
+  const { exitCode, output } = await run(patchFile, reportFile, opts);
   if (exitCode === 0) return [];
   if (exitCode !== LEAK_EXIT_CODE) throw new SecretScanError(`gitleaks a échoué (code ${exitCode}) : ${output.slice(-500)}`);
   let report: string;

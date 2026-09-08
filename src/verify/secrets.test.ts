@@ -57,10 +57,10 @@ describe('scanPatch', () => {
     const report = join(dir, 'r.json');
     await writeFile(patchFile, patchAdded);
     await writeFile(report, JSON.stringify([{ RuleID: 'aws-access-token', StartLine: 5, File: 'diff.patch' }, { RuleID: 'x', StartLine: 3, File: 'diff.patch' }]));
-    expect(await scanPatch(patchFile, report, async () => ({ exitCode: 0, output: '' }))).toEqual([]);
-    expect(await scanPatch(patchFile, report, async () => ({ exitCode: LEAK_EXIT_CODE, output: '' }))).toEqual([{ file: 'Config.swift', ruleId: 'aws-access-token', line: 5 }]);
-    await expect(scanPatch(patchFile, report, async () => ({ exitCode: -1, output: 'Command failed with ENOENT: gitleaks dir' }))).rejects.toThrow(/ENOENT/);
-    await expect(scanPatch(patchFile, join(dir, 'absent.json'), async () => ({ exitCode: LEAK_EXIT_CODE, output: '' }))).rejects.toThrow(SecretScanError);
+    expect(await scanPatch(patchFile, report, { timeoutMs: 10_000 }, async () => ({ exitCode: 0, output: '' }))).toEqual([]);
+    expect(await scanPatch(patchFile, report, { timeoutMs: 10_000 }, async () => ({ exitCode: LEAK_EXIT_CODE, output: '' }))).toEqual([{ file: 'Config.swift', ruleId: 'aws-access-token', line: 5 }]);
+    await expect(scanPatch(patchFile, report, { timeoutMs: 10_000 }, async () => ({ exitCode: -1, output: 'Command failed with ENOENT: gitleaks dir' }))).rejects.toThrow(/ENOENT/);
+    await expect(scanPatch(patchFile, join(dir, 'absent.json'), { timeoutMs: 10_000 }, async () => ({ exitCode: LEAK_EXIT_CODE, output: '' }))).rejects.toThrow(SecretScanError);
   });
 
   it.skipIf(!hasGitleaks)('avec le vrai gitleaks : détecte une clé ajoutée, ignore une clé préexistante en contexte', async () => {
@@ -69,8 +69,8 @@ describe('scanPatch', () => {
     const context = join(dir, 'context.patch');
     await writeFile(added, patchAdded);
     await writeFile(context, patchContext);
-    const found = await scanPatch(added, join(dir, 'a.json'));
+    const found = await scanPatch(added, join(dir, 'a.json'), { timeoutMs: 10_000 });
     expect(found.map((f) => [f.file, f.ruleId])).toEqual([['Config.swift', 'aws-access-token']]);
-    expect(await scanPatch(context, join(dir, 'c.json'))).toEqual([]);
+    expect(await scanPatch(context, join(dir, 'c.json'), { timeoutMs: 10_000 })).toEqual([]);
   });
 });

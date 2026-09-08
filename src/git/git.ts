@@ -150,8 +150,11 @@ export class Git {
     if (branch) await this.exec(['branch', '-D', branch], mirror);
   }
 
-  /** `git add -A`, puis refus d'un dépôt git imbriqué ajouté par l'agent (gitlink 160000) : la PR porterait un sous-module pointant nulle part. */
-  private async stageAll(wt: string, baseSha: string): Promise<void> {
+  /**
+   * `git add -A`, puis refus d'un dépôt git imbriqué ajouté par l'agent (gitlink 160000) : la PR porterait un
+   * sous-module pointant nulle part. À appeler une fois, avant `diffStat`/`writePatch`/`writeTree`.
+   */
+  async stage(wt: string, baseSha: string): Promise<void> {
     await this.run(['add', '-A'], wt);
     const raw = await this.run(['diff', '--cached', '--raw', '--no-renames', baseSha], wt);
     const nested = raw
@@ -161,13 +164,7 @@ export class Git {
     if (nested.length > 0) throw new GitError(`Dépôt git imbriqué ajouté par l'agent : ${nested.join(', ')}`, 'git diff --cached --raw', '');
   }
 
-  async hasChanges(wt: string, baseSha: string): Promise<boolean> {
-    await this.stageAll(wt, baseSha);
-    return (await this.run(['diff', '--cached', '--name-only', baseSha], wt)).length > 0;
-  }
-
   async diffStat(wt: string, baseSha: string): Promise<DiffStat> {
-    await this.stageAll(wt, baseSha);
     const out = await this.run(['diff', '--cached', '--numstat', '--no-renames', baseSha], wt);
     const files: string[] = [];
     let changedLines = 0;
@@ -182,24 +179,30 @@ export class Git {
 
   /** Patch binaire écrit octet pour octet dans `outFile` (pas de décodage UTF-8, saut de ligne final conservé). */
   async writePatch(wt: string, baseSha: string, outFile: string): Promise<void> {
-    await this.stageAll(wt, baseSha);
     const args = ['diff', '--cached', '--binary', '--no-renames', baseSha];
     const result = await execa('git', args, { cwd: wt, env: GIT_ENV, reject: false, stdout: { file: outFile }, stderr: 'pipe' });
     if (result.exitCode !== 0) throw this.fail(args, { exitCode: result.exitCode, stderr: result.stderr, message: result.message });
   }
 
-  /** Ramène tout le travail en un seul commit sur la branche du job, quel que soit l'état où l'agent a laissé HEAD. */
-  async squashCommit(wt: string, branch: string, baseSha: string, message: string): Promise<string> {
-    this.assertBranchName(branch);
-    await this.run(['symbolic-ref', 'HEAD', `refs/heads/${branch}`], wt); // HEAD détaché ou autre branche : retour sur la branche du job, index et fichiers intacts
-    await this.run(['reset', '-q', '--soft', baseSha], wt);
-    await this.stageAll(wt, baseSha);
-    await this.run(['commit', '-q', '--no-verify', '-m', message], wt);
-    return this.run(['rev-parse', 'HEAD'], wt);
+  /** Arbre exact de l'index après `stage` : c'est cet objet, et lui seul, que la livraison commite. */
+  async writeTree(wt: string): Promise<string> {
+    return this.run(['write-tree'], wt);
   }
 
-  async push(wt: string, pushUrl: string, branch: string): Promise<void> {
+  /**
+   * Commit unique de `treeSha` sur `baseSha`, posé sur la branche du job et sur HEAD, quel que soit
+   * l'état où l'agent a laissé le worktree : ce que la vérification a vu est ce qui part.
+   */
+  async commitTree(wt: string, branch: string, treeSha: string, baseSha: string, message: string): Promise<string> {
     this.assertBranchName(branch);
-    await this.run(['push', '-q', '--force', pushUrl, `HEAD:refs/heads/${branch}`], wt);
+    const sha = await this.run(['commit-tree', treeSha, '-p', baseSha, '-m', message], wt);
+    await this.run(['update-ref', `refs/heads/${branch}`, sha], wt);
+    await this.run(['symbolic-ref', 'HEAD', `refs/heads/${branch}`], wt);
+    return sha;
+  }
+
+  async push(wt: string, pushUrl: string, branch: string, sha = 'HEAD'): Promise<void> {
+    this.assertBranchName(branch);
+    await this.run(['push', '-q', '--force', pushUrl, `${sha}:refs/heads/${branch}`], wt);
   }
 }

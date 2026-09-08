@@ -65,12 +65,13 @@ describe('Git', () => {
   it('worktree sur la base, détection des changements, patch applicable, squash et push', async () => {
     const { worktreePath, baseSha } = await git.createWorktree(repo, 7, BRANCH, 'main');
     expect(baseSha).toBe(headSha);
-    expect(await git.hasChanges(worktreePath, baseSha)).toBe(false);
+    await git.stage(worktreePath, baseSha);
+    expect((await git.diffStat(worktreePath, baseSha)).files).toEqual([]);
 
     await writeFile(join(worktreePath, 'src.txt'), 'hello\n');
     await writeFile(join(worktreePath, 'README.md'), '# demo\nplus\n');
     await writeFile(join(worktreePath, 'bin.dat'), Buffer.from([0, 1, 2, 255]));
-    expect(await git.hasChanges(worktreePath, baseSha)).toBe(true);
+    await git.stage(worktreePath, baseSha);
     const st = await git.diffStat(worktreePath, baseSha);
     expect(st.files.sort()).toEqual(['README.md', 'bin.dat', 'src.txt']);
     expect(st.changedLines).toBe(2);
@@ -83,11 +84,13 @@ describe('Git', () => {
     const check = await execa('git', ['apply', '--check', patch], { cwd: clean, env: TEST_ENV, reject: false });
     expect(check.exitCode, check.stderr).toBe(0);
 
-    const sha = await git.squashCommit(worktreePath, BRANCH, baseSha, 'feat(#7): x\n\nCloses #7');
-    await git.push(worktreePath, remotePath, BRANCH);
+    const tree = await git.writeTree(worktreePath);
+    const sha = await git.commitTree(worktreePath, BRANCH, tree, baseSha, 'feat(#7): x\n\nCloses #7');
+    await git.push(worktreePath, remotePath, BRANCH, sha);
     expect(await remoteBranchSha(remotePath, BRANCH)).toBe(sha);
     expect(await remoteCommitParents(remotePath, sha)).toEqual([headSha]);
     expect(await remoteCommitMessage(remotePath, sha)).toContain('Closes #7');
+    expect((await execa('git', ['rev-parse', `${sha}^{tree}`], { cwd: worktreePath, env: TEST_ENV })).stdout.trim()).toBe(tree);
   });
 
   it('recrée un worktree existant depuis la base', async () => {
@@ -110,7 +113,9 @@ describe('Git', () => {
     expect(redact('token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')).toBe('token gh*_***');
     const { worktreePath, baseSha } = await git.createWorktree(repo, 7, BRANCH, 'main');
     await writeFile(join(worktreePath, 'x.txt'), 'x\n');
-    await git.squashCommit(worktreePath, BRANCH, baseSha, 'x');
+    await git.stage(worktreePath, baseSha);
+    const tree = await git.writeTree(worktreePath);
+    await git.commitTree(worktreePath, BRANCH, tree, baseSha, 'x');
     const err = await git.push(worktreePath, 'https://x-access-token:SUPERSECRET@127.0.0.1:1/x.git', BRANCH).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(GitError);
     expect((err as Error).message).not.toContain('SUPERSECRET');
@@ -118,7 +123,7 @@ describe('Git', () => {
   });
 
   describe('worktree hostile', () => {
-    it('squash des commits de l’agent depuis un HEAD détaché sur une autre branche, base intacte', async () => {
+    it('commit de l’arbre vérifié depuis un HEAD détaché sur une autre branche, base intacte', async () => {
       const { worktreePath, baseSha } = await git.createWorktree(repo, 7, BRANCH, 'main');
       const g = (args: string[]) => execa('git', args, { cwd: worktreePath, env: TEST_ENV });
       await writeFile(join(worktreePath, 'a.txt'), 'a\n');
@@ -130,11 +135,13 @@ describe('Git', () => {
       await g(['checkout', '-q', '-b', 'agent-side-branch']);
       await g(['checkout', '-q', '--detach']);
 
-      const sha = await git.squashCommit(worktreePath, BRANCH, baseSha, 'feat(#7): squash');
+      await git.stage(worktreePath, baseSha);
+      const tree = await git.writeTree(worktreePath);
+      const sha = await git.commitTree(worktreePath, BRANCH, tree, baseSha, 'feat(#7): squash');
       const parents = (await g(['rev-list', '--parents', '-n', '1', sha])).stdout.trim().split(' ').slice(1);
       expect(parents).toEqual([baseSha]);
       expect((await g(['symbolic-ref', 'HEAD'])).stdout.trim()).toBe(`refs/heads/${BRANCH}`);
-      await git.push(worktreePath, remotePath, BRANCH);
+      await git.push(worktreePath, remotePath, BRANCH, sha);
       expect(await remoteBranchSha(remotePath, BRANCH)).toBe(sha);
       await expect(git.ensureMirror(repo, remotePath, PUBLIC_URL, ['main'])).resolves.toBe(mirrorPath(paths, repo));
     });
@@ -146,7 +153,7 @@ describe('Git', () => {
       await writeFile(join(nested, 'f'), 'f\n');
       await execa('git', ['add', '-A'], { cwd: nested, env: TEST_ENV });
       await execa('git', ['commit', '-q', '-m', 'n'], { cwd: nested, env: TEST_ENV });
-      await expect(git.hasChanges(worktreePath, baseSha)).rejects.toThrow(/imbriqué/);
+      await expect(git.stage(worktreePath, baseSha)).rejects.toThrow(/imbriqué/);
     });
 
     it('recrée un worktree dont le dossier a disparu derrière le dos de git', async () => {
@@ -154,14 +161,17 @@ describe('Git', () => {
       await rm(first.worktreePath, { recursive: true, force: true });
       const second = await git.createWorktree(repo, 7, BRANCH, 'main');
       expect(second.worktreePath).toBe(first.worktreePath);
-      expect(await git.hasChanges(second.worktreePath, second.baseSha)).toBe(false);
+      await git.stage(second.worktreePath, second.baseSha);
+      expect((await git.diffStat(second.worktreePath, second.baseSha)).files).toEqual([]);
     });
 
     it('rafraîchit la base alors qu’un worktree de job existe et que sa branche a avancé côté remote', async () => {
       const { worktreePath, baseSha } = await git.createWorktree(repo, 7, BRANCH, 'main');
       await writeFile(join(worktreePath, 'x.txt'), 'x\n');
-      await git.squashCommit(worktreePath, BRANCH, baseSha, 'feat(#7): x');
-      await git.push(worktreePath, remotePath, BRANCH);
+      await git.stage(worktreePath, baseSha);
+      const tree = await git.writeTree(worktreePath);
+      const sha = await git.commitTree(worktreePath, BRANCH, tree, baseSha, 'feat(#7): x');
+      await git.push(worktreePath, remotePath, BRANCH, sha);
       await pushFromElsewhere(BRANCH, 'y.txt');
       await pushFromElsewhere('main', 'z.txt');
       await expect(git.ensureMirror(repo, remotePath, PUBLIC_URL, ['main'])).resolves.toBe(mirrorPath(paths, repo));

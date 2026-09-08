@@ -33,7 +33,7 @@ describe('runVerification', () => {
     root = await mkdtemp(join(tmpdir(), 'sisyphe-verify-'));
     paths = dataPaths(join(root, 'data'));
     const { remotePath } = await createRemoteRepo(root, {
-      'build.sh': 'test -f src/feature.txt',
+      'build.sh': 'test -f src/feature.txt || { echo "feature manquante" >&2; exit 1; }',
       'test.sh': 'grep -q hello src/feature.txt',
     });
     git = new Git(paths);
@@ -43,36 +43,40 @@ describe('runVerification', () => {
     await writeFiles(jobDir, { '.keep': '' });
   });
 
-  const run = (scan: ScanFn = async () => []) => runVerification({ worktreePath, baseSha, config, jobDir, env, git, scan });
+  const run = (over: { scan?: ScanFn; cfg?: typeof config; signal?: AbortSignal } = {}) =>
+    runVerification({ worktreePath, baseSha, config: over.cfg ?? config, jobDir, env, git, scan: over.scan ?? (async () => []), signal: over.signal });
 
   it('signale l’absence de changement', async () => {
     const r = await run();
     expect(r.noChanges).toBe(true);
     expect(r.ok).toBe(false);
+    expect(r.treeSha).toBeNull();
   });
 
-  it('passe quand build et test sont verts', async () => {
+  it('passe quand build et test sont verts et renvoie l’arbre vérifié', async () => {
     await writeFiles(worktreePath, { 'src/feature.txt': 'hello\n' });
     const r = await run();
     expect(r.ok).toBe(true);
-    expect(r.steps.map((s) => [s.name, s.exitCode])).toEqual([['build', 0], ['test', 0]]);
+    expect(r.treeSha).toMatch(/^[0-9a-f]{40}$/);
+    expect(r.steps.map((s) => [s.name, s.status])).toEqual([['build', 'ok'], ['test', 'ok']]);
     expect(r.files).toEqual(['src/feature.txt']);
-    expect(r.flags.largeDiff).toBe(false);
+    expect(r.flags).toEqual({ protectedPathsTouched: [], largeDiff: false, secretsFound: [] });
   });
 
-  it('échoue au build avec la fin de la sortie', async () => {
+  it('échoue au build avec la fin de la sortie et marque le test non exécuté', async () => {
     await writeFiles(worktreePath, { 'src/other.txt': 'x\n' });
     const r = await run();
     expect(r.ok).toBe(false);
     expect(r.failedStep).toBe('build');
-    expect(r.steps).toHaveLength(1);
+    expect(r.failureTail).toContain('feature manquante');
+    expect(r.steps.map((s) => [s.name, s.status])).toEqual([['build', 'failed'], ['test', 'skipped']]);
   });
 
-  it('échoue au test', async () => {
+  it('échoue au test, avec un message même sans sortie', async () => {
     await writeFiles(worktreePath, { 'src/feature.txt': 'bye\n' });
     const r = await run();
     expect(r.failedStep).toBe('test');
-    expect(r.steps.map((s) => s.name)).toEqual(['build', 'test']);
+    expect(r.failureTail).toContain('sans aucune sortie');
   });
 
   it('pose les flags chemins protégés et gros diff', async () => {
@@ -83,12 +87,30 @@ describe('runVerification', () => {
     expect(r.flags.largeDiff).toBe(true);
   });
 
-  it('s’arrête avant les commandes si un secret est détecté', async () => {
+  it('s’arrête avant les commandes si un secret est détecté, avec un délai passé au scan', async () => {
     await writeFiles(worktreePath, { 'src/feature.txt': 'hello\n' });
-    const r = await run(async () => [{ file: 'src/feature.txt', ruleId: 'aws-access-token', line: 5 }]);
+    let seenTimeout = 0;
+    const r = await run({ scan: async (_p, _r, opts) => { seenTimeout = opts.timeoutMs; return [{ file: 'src/feature.txt', ruleId: 'aws-access-token', line: 5 }]; } });
     expect(r.ok).toBe(false);
     expect(r.failedStep).toBe('secrets');
     expect(r.steps).toEqual([]);
     expect(r.flags.secretsFound).toEqual(['src/feature.txt (aws-access-token)']);
+    expect(seenTimeout).toBeGreaterThan(1000);
+  });
+
+  it('épuise le budget : étape en timeout, suivantes non exécutées', async () => {
+    await writeFiles(worktreePath, { 'src/feature.txt': 'hello\n', 'build.sh': 'sleep 5' });
+    const cfg = parseRepoConfig(`baseBranch: main\ncommands:\n  build: sh build.sh\n  test: sh test.sh\ntimeouts:\n  verifyMinutes: 0.005\n`);
+    const r = await run({ cfg });
+    expect(r.failedStep).toBe('build');
+    expect(r.steps.map((s) => [s.name, s.status])).toEqual([['build', 'timeout'], ['test', 'skipped']]);
+    expect(r.failureTail).toContain('délai');
+  });
+
+  it('propage l’annulation', async () => {
+    await writeFiles(worktreePath, { 'src/feature.txt': 'hello\n', 'build.sh': 'sleep 5' });
+    const controller = new AbortController();
+    setTimeout(() => controller.abort('cancelled'), 200);
+    await expect(run({ signal: controller.signal })).rejects.toBe('cancelled');
   });
 });
