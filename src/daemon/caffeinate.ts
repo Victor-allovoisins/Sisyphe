@@ -5,6 +5,7 @@ export function startCaffeinate(): () => void {
   if (process.platform !== 'darwin') return () => undefined;
   const child = spawn('caffeinate', ['-dims', '-w', String(process.pid)], { stdio: 'ignore' });
   child.on('error', () => undefined);
+  child.unref();
   return () => {
     if (!child.killed) child.kill();
   };

@@ -1,11 +1,10 @@
-import { readdir, rm, stat } from 'node:fs/promises';
-import { join } from 'node:path';
 import type { Logger } from 'pino';
 import { renderBudgetPauseComment } from '../deliver/comments.js';
 import { issueRefOf, parseRepo } from '../github/source.js';
 import { CANCELLED, SHUTDOWN, runJob, type PipelineDeps } from '../jobs/pipeline.js';
 import { purgeOrphanWorktrees, reconcile } from '../jobs/reconcile.js';
 import { canStartJob, startOfLocalDay } from '../jobs/scheduler.js';
+import { purgeOldFiles } from '../log/logger.js';
 import { startCaffeinate } from './caffeinate.js';
 import { pollOnce } from './poll.js';
 
@@ -18,8 +17,12 @@ export class Daemon {
   private readonly inflight = new Set<Promise<unknown>>();
   private readonly timers: NodeJS.Timeout[] = [];
   private readonly budgetAnnounced = new Set<string>();
+  private budgetDay = '';
   private stopCaffeinate: (() => void) | null = null;
   private stopping = false;
+  private ticking = false;
+  private purging = false;
+  private stopped: Promise<void> | null = null;
   private resolveStopped: (() => void) | null = null;
   private readonly log: Logger;
 
@@ -27,11 +30,12 @@ export class Daemon {
     this.log = d.log.child({ component: 'daemon' });
   }
 
-  /** Un cycle complet puis retour : réconciliation, labels, poll, traitement séquentiel de la file. */
+  /** Un cycle complet puis retour : réconciliation, labels, poll, annulations, traitement séquentiel de la file. */
   async runOnce(): Promise<void> {
     await reconcile(this.d);
     await this.ensureLabels();
     await pollOnce(this.d);
+    await this.watchCancellations();
     for (;;) {
       const started = this.startNext();
       if (!started) break;
@@ -43,6 +47,8 @@ export class Daemon {
   async start(): Promise<void> {
     await reconcile(this.d);
     await this.ensureLabels();
+    // stop() a pu survenir pendant ce prologue : ne pas poser de timers ni attendre indéfiniment.
+    if (this.stopping) return;
     const iv = this.opts.intervals ?? {};
     const pollMs = iv.pollMs ?? this.d.machine.pollIntervalSeconds * 1000;
     this.timers.push(setInterval(() => void this.tick(), pollMs));
@@ -52,13 +58,18 @@ export class Daemon {
     this.log.info({ repos: this.d.machine.repos, pollMs }, 'daemon démarré');
     await this.tick();
     await new Promise<void>((resolve) => {
-      this.resolveStopped = resolve;
+      if (this.stopping) resolve();
+      else this.resolveStopped = resolve;
     });
   }
 
-  /** Arrêt propre : les jobs en cours sont interrompus avec la raison SHUTDOWN et laissés pour la réconciliation. */
+  /** Arrêt propre, idempotent : tout appelant reçoit la même promesse, résolue une fois le premier arrêt terminé. */
   async stop(): Promise<void> {
-    if (this.stopping) return;
+    return (this.stopped ??= this.doStop());
+  }
+
+  /** Les jobs en cours sont interrompus avec la raison SHUTDOWN et laissés en place pour la réconciliation. */
+  private async doStop(): Promise<void> {
     this.stopping = true;
     for (const t of this.timers) clearInterval(t);
     for (const c of this.running.values()) c.abort(SHUTDOWN);
@@ -70,6 +81,8 @@ export class Daemon {
 
   private async tick(): Promise<void> {
     if (this.stopping) return;
+    if (this.ticking) return;
+    this.ticking = true;
     try {
       await pollOnce(this.d);
       while (this.startNext()) {
@@ -77,12 +90,15 @@ export class Daemon {
       }
     } catch (err) {
       this.log.error({ err }, 'tick en erreur');
+    } finally {
+      this.ticking = false;
     }
   }
 
   /** Démarre le prochain job `queued` si possible. Renvoie sa promesse, ou null. */
   private startNext(): Promise<unknown> | null {
     if (this.stopping) return null;
+    if (this.purging) return null;
     const check = canStartJob({
       activeCount: this.running.size,
       maxConcurrent: this.d.machine.maxConcurrentJobs,
@@ -119,8 +135,12 @@ export class Daemon {
 
   private async announceBudgetPause(): Promise<void> {
     const day = startOfLocalDay();
+    if (day !== this.budgetDay) {
+      this.budgetDay = day;
+      this.budgetAnnounced.clear();
+    }
     for (const job of this.d.store.listByStates(['queued'])) {
-      const key = `${day}:${job.id}`;
+      const key = `${day}:${job.repo}#${job.issueNumber}`;
       if (this.budgetAnnounced.has(key)) continue;
       this.budgetAnnounced.add(key);
       this.log.warn({ jobId: job.id }, 'budget quotidien atteint');
@@ -128,7 +148,7 @@ export class Daemon {
     }
   }
 
-  /** Annule les jobs dont l'issue a perdu son label trigger ou a été fermée. */
+  /** Annule les jobs dont l'issue a perdu son label trigger ou a été fermée : ceux en cours d'exécution, et ceux encore en file. */
   async watchCancellations(): Promise<void> {
     for (const [jobId, controller] of this.running) {
       const job = this.d.store.get(jobId);
@@ -140,6 +160,16 @@ export class Daemon {
         }
       } catch (err) {
         this.log.warn({ err, jobId }, 'watchCancellations : vérification impossible');
+      }
+    }
+    for (const job of this.d.store.listByStates(['queued'])) {
+      try {
+        if (!(await this.d.source.isStillActive(issueRefOf(job)))) {
+          this.d.store.transition(job.id, 'cancelled');
+          this.log.info({ jobId: job.id }, 'job annulé avant démarrage');
+        }
+      } catch (err) {
+        this.log.warn({ err, jobId: job.id }, 'watchCancellations : vérification impossible');
       }
     }
   }
@@ -159,7 +189,16 @@ export class Daemon {
 
   private async purge(): Promise<void> {
     // Pas de purge pendant qu'un job tourne : `keep` est un instantané (voir purgeOrphanWorktrees).
-    if (this.running.size === 0) await purgeOrphanWorktrees(this.d).catch((err) => this.log.warn({ err }, 'purge des worktrees'));
+    if (this.running.size === 0) {
+      this.purging = true;
+      try {
+        await purgeOrphanWorktrees(this.d);
+      } catch (err) {
+        this.log.warn({ err }, 'purge des worktrees');
+      } finally {
+        this.purging = false;
+      }
+    }
     await purgeOldFiles(this.d.paths.logsDir, 14).catch(() => undefined);
   }
 
@@ -167,14 +206,5 @@ export class Daemon {
     for (const full of this.d.machine.repos) {
       await this.d.source.ensureLabels(parseRepo(full)).catch((err) => this.log.warn({ err, repo: full }, 'ensureLabels'));
     }
-  }
-}
-
-export async function purgeOldFiles(dir: string, days: number): Promise<void> {
-  const cutoff = Date.now() - days * 86_400_000;
-  for (const name of await readdir(dir)) {
-    const p = join(dir, name);
-    const s = await stat(p);
-    if (s.isFile() && s.mtimeMs < cutoff) await rm(p, { force: true });
   }
 }

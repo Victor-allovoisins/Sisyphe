@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { Daemon } from '../../src/daemon/daemon.js';
+import { pollOnce } from '../../src/daemon/poll.js';
+import { SHUTDOWN } from '../../src/jobs/pipeline.js';
+import { isTerminal } from '../../src/store/types.js';
 import { makeHarness, readyVerdict, repoRef, report, writeFeature } from '../helpers/harness.js';
 
 describe('Daemon', () => {
@@ -66,5 +69,84 @@ describe('Daemon', () => {
     const job = h.store.listRecent(1)[0];
     expect(job.prState).toBe('closed');
     expect(job.prMergedAt).toBe('2026-09-09T08:00:00Z');
+  });
+
+  it('stop() pendant le prologue de start() ne bloque pas', async () => {
+    const h = await makeHarness({ steps: [] });
+    const realEnsureLabels = h.source.ensureLabels.bind(h.source);
+    h.source.ensureLabels = async (repo) => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await realEnsureLabels(repo);
+    };
+    const daemon = new Daemon(h.deps);
+    const started = daemon.start();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await daemon.stop();
+    await Promise.race([
+      started,
+      new Promise((_resolve, reject) => setTimeout(() => reject(new Error("start() ne s'est pas résolu après stop()")), 2000)),
+    ]);
+  });
+
+  it('stop() pendant un job laisse le job non terminal et résout start()', async () => {
+    const h = await makeHarness({ steps: [] });
+    const daemon = new Daemon(h.deps, { intervals: { pollMs: 3_600_000, cancelMs: 3_600_000, prTrackMs: 3_600_000, purgeMs: 3_600_000 } });
+    let observedReason: unknown;
+    // Le job passe en 'triaging' de façon synchrone bien avant d'atteindre l'agent (mkdir, git, worktree...) :
+    // attendre l'état en base serait racy. On attend plutôt que l'agent factice soit réellement entré dans run().
+    let agentStarted: () => void = () => undefined;
+    const agentEntered = new Promise<void>((resolve) => {
+      agentStarted = resolve;
+    });
+    const fakeAgent = {
+      async run(opts: { signal: AbortSignal }) {
+        agentStarted();
+        await new Promise<never>((_resolve, reject) => {
+          opts.signal.addEventListener('abort', () => {
+            observedReason = opts.signal.reason;
+            reject(opts.signal.reason as Error);
+          });
+        });
+      },
+    };
+    h.deps.agent = fakeAgent as never;
+
+    const started = daemon.start();
+    await Promise.race([
+      agentEntered,
+      new Promise((_resolve, reject) => setTimeout(() => reject(new Error("l'agent n'a jamais démarré")), 2000)),
+    ]);
+    await Promise.all([daemon.stop(), daemon.stop()]);
+    await started;
+
+    const job = h.store.listRecent(1)[0];
+    expect(isTerminal(job.state)).toBe(false);
+    expect(observedReason).toBe(SHUTDOWN);
+    expect(h.source.labelsOf({ repo: repoRef, number: job.issueNumber })).not.toContain('sisyphe:done');
+  });
+
+  it('budget : un seul commentaire de pause par issue et par jour', async () => {
+    const h = await makeHarness({
+      steps: [{ output: readyVerdict }, { output: report('a'), sideEffect: writeFeature('hello\n') }],
+      issues: [{ number: 7, title: 'A' }, { number: 8, title: 'B' }],
+      dailyBudgetUsd: 0.5,
+    });
+    const daemon = new Daemon(h.deps);
+    await daemon.runOnce();
+    await daemon.runOnce();
+    const comments = h.source.commentsOf({ repo: repoRef, number: 8 }).filter((c) => c.toLowerCase().includes('budget'));
+    expect(comments).toHaveLength(1);
+  });
+
+  it('un job queued dont le label a été retiré est annulé sans PR', async () => {
+    const h = await makeHarness({ steps: [] });
+    const ref = { repo: repoRef, number: 7 };
+    await pollOnce(h.deps);
+    await h.source.removeTriggerLabel(ref);
+    await new Daemon(h.deps).runOnce();
+    const job = h.store.listRecent(1)[0];
+    expect(job.state).toBe('cancelled');
+    expect(h.source.pulls).toHaveLength(0);
+    expect(h.source.labelsOf(ref).some((l) => l.startsWith('sisyphe:'))).toBe(false);
   });
 });
