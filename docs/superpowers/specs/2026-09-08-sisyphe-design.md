@@ -129,7 +129,7 @@ Le scheduler prend le plus ancien job `queued` si le nombre de jobs actifs est i
 1. Label `sisyphe:in-progress` sur l'issue, commentaire « Sisyphe a pris l'issue » contenant le marqueur invisible `<!-- sisyphe:job:<id> -->`.
 2. `caffeinate -dims` pendant toute la durée du job.
 3. Git : miroir `~/.sisyphe/mirrors/<owner>__<repo>.git` créé avec `git clone --mirror` la première fois, puis `git remote update --prune`. Worktree `~/.sisyphe/work/<owner>__<repo>/issue-<n>` sur une branche neuve `<branchPrefix>issue-<n>-<slug>` depuis `origin/<baseBranch>`. Le slug est le titre en kebab-case tronqué à 40 caractères. Le SHA de `origin/<baseBranch>` au moment de la création est enregistré comme `base_sha` du job : c'est la référence du squash final, même si la base avance pendant le job. Si la branche existe déjà sur le remote (job précédent échoué), elle est écrasée au push : chaque job repart de la base.
-4. Lecture de `sisyphe.yml` dans le worktree. S'il est absent ou invalide : job `blocked`, commentaire expliquant quoi ajouter avec un exemple minimal.
+4. Lecture de `sisyphe.yml` sur la **branche par défaut** du repo (dans le miroir, avant la création du worktree : il faut connaître `baseBranch` pour créer le worktree). Conséquence : le fichier doit vivre sur la branche par défaut, même si `baseBranch` est une autre branche. S'il est absent ou invalide : job `blocked`, commentaire distinguant les deux cas (exemple minimal si absent, erreurs de validation si invalide).
 5. `commands.setup` exécuté dans le worktree (exemple iOS : `xcodegen generate`).
 6. Variables d'environnement exposées aux commandes du repo et à l'agent : `SISYPHE_CACHE_DIR=~/.sisyphe/cache/<owner>__<repo>` (pour DerivedData, SPM, gradle), `SISYPHE_ISSUE_NUMBER`, `SISYPHE_BRANCH`.
 
