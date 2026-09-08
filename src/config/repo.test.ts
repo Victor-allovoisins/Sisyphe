@@ -1,8 +1,5 @@
-import { mkdtemp, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { RepoConfigError, loadRepoConfig, parseRepoConfig } from './repo.js';
+import { EXAMPLE_REPO_CONFIG, RepoConfigError, parseRepoConfig } from './repo.js';
 
 const minimal = `
 baseBranch: develop
@@ -56,18 +53,35 @@ limits:
   it('signale un YAML illisible', () => {
     expect(() => parseRepoConfig('baseBranch: [')).toThrow(/YAML/);
   });
-});
 
-describe('loadRepoConfig', () => {
-  it('lit sisyphe.yml dans le dossier', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'sisyphe-cfg-'));
-    await writeFile(join(dir, 'sisyphe.yml'), minimal);
-    const c = await loadRepoConfig(dir);
-    expect(c.baseBranch).toBe('develop');
+  it('accepte l’exemple fourni aux utilisateurs', () => {
+    expect(() => parseRepoConfig(EXAMPLE_REPO_CONFIG)).not.toThrow();
   });
 
-  it('distingue le fichier absent', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'sisyphe-cfg-'));
-    await expect(loadRepoConfig(dir)).rejects.toMatchObject({ kind: 'missing' });
+  it('refuse une commande non textuelle (en YAML nu, true est un booléen)', () => {
+    expect(() => parseRepoConfig('baseBranch: main\ncommands:\n  build: true\n')).toThrow(/commands\.build/);
+  });
+
+  it('refuse une clé inconnue plutôt que de l’ignorer', () => {
+    expect(() => parseRepoConfig(`${minimal}protectedPath: ["**/*.xcconfig"]\n`)).toThrow(/protectedPath/);
+    expect(() => parseRepoConfig('baseBranch: main\ncommands:\n  buidl: make\n  build: make\n')).toThrow(/buidl/);
+  });
+
+  it('refuse un glob vide, un label vide et un préfixe de branche exotique', () => {
+    expect(() => parseRepoConfig(`${minimal}protectedPaths: [""]\n`)).toThrow(/protectedPaths/);
+    expect(() => parseRepoConfig(`${minimal}pr:\n  labels: [""]\n`)).toThrow(/pr\.labels/);
+    expect(() => parseRepoConfig(`${minimal}branchPrefix: "../evil "\n`)).toThrow(/branchPrefix/);
+  });
+
+  it('traite une section vide comme absente', () => {
+    const c = parseRepoConfig(`${minimal}models:\nbudget:\nprotectedPaths:\ninstructions:\n`);
+    expect(c.models.triage).toBe('claude-sonnet-5');
+    expect(c.budget.implementUsd).toBe(8);
+    expect(c.protectedPaths).toEqual([]);
+    expect(c.instructions).toBe('');
+  });
+
+  it('refuse un document qui n’est pas un objet', () => {
+    expect(() => parseRepoConfig('- a\n- b\n')).toThrow(/racine/);
   });
 });

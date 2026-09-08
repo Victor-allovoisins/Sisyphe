@@ -1,56 +1,78 @@
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import { parse } from 'yaml';
 import { z } from 'zod';
 
 export const REPO_CONFIG_FILENAME = 'sisyphe.yml';
 
-// Zod 4 : `.default(x)` renvoie x sans le parser, `.prefault(x)` parse x et
-// applique donc les défauts internes. Indispensable pour les objets imbriqués.
-export const RepoConfigSchema = z.object({
-  baseBranch: z.string().min(1),
-  branchPrefix: z.string().default('feature/'),
-  commands: z.object({
-    setup: z.string().min(1).optional(),
-    build: z.string().min(1),
-    test: z.string().min(1).optional(),
-    lint: z.string().min(1).optional(),
+const nonEmpty = z.string().min(1);
+
+/** Valeur absente ou vide (`models:` sans contenu est lu comme null) → undefined, pour que les défauts s'appliquent. */
+const nullable = <T extends z.ZodTypeAny>(schema: T) => z.preprocess((v) => v ?? undefined, schema);
+
+/**
+ * Section optionnelle d'objets : `strictObject` refuse les clés inconnues, `.prefault({})` applique les défauts internes.
+ * Prend le schéma déjà construit (et non un `ZodRawShape` générique) : Zod 4 ne peut pas vérifier que `{}` satisfait
+ * `$InferObjectInput` pour un shape générique quelconque (il ne sait pas statiquement que tous ses champs ont un défaut),
+ * et le refuse à la compilation. Construire `strictObject(...).prefault({})` sur un objet concret à chaque appel lève
+ * l'ambiguïté sans recourir à un cast.
+ */
+const section = <T extends z.ZodTypeAny>(schema: T) => nullable(schema);
+
+// Zod 4 : `.default(x)` renvoie x sans le parser, `.prefault(x)` parse x et applique donc les défauts internes.
+// `strictObject` partout : une clé inconnue (faute de frappe sur protectedPaths) désactiverait une barrière en silence.
+export const RepoConfigSchema = z.strictObject({
+  baseBranch: nonEmpty,
+  branchPrefix: z.string().regex(/^[A-Za-z0-9._/-]*$/, 'caractères autorisés : lettres, chiffres, . _ / -').default('feature/'),
+  commands: z.strictObject({
+    setup: nonEmpty.optional(),
+    build: nonEmpty,
+    test: nonEmpty.optional(),
+    lint: nonEmpty.optional(),
   }),
-  protectedPaths: z.array(z.string()).default([]),
-  models: z
-    .object({
-      triage: z.string().default('claude-sonnet-5'),
-      implement: z.string().default('claude-opus-5'),
-    })
-    .prefault({}),
-  budget: z
-    .object({
-      triageUsd: z.number().positive().default(1),
-      implementUsd: z.number().positive().default(8),
-    })
-    .prefault({}),
-  limits: z
-    .object({
-      maxAttempts: z.number().int().min(1).default(3),
-      maxDiffLines: z.number().int().min(1).default(800),
-      maxFilesEstimate: z.number().int().min(1).default(15),
-    })
-    .prefault({}),
-  timeouts: z
-    .object({
-      triageMinutes: z.number().positive().default(10),
-      implementMinutes: z.number().positive().default(60),
-      verifyMinutes: z.number().positive().default(30),
-    })
-    .prefault({}),
-  pr: z
-    .object({
-      labels: z.array(z.string()).default(['sisyphe']),
-      reviewers: z.array(z.string()).default([]),
-      draft: z.boolean().default(false),
-    })
-    .prefault({}),
-  instructions: z.string().default(''),
+  protectedPaths: nullable(z.array(nonEmpty).default([])),
+  models: section(
+    z
+      .strictObject({
+        triage: nonEmpty.default('claude-sonnet-5'),
+        implement: nonEmpty.default('claude-opus-5'),
+      })
+      .prefault({}),
+  ),
+  budget: section(
+    z
+      .strictObject({
+        triageUsd: z.number().positive().max(500).default(1),
+        implementUsd: z.number().positive().max(500).default(8),
+      })
+      .prefault({}),
+  ),
+  limits: section(
+    z
+      .strictObject({
+        maxAttempts: z.number().int().min(1).max(10).default(3),
+        maxDiffLines: z.number().int().min(1).max(100_000).default(800),
+        maxFilesEstimate: z.number().int().min(1).max(1000).default(15),
+      })
+      .prefault({}),
+  ),
+  timeouts: section(
+    z
+      .strictObject({
+        triageMinutes: z.number().positive().max(1440).default(10),
+        implementMinutes: z.number().positive().max(1440).default(60),
+        verifyMinutes: z.number().positive().max(1440).default(30),
+      })
+      .prefault({}),
+  ),
+  pr: section(
+    z
+      .strictObject({
+        labels: z.array(nonEmpty).default(['sisyphe']),
+        reviewers: z.array(nonEmpty).default([]),
+        draft: z.boolean().default(false),
+      })
+      .prefault({}),
+  ),
+  instructions: nullable(z.string().max(20_000).default('')),
 });
 export type RepoConfig = z.infer<typeof RepoConfigSchema>;
 
@@ -72,26 +94,10 @@ export function parseRepoConfig(yamlText: string): RepoConfig {
   }
   const result = RepoConfigSchema.safeParse(raw ?? {});
   if (!result.success) {
-    const issues = result.error.issues
-      .map((i) => `${i.path.join('.') || '(racine)'} : ${i.message}`)
-      .join(' ; ');
-    throw new RepoConfigError('invalid', `${REPO_CONFIG_FILENAME} invalide : ${issues}`);
+    const issues = result.error.issues.map((i) => `- ${i.path.join('.') || '(racine)'} : ${i.message}`).join('\n');
+    throw new RepoConfigError('invalid', `${REPO_CONFIG_FILENAME} invalide :\n${issues}`);
   }
   return result.data;
-}
-
-export async function loadRepoConfig(dir: string): Promise<RepoConfig> {
-  const file = join(dir, REPO_CONFIG_FILENAME);
-  let text: string;
-  try {
-    text = await readFile(file, 'utf8');
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      throw new RepoConfigError('missing', `${REPO_CONFIG_FILENAME} absent à la racine du repo`);
-    }
-    throw err;
-  }
-  return parseRepoConfig(text);
 }
 
 export const EXAMPLE_REPO_CONFIG = `baseBranch: main
