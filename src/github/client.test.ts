@@ -34,7 +34,10 @@ const repo: RepoRef = { owner: 'acme', name: 'demo', full: 'acme/demo' };
 
 /** Le client réel se valide en Task 25 ; ici on remplace juste l'Octokit interne par un stub minimal. */
 function makeClient(): GitHubIssueSource {
-  return new GitHubIssueSource({ appId: 1, installationId: 1, privateKey: 'x', triggerLabel: 'sisyphe' });
+  return new GitHubIssueSource({
+    appId: 1, installationId: 1, privateKey: 'x', triggerLabel: 'sisyphe',
+    retry: { sleep: async () => undefined, baseDelayMs: 0 },
+  });
 }
 
 function inject(src: GitHubIssueSource, stub: unknown): void {

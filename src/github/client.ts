@@ -15,6 +15,8 @@ export interface GitHubClientConfig {
   privateKey: string;
   triggerLabel: string;
   log?: Logger;
+  /** Surcharge des réglages de withRetry (tests : sleep no-op pour ne pas attendre pour de vrai). */
+  retry?: Pick<RetryOptions, 'attempts' | 'baseDelayMs' | 'sleep'>;
 }
 
 export function hasWriteAccess(permission: string | undefined): boolean {
@@ -54,7 +56,8 @@ export class GitHubIssueSource implements IssueSource {
   }
 
   private call<T>(fn: (o: Octokit) => Promise<T>, opts?: RetryOptions): Promise<T> {
-    return withRetry(async () => fn(await this.octokit()), opts);
+    // Les options par appel (ex. retryOnError: false) gardent la priorité sur la config globale.
+    return withRetry(async () => fn(await this.octokit()), { ...this.cfg.retry, ...opts });
   }
 
   /** Vérifie l'authentification de l'App et l'accès à l'installation. Utilisé par `doctor`. */
