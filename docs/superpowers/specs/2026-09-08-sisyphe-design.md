@@ -49,7 +49,7 @@ Librairies : `@anthropic-ai/claude-agent-sdk`, `@octokit/app`, `@octokit/rest`, 
 interface IssueSource {
   listCandidates(repo: RepoRef): Promise<IssueRef[]>;       // ouvertes, label trigger, sans label de statut
   getIssue(ref: IssueRef): Promise<Issue>;                   // titre, body, commentaires, labels, auteur
-  canTrigger(ref: IssueRef): Promise<boolean>;               // le poseur du label a write/maintain/admin
+  canTrigger(ref: IssueRef): Promise<{ ok: boolean; login: string | null }>; // le poseur du label a write/maintain/admin
   setStatus(ref: IssueRef, status: JobStatusLabel | null): Promise<void>; // pose ce label de statut, retire les autres ; null = aucun
   comment(ref: IssueRef, markdown: string): Promise<void>;
   isStillActive(ref: IssueRef): Promise<boolean>;            // ouverte et label trigger présent
@@ -70,23 +70,28 @@ interface AgentRunner {
     resumeSessionId?: string;
     allowedTools: string[];
     disallowedTools: string[];
+    hooks?: SDKHooks;            // garde des chemins (PreToolUse)
+    env: Record<string, string>; // env épuré du daemon + SISYPHE_* + clé API
+    timeoutMs: number;
     signal: AbortSignal;
+    transcriptPath: string;
   }): Promise<AgentResult<T>>;
 }
 
 interface AgentResult<T> {
   output: T | null;            // null si le schéma n'a pas été respecté ou arrêt anticipé
-  sessionId: string;
+  sessionId: string | null;    // null si le SDK s'arrête avant l'init
   costUsd: number;
   usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number };
   numTurns: number;
   durationMs: number;
-  stopReason: 'completed' | 'max_turns' | 'max_budget' | 'aborted' | 'error';
+  stopReason: 'completed' | 'max_turns' | 'max_budget' | 'timeout' | 'aborted' | 'error';
+  errorMessage?: string;
   transcriptPath: string;
 }
 ```
 
-`IssueSource` et `AgentRunner` ont une seule implémentation réelle chacun en v1, plus des fakes pour les tests. L'abstraction existe pour rendre les tests possibles sans réseau et pour préparer une source Jira en v2, pas pour autre chose.
+`IssueSource` et `AgentRunner` ont une seule implémentation réelle chacun en v1, plus des fakes pour les tests. L'abstraction existe d'abord pour rendre les tests possibles sans réseau ni coût API. Elle regroupe volontairement tout ce que Sisyphe demande à la forge (issues, labels, PR, URL authentifiée, branche par défaut) : une source Jira en v2 ne couvrirait que la partie issues et viendrait s'y ajouter, pas la remplacer. Le plan d'implémentation fait foi pour le détail des signatures (`listWithStatus`, `removeTriggerLabel`, `getDefaultBranch`, `getAuthenticatedRemoteUrl`, `updatePullRequest`, `ensureLabels`).
 
 ## 4. Flux d'un job
 
