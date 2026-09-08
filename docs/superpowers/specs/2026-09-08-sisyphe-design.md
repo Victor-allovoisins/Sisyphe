@@ -293,8 +293,8 @@ Logs du daemon : pino JSON sur stdout et dans `~/.sisyphe/logs/daemon-YYYY-MM-DD
 
 ## 7. CLI
 
-- `sisyphe setup` : interactif. Crée `~/.sisyphe`, écrit `config.yml`, demande le chemin de la clé GitHub App et la clé API, écrit `~/Library/LaunchAgents/com.sisyphe.daemon.plist` (KeepAlive, RunAtLoad, variables d'env, logs), puis `launchctl load`.
-- `sisyphe doctor` : vérifie node, git, gitleaks, le CLI Claude, la clé API (appel minimal), l'accès de la GitHub App à chaque repo, la présence et la validité de `sisyphe.yml` sur la branche de base de chaque repo, la présence sur le PATH du premier mot de chaque commande déclarée. Sortie : une ligne par vérification, code de retour non nul si une vérification échoue.
+- `sisyphe setup` : interactif. Valide chaque réponse avant d'écrire quoi que ce soit (repos au format owner/repo, identifiants entiers, clé privée lisible, clé API non vide, jamais affichée), fusionne avec un `config.yml` existant (les réglages non demandés sont conservés), écrit `config.yml` en 0600, exécute les vérifications de `doctor` et, seulement si elles passent, écrit `~/Library/LaunchAgents/com.sisyphe.daemon.plist` en 0600 (KeepAlive, RunAtLoad, ThrottleInterval 30 s, PATH préfixé par le dossier du node courant, variables d'env dont la clé API, stdout vers /dev/null car pino écrit déjà le fichier quotidien, stderr vers `logs/`) puis `launchctl bootout` + `bootstrap gui/$UID`. Refuse de s'installer si le CLI n'est pas exécuté depuis le build (`dist/cli/index.js`). Compromis assumé pour le POC : la clé API est dans le plist (0600) et visible via `launchctl print` par les processus de l'utilisateur ; un fichier d'env ou le trousseau est une évolution possible.
+- `sisyphe doctor` : vérifie node ≥ 24, git, gitleaks, la présence de la clé API et sa validité (appel minimal à l'API des modèles), la config machine, l'accès de la GitHub App à chaque repo, la présence et la validité de `sisyphe.yml` sur la branche par défaut de chaque repo, la présence sur le PATH du premier mot de chaque commande déclarée ; en avertissement (n'échoue pas) : `caffeinate` absent, moins de 10 Go libres, agent launchd non chargé ou dont le dernier code de sortie est non nul. Sortie : une ligne par vérification (✅ ⚠️ ❌), code de retour non nul si une vérification bloquante échoue.
 - `sisyphe start [--once]` : lance le daemon au premier plan (c'est ce que launchd exécute). `--once` fait un cycle de poll, traite les jobs trouvés jusqu'au bout, puis quitte. Utile pour les tests et la démo.
 - `sisyphe status` : jobs actifs et les 20 derniers, avec état, coût, durée, lien PR.
 - `sisyphe logs <jobId> [--phase <name>] [--raw]` : par défaut un résumé lisible du transcript (outils appelés, fichiers touchés, commandes lancées) ; `--raw` affiche les fichiers bruts.
@@ -309,6 +309,7 @@ Logs du daemon : pino JSON sur stdout et dans `~/.sisyphe/logs/daemon-YYYY-MM-DD
 - Exception inattendue dans un job : job `failed`, commentaire avec un message court et le `jobId`, le daemon continue.
 - Commande de vérification qui dépasse le timeout : traitée comme un échec de vérification.
 - Arrêt du daemon (SIGTERM) : les jobs actifs sont interrompus (raison `SHUTDOWN`) et laissés dans leur état pour la réconciliation au redémarrage. L'attente de leur fin est bornée (30 s) : au-delà, le daemon sort quand même et la réconciliation reprend les jobs restés en vol.
+- Une seule instance : `sisyphe start` (avec ou sans `--once`) prend un verrou `~/.sisyphe/daemon.lock` contenant son pid ; une seconde instance refuse de démarrer avec un message explicite ; un verrou périmé (pid mort) est repris. Les exceptions non rattrapées sont journalisées en `fatal` via pino avant la sortie en erreur.
 
 ## 9. Sécurité
 
