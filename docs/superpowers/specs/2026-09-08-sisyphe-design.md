@@ -211,10 +211,11 @@ Pendant un job, toutes les 60 s, `isStillActive`. Si l'issue est fermée ou si l
 
 Au démarrage du daemon :
 
-- Jobs `triaging`, `implementing`, `verifying` : la tentative en cours est marquée échouée. Requeue si tentatives restantes, sinon `failed` avec commentaire.
-- Jobs `delivering` : `findPullRequest` par branche. PR trouvée : `done`. Branche poussée sans PR : reprendre à la création de PR. Rien : requeue.
-- Worktrees sur disque sans job actif : supprimés.
-- Labels `sisyphe:in-progress` sur GitHub sans job actif : retirés, commentaire « reprise après redémarrage ». L'issue redevient candidate et sera retraitée au poll suivant. C'est GitHub qui fait foi si la base SQLite est perdue : le marqueur de job dans les commentaires permet de retrouver l'historique.
+- Jobs `triaging`, `implementing`, `verifying` : le worktree est supprimé et le job repart de zéro (`attempt`, `flags`, `error` remis à zéro) avec un commentaire « redémarré ». Un job n'est requeué qu'une fois (compteur `requeues`) ; au second redémarrage il passe en `failed` avec commentaire et label.
+- Jobs `delivering` : `findPullRequest` par branche (PR ouvertes uniquement). PR trouvée : `done` (ou `failed` si la vérification avait échoué), label de statut posé et commentaire de fin avec l'URL de la PR, comme l'aurait fait la livraison. Pas de PR : requeue comme ci-dessus ; la seconde tentative force-pousse le même nom de branche. Erreur API : le job reste en `delivering` et sera réexaminé au prochain démarrage.
+- Worktrees sur disque : supprimés sauf ceux des jobs actifs et ceux des jobs `failed` de moins de 7 jours (gardés pour inspection). Le chemin d'un job actif est reconnu même si la base ne l'a pas encore enregistré (il se déduit du repo et du numéro d'issue). Le daemon relance cette purge périodiquement, jamais pendant qu'un job tourne.
+- Labels `sisyphe:in-progress` sur GitHub sans job actif : si un job terminé avec PR ouverte existe pour l'issue, le label est corrigé d'après son état ; sinon le label est retiré avec un commentaire « redémarré » et l'issue redevient candidate au poll suivant. C'est GitHub qui fait foi si la base SQLite est perdue : le marqueur de job dans les commentaires permet de retrouver l'historique.
+- Chaque job est réconcilié indépendamment : une erreur sur l'un n'empêche pas le traitement des autres, ni la purge, ni la libération des labels.
 
 ## 5. Configuration
 
