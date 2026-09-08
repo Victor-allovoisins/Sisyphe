@@ -303,12 +303,12 @@ Logs du daemon : pino JSON sur stdout et dans `~/.sisyphe/logs/daemon-YYYY-MM-DD
 
 ## 8. Gestion d'erreurs
 
-- API GitHub : retry exponentiel trois fois sur erreurs réseau et 5xx ; sur 403 rate limit, attente jusqu'à `x-ratelimit-reset`.
+- API GitHub : retry exponentiel trois fois sur erreurs réseau et 5xx, sauf pour les POST qui créent un objet (commentaire, création de PR) qui ne sont pas rejoués sur erreur pour éviter les doublons ; sur rate limit (403 ou 429, `x-ratelimit-reset` ou `retry-after`), attente jusqu'à la réinitialisation (plafond 1 h) puis nouvel essai, jamais après la dernière tentative.
 - SDK / API Anthropic : retry trois fois sur 429 et 5xx ; sinon la tentative est marquée échouée et la logique de tentatives du job s'applique.
 - Budget quotidien atteint (somme des `cost_usd` des phases terminées depuis minuit, heure locale) : le daemon ne démarre plus de job, commente les issues `queued` « en pause budget, reprise demain », et reprend au changement de jour.
 - Exception inattendue dans un job : job `failed`, commentaire avec un message court et le `jobId`, le daemon continue.
 - Commande de vérification qui dépasse le timeout : traitée comme un échec de vérification.
-- Arrêt du daemon (SIGTERM) : les jobs actifs sont interrompus proprement et laissés dans leur état pour la réconciliation au redémarrage.
+- Arrêt du daemon (SIGTERM) : les jobs actifs sont interrompus (raison `SHUTDOWN`) et laissés dans leur état pour la réconciliation au redémarrage. L'attente de leur fin est bornée (30 s) : au-delà, le daemon sort quand même et la réconciliation reprend les jobs restés en vol.
 
 ## 9. Sécurité
 
