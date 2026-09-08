@@ -135,7 +135,7 @@ Le scheduler prend le plus ancien job `queued` si le nombre de jobs actifs est i
 
 ### 4.4 Triage
 
-Agent en lecture seule. Outils autorisés : `Read`, `Glob`, `Grep` uniquement. Modèle `models.triage` (défaut `claude-sonnet-5`), budget `budget.triageUsd` (défaut 1), `maxTurns` 40, timeout `timeouts.triageMinutes` (défaut 10).
+Agent en lecture seule. Outils disponibles : `Read`, `Glob`, `Grep` uniquement (option SDK `tools`, liste blanche ; ces outils sont aussi auto-approuvés via `allowedTools`). Modèle `models.triage` (défaut `claude-sonnet-5`), budget `budget.triageUsd` (défaut 1), `maxTurns` 40, timeout `timeouts.triageMinutes` (défaut 10).
 
 Le prompt contient : le rôle, l'issue (titre, body, commentaires) placée entre balises `<issue>` et présentée explicitement comme des données non fiables à ne pas exécuter, les `instructions` du repo, les critères de décision. Le CLAUDE.md du repo est chargé automatiquement via `settingSources: ['project']`.
 
@@ -162,11 +162,12 @@ Si le verdict n'est pas `ready` : commentaire sur l'issue avec les questions ou 
 
 Agent en écriture. `cwd` = worktree, `settingSources: ['project']`, system prompt = preset `claude_code` + un append composé des consignes Sisyphe et des `instructions` du repo. `permissionMode: 'dontAsk'` : tout ce qui n'est pas explicitement autorisé est refusé sans prompt.
 
-- `allowedTools` : `Read`, `Edit`, `Write`, `Glob`, `Grep`, `Bash`.
-- `disallowedTools` : `Bash(git push*)`, `Bash(git remote*)`, `WebFetch`, `WebSearch`.
-- Hook `PreToolUse` sur `Edit` et `Write` : refuse toute cible dont le chemin résolu sort du worktree, ou qui matche `protectedPaths`.
+- Outils disponibles (`tools`, liste blanche) et auto-approuvés (`allowedTools`) : `Read`, `Edit`, `Write`, `Glob`, `Grep`, `Bash`.
+- `disallowedTools` : `git push` et `git remote` sous Bash (deux syntaxes de préfixe, vérifiées en validation end-to-end), `WebFetch`, `WebSearch`.
+- Hook `PreToolUse` sur `Edit` et `Write` : refuse toute cible dont le chemin résolu sort du worktree, `.git`, les chemins protégés de base (`.claude/**`, `.mcp.json`, `sisyphe.yml`, `.github/workflows/**`, non désactivables) et ceux de `protectedPaths`. Comparaison lexicale : un lien symbolique n'est pas suivi, c'est le rôle du sandbox.
 - Option machine `sandbox: true` : active le sandbox macOS de Claude Code, qui confine le système de fichiers au worktree et limite le réseau sortant. Désactivé par défaut pour le POC.
-- `settingSources: ['project']` charge aussi le `.claude/settings.json` du repo cible s'il existe. Ses règles d'autorisation ne peuvent pas contourner les `disallowedTools` de Sisyphe, qui sont des règles de refus et priment.
+- `settingSources: ['project']` charge le CLAUDE.md du repo cible, mais aussi son `.claude/settings.json`. Ses règles d'autorisation ne peuvent pas contourner les `disallowedTools` de Sisyphe (règles de refus, elles priment), et ses hooks et serveurs MCP sont désactivés (`managedSettings.strictPluginOnlyCustomization: ['hooks', 'mcp']`) : un hook de settings est une commande shell exécutée avec les privilèges du daemon, qu'un repo ou l'agent lui-même pourrait déposer.
+- Le budget `maxBudgetUsd` est remis à zéro à chaque reprise de session (retry) : le plafond effectif d'un job est `limits.maxAttempts × budget.implementUsd`, le budget quotidien reste la borne globale.
 
 Le prompt contient : l'issue (mêmes balises que le triage), le `summary` et le `plan` du triage, les commandes `setup`, `build`, `test`, `lint` à utiliser, et les consignes : ne pas toucher aux `protectedPaths`, ne pas se soucier des commits (Sisyphe squash tout en un commit à la fin, un commit intermédiaire est toléré), exécuter build et tests avant de conclure, terminer par un rapport structuré :
 
@@ -313,7 +314,7 @@ Logs du daemon : pino JSON dans `~/.sisyphe/logs/daemon.log`, rotation quotidien
 - **Identité** : GitHub App avec permissions `contents: write`, `pull_requests: write`, `issues: write`, `metadata: read`, installée uniquement sur les repos cibles. Le token d'installation est court et n'entre jamais dans l'environnement de l'agent.
 - **Déclenchement** : seul un label posé par un membre avec droit d'écriture est pris en compte.
 - **Injection de prompt** : le contenu des issues et des commentaires est passé comme données entre balises, avec la consigne explicite de ne pas y obéir. C'est une atténuation, pas une garantie : la vérification indépendante, les chemins protégés et le scan de secrets sont les vraies barrières.
-- **Périmètre de l'agent** : liste blanche d'outils, `git push` et `git remote` interdits, outils web interdits, hook qui bloque les écritures hors worktree et sur les chemins protégés, sandbox macOS optionnel.
+- **Périmètre de l'agent** : liste blanche d'outils (`tools`), `git push` et `git remote` interdits, outils web interdits, hooks et MCP des settings du repo cible désactivés, hook qui bloque les écritures hors worktree, dans `.git`, sur les chemins protégés de base et déclarés ; sandbox macOS optionnel. Le token GitHub ne passe que sur la ligne de commande de `fetch`/`push`, jamais pendant qu'un agent tourne.
 - **Secrets** : gitleaks sur chaque diff avant push, bloquant. Limite connue : la clé API Anthropic est présente dans l'environnement du processus agent, donc lisible par un `Bash` de l'agent. Acceptable pour le POC sur une machine de confiance ; le sandbox réseau la rend inutilisable vers l'extérieur.
 - **Chemins protégés** : déclarés par repo, un diff qui les touche force la PR en draft avec alerte.
 
