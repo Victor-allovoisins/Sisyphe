@@ -60,6 +60,9 @@ export class Daemon {
     this.timers.push(setInterval(() => void this.trackPullRequests(), iv.prTrackMs ?? 3_600_000));
     this.timers.push(setInterval(() => void this.purge(), iv.purgeMs ?? 3_600_000));
     this.log.info({ repos: this.d.machine.repos, pollMs }, 'daemon démarré');
+    // Un job queued annulé pendant que le daemon était arrêté (label retiré, issue fermée) ne doit
+    // pas être lancé par ce premier tick : on balaie les annulations avant, pas seulement toutes les 60 s.
+    await this.watchCancellations();
     await this.tick();
     await new Promise<void>((resolve) => {
       if (this.stopping) resolve();
