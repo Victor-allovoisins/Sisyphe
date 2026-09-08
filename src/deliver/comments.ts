@@ -1,5 +1,6 @@
 import type { TriageVerdict } from '../agent/schemas.js';
 import { EXAMPLE_REPO_CONFIG, REPO_CONFIG_FILENAME, type RepoConfigErrorKind } from '../config/repo.js';
+import { statusLabelName } from '../github/labels.js';
 import { fmtDuration } from '../util/time.js';
 import { sanitizeModelText } from './sanitize.js';
 
@@ -8,7 +9,7 @@ export function jobMarker(jobId: string): string {
 }
 
 function relaunch(trigger: string, status: 'blocked' | 'failed'): string {
-  return `Pour relancer : répondez dans cette issue si besoin, puis retirez le label \`${trigger}:${status}\` en laissant \`${trigger}\`.`;
+  return `Pour relancer : répondez dans cette issue si besoin, puis retirez le label \`${statusLabelName(trigger, status)}\` en laissant \`${trigger}\`.`;
 }
 
 export function renderTakeoverComment(jobId: string): string {
@@ -90,5 +91,5 @@ export function renderRestartComment(): string {
 }
 
 export function renderBudgetPauseComment(budgetUsd: number): string {
-  return `🪨 Budget quotidien atteint ($${budgetUsd}). Sisyphe reprendra demain.`;
+  return `🪨 Budget quotidien atteint ($${budgetUsd.toFixed(2)}). Sisyphe reprendra demain.`;
 }

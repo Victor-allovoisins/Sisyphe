@@ -3,7 +3,7 @@ import { emptyFlags, type Job, type Phase } from '../store/types.js';
 import type { VerifyResult } from '../verify/verify.js';
 import { jobMarker, renderBlockedComment, renderConfigProblemComment, renderDoneComment } from './comments.js';
 import { renderPrBody } from './pr-body.js';
-import { sanitizeModelText } from './sanitize.js';
+import { clampForGitHub, sanitizeCodeSpan, sanitizeModelText } from './sanitize.js';
 
 const job: Job = {
   id: 'job-1', repo: 'acme/demo', issueNumber: 7, issueTitle: 'Ajouter un bouton', state: 'delivering', attempt: 2, requeues: 0,
@@ -34,7 +34,7 @@ const phases: Phase[] = [
 describe('renderPrBody', () => {
   it('assemble toutes les sections dans l’ordre', () => {
     const body = renderPrBody({ job, report, verify, phases, prTemplate: '## Checklist\n- [ ] QA', costUsd: job.costUsd, durationMs: 200_000 });
-    const order = ['## Résumé', '## Changements', '## Décisions', '## Tests', "## Points d'attention", '## Suites à donner', '## Sisyphe', 'Closes #7', jobMarker('job-1'), '## Checklist'];
+    const order = ['## Résumé', '## Changements', '## Décisions', '## Tests', "## Points d'attention", '## Suites à donner', '## Sisyphe', 'Closes #7', jobMarker('job-1'), '\\## Checklist'];
     let last = -1;
     for (const marker of order) {
       const idx = body.indexOf(marker);
@@ -61,17 +61,43 @@ describe('renderPrBody', () => {
 });
 
 describe('sanitizeModelText', () => {
-  it('neutralise les mots-clés de fermeture et les commentaires HTML', () => {
+  it('neutralise toutes les formes de fermeture, les commentaires HTML même cassés, et les mentions', () => {
     expect(sanitizeModelText('Fixes #12 et closes #3, voir #4')).toBe('Fixes `#12` et closes `#3`, voir #4');
+    expect(sanitizeModelText('fixes acme/other#12, Fixes GH-12, fixes: #7')).toBe('fixes `acme/other#12`, Fixes `GH-12`, fixes: `#7`');
+    expect(sanitizeModelText('resolves https://github.com/o/r/issues/12')).toBe('resolves `https://github.com/o/r/issues/12`');
     expect(sanitizeModelText('a <!-- sisyphe:job:x --> b')).toBe('a  b');
-    expect(sanitizeModelText('Résolu par Resolves\n#7')).toBe('Résolu par Resolves\n`#7`');
+    expect(sanitizeModelText('a <!-- ouvert')).toBe('a  ouvert');
+    expect(sanitizeModelText('fermé --> b')).toBe('fermé  b');
+    expect(sanitizeModelText('ping @octocat et @org/team')).toBe('ping @​octocat et @​org/team');
+    expect(sanitizeModelText('ligne 1\nligne 2\r\n  ligne 3')).toBe('ligne 1 ligne 2 ligne 3');
   });
-  it('est appliqué au body de PR mais pas aux lignes de Sisyphe', () => {
-    const body = renderPrBody({ job, report: { ...report, summary: 'Closes #99 <!-- sisyphe:job:fake -->' }, verify, phases, prTemplate: null, costUsd: 1, durationMs: 1000 });
+  it('en mode multiligne, garde les paragraphes mais désarme en-têtes et règles horizontales', () => {
+    const out = sanitizeModelText("Résumé.\n\n## Points d'attention\n- rien\n---\n***", { multiline: true });
+    expect(out).toContain("\\## Points d'attention");
+    expect(out).toContain('\\---');
+    expect(out).toContain('\\***');
+    expect(out.split('\n')).toHaveLength(6);
+  });
+  it('sanitizeCodeSpan retire les backticks', () => {
+    expect(sanitizeCodeSpan('a`b\nc')).toBe('ab c');
+  });
+  it('clampForGitHub préserve la fin', () => {
+    const body = `${'x'.repeat(70_000)}\nCloses #7\n<!-- sisyphe:job:1 -->`;
+    const out = clampForGitHub(body);
+    expect(out.length).toBeLessThanOrEqual(60_000);
+    expect(out.endsWith('Closes #7\n<!-- sisyphe:job:1 -->')).toBe(true);
+    expect(out).toContain('caractères coupés');
+    expect(clampForGitHub('court')).toBe('court');
+  });
+  it('est appliqué au body de PR et au template mais pas aux lignes de Sisyphe', () => {
+    const body = renderPrBody({ job, report: { ...report, summary: 'Closes #99 <!-- sisyphe:job:fake -->', risks: [...report.risks, "\n## Points d'attention forgés"] }, verify, phases, prTemplate: '## Checklist\nCloses #5', costUsd: 1, durationMs: 1000 });
     expect(body).toContain('Closes `#99`');
     expect(body).not.toContain('sisyphe:job:fake');
+    expect(body).not.toContain("\n## Points d'attention forgés");
+    expect(body).toContain('Closes `#5`');
     expect(body).toContain('Closes #7');
     expect(body).toContain(jobMarker('job-1'));
+    expect(body.indexOf('⚠️')).toBeLessThan(body.indexOf('Vérifier le dark mode'));
   });
 });
 
