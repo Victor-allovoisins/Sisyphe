@@ -1,7 +1,7 @@
 import type { JobState } from '../store/types.js';
 
-const TRANSITIONS: Record<JobState, readonly JobState[]> = {
-  queued: ['triaging', 'cancelled'],
+export const ALLOWED_TRANSITIONS: Record<JobState, readonly JobState[]> = {
+  queued: ['triaging', 'cancelled', 'failed'],
   triaging: ['implementing', 'blocked', 'failed', 'cancelled', 'queued'],
   implementing: ['verifying', 'failed', 'cancelled', 'queued'],
   verifying: ['implementing', 'delivering', 'blocked', 'failed', 'cancelled', 'queued'],
@@ -20,7 +20,7 @@ export class InvalidTransitionError extends Error {
 }
 
 export function canTransition(from: JobState, to: JobState): boolean {
-  return TRANSITIONS[from].includes(to);
+  return ALLOWED_TRANSITIONS[from].includes(to);
 }
 
 export function assertTransition(from: JobState, to: JobState): void {

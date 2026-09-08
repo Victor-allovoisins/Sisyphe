@@ -7,7 +7,6 @@ export const JOB_STATES = [
 export type JobState = (typeof JOB_STATES)[number];
 
 export const TERMINAL_STATES: ReadonlySet<JobState> = new Set<JobState>(['done', 'blocked', 'failed', 'cancelled']);
-export const RUNNING_STATES: readonly JobState[] = ['triaging', 'implementing', 'verifying', 'delivering'];
 
 export function isTerminal(state: JobState): boolean {
   return TERMINAL_STATES.has(state);
@@ -23,6 +22,11 @@ export interface JobFlags {
 
 export function emptyFlags(): JobFlags {
   return { verificationFailed: false, protectedPathsTouched: [], largeDiff: false, secretsFound: [], earlyStop: null };
+}
+
+/** Désérialise `flags_json` en complétant les champs absents d'une ligne écrite par une version antérieure. */
+export function parseFlags(json: string): JobFlags {
+  return { ...emptyFlags(), ...(JSON.parse(json) as Partial<JobFlags>) };
 }
 
 export interface AgentUsage {

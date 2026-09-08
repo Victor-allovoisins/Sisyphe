@@ -1,36 +1,54 @@
 import { describe, expect, it } from 'vitest';
-import { InvalidTransitionError, assertTransition, canTransition } from './state.js';
-import { isTerminal } from '../store/types.js';
+import { JOB_STATES, emptyFlags, isTerminal, parseFlags, type JobState } from '../store/types.js';
+import { ALLOWED_TRANSITIONS, InvalidTransitionError, assertTransition, canTransition } from './state.js';
+
+/** Matrice attendue, écrite indépendamment de la table : toute modification de la table doit se voir ici. */
+const EXPECTED: Record<JobState, JobState[]> = {
+  queued: ['triaging', 'cancelled', 'failed'],
+  triaging: ['implementing', 'blocked', 'failed', 'cancelled', 'queued'],
+  implementing: ['verifying', 'failed', 'cancelled', 'queued'],
+  verifying: ['implementing', 'delivering', 'blocked', 'failed', 'cancelled', 'queued'],
+  delivering: ['done', 'failed', 'cancelled', 'queued'],
+  done: [],
+  blocked: [],
+  failed: [],
+  cancelled: [],
+};
 
 describe('transitions', () => {
-  it('suit le chemin nominal', () => {
-    expect(canTransition('queued', 'triaging')).toBe(true);
-    expect(canTransition('triaging', 'implementing')).toBe(true);
-    expect(canTransition('implementing', 'verifying')).toBe(true);
-    expect(canTransition('verifying', 'implementing')).toBe(true); // retry
-    expect(canTransition('verifying', 'delivering')).toBe(true);
-    expect(canTransition('delivering', 'done')).toBe(true);
-    expect(canTransition('delivering', 'failed')).toBe(true);
-  });
-
-  it('autorise le requeue depuis les états interrompus', () => {
-    for (const from of ['triaging', 'implementing', 'verifying', 'delivering'] as const) {
-      expect(canTransition(from, 'queued')).toBe(true);
+  it('correspond exactement à la matrice attendue sur les 81 paires', () => {
+    for (const from of JOB_STATES) {
+      for (const to of JOB_STATES) {
+        expect(canTransition(from, to), `${from} → ${to}`).toBe(EXPECTED[from].includes(to));
+      }
     }
   });
 
-  it('autorise cancelled depuis tout état actif et rien depuis un terminal', () => {
-    for (const from of ['queued', 'triaging', 'implementing', 'verifying', 'delivering'] as const) {
-      expect(canTransition(from, 'cancelled')).toBe(true);
-    }
-    for (const from of ['done', 'blocked', 'failed', 'cancelled'] as const) {
-      expect(isTerminal(from)).toBe(true);
-      expect(canTransition(from, 'queued')).toBe(false);
+  it('les états terminaux sont exactement ceux sans sortie', () => {
+    for (const s of JOB_STATES) {
+      expect(isTerminal(s), s).toBe(ALLOWED_TRANSITIONS[s].length === 0);
     }
   });
 
-  it('refuse les sauts', () => {
-    expect(canTransition('queued', 'done')).toBe(false);
-    expect(() => assertTransition('queued', 'done')).toThrow(InvalidTransitionError);
+  it('assertTransition ne lève que sur une paire interdite, avec from et to', () => {
+    expect(() => assertTransition('queued', 'triaging')).not.toThrow();
+    let caught: unknown;
+    try {
+      assertTransition('queued', 'done');
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(InvalidTransitionError);
+    const e = caught as InvalidTransitionError;
+    expect(e.from).toBe('queued');
+    expect(e.to).toBe('done');
+    expect(e.message).toContain('queued → done');
+  });
+});
+
+describe('parseFlags', () => {
+  it('complète les champs manquants et conserve les valeurs présentes', () => {
+    expect(parseFlags('{"largeDiff":true}')).toEqual({ ...emptyFlags(), largeDiff: true });
+    expect(parseFlags(JSON.stringify(emptyFlags()))).toEqual(emptyFlags());
   });
 });
