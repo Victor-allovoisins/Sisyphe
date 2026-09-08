@@ -26,20 +26,24 @@ export async function pollOnce(d: PollDeps): Promise<Job[]> {
     }
     for (const ref of candidates) {
       if (d.store.findActiveByIssue(full, ref.number)) continue;
+      let step: 'canTrigger' | 'refuse' | 'getIssue' | 'create' = 'canTrigger';
       try {
         const check = await d.source.canTrigger(ref);
         if (!check.ok) {
           d.log.warn({ repo: full, issue: ref.number, login: check.login }, "poll : label posé sans droit d'écriture");
-          await d.source.comment(ref, renderPermissionDeniedComment(check.login, d.machine.triggerLabel));
+          step = 'refuse';
           await d.source.removeTriggerLabel(ref);
+          await d.source.comment(ref, renderPermissionDeniedComment(check.login, d.machine.triggerLabel));
           continue;
         }
+        step = 'getIssue';
         const issue = await d.source.getIssue(ref);
+        step = 'create';
         const job = d.store.create({ repo: full, issueNumber: ref.number, issueTitle: issue.title });
         d.log.info({ jobId: job.id, repo: full, issue: ref.number }, 'poll : nouveau job');
         created.push(job);
       } catch (err) {
-        d.log.warn({ err, repo: full, issue: ref.number }, 'poll : issue ignorée');
+        d.log.warn({ err, repo: full, issue: ref.number, step }, 'poll : issue ignorée');
       }
     }
   }

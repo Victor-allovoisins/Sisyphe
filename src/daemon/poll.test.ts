@@ -1,5 +1,5 @@
 import pino from 'pino';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { FakeIssueSource } from '../../test/fakes/fake-issue-source.js';
 import { parseMachineConfig } from '../config/machine.js';
 import { parseRepo } from '../github/source.js';
@@ -35,5 +35,63 @@ describe('pollOnce', () => {
     source.listCandidates = async () => { throw new Error('rate limit'); };
     const store = new JobStore(openDatabase(':memory:'));
     await expect(pollOnce({ source, store, machine, log: pino({ level: 'silent' }) })).resolves.toEqual([]);
+  });
+
+  it("réessaie le retrait du label sans jamais commenter deux fois si removeTriggerLabel échoue une fois", async () => {
+    const source = new FakeIssueSource();
+    source.addIssue(repo, { number: 2, title: 'refusé', labeledBy: 'mallory' });
+    const originalRemove = source.removeTriggerLabel.bind(source);
+    let calls = 0;
+    source.removeTriggerLabel = async (ref) => {
+      calls += 1;
+      if (calls === 1) throw new Error('403 transitoire');
+      return originalRemove(ref);
+    };
+    const store = new JobStore(openDatabase(':memory:'));
+    const deps = { source, store, machine, log: pino({ level: 'silent' }) };
+
+    await pollOnce(deps);
+    expect(source.labelsOf({ repo, number: 2 })).toEqual(['sisyphe']);
+    expect(source.commentsOf({ repo, number: 2 })).toEqual([]);
+
+    await pollOnce(deps);
+    expect(source.labelsOf({ repo, number: 2 })).toEqual([]);
+    expect(source.commentsOf({ repo, number: 2 })).toHaveLength(1);
+    expect(source.commentsOf({ repo, number: 2 })[0]).toContain('@mallory');
+  });
+
+  it("une erreur de listing sur un repo n'empêche pas la création d'un job sur un autre", async () => {
+    const machineMulti = parseMachineConfig(
+      'github:\n  appId: 1\n  installationId: 1\n  privateKeyPath: /x\nrepos:\n  - acme/demo\n  - acme/other\n',
+    );
+    const repoB = parseRepo('acme/other');
+    const source = new FakeIssueSource();
+    source.permissions.alice = 'write';
+    source.addIssue(repoB, { number: 5, title: 'ok-b', labeledBy: 'alice' });
+    const originalListCandidates = source.listCandidates.bind(source);
+    source.listCandidates = async (r) => {
+      if (r.full === repo.full) throw new Error('rate limit');
+      return originalListCandidates(r);
+    };
+    const store = new JobStore(openDatabase(':memory:'));
+    const deps = { source, store, machine: machineMulti, log: pino({ level: 'silent' }) };
+
+    const created = await pollOnce(deps);
+    expect(created).toHaveLength(1);
+    expect(created[0].repo).toBe(repoB.full);
+    expect(created[0].issueNumber).toBe(5);
+  });
+
+  it("une violation de l'index unique jobs_active_issue est bénigne : pas de rejet, pas de doublon", async () => {
+    const source = new FakeIssueSource();
+    source.permissions.alice = 'write';
+    source.addIssue(repo, { number: 7, title: 'dup', labeledBy: 'alice' });
+    const store = new JobStore(openDatabase(':memory:'));
+    store.create({ repo: repo.full, issueNumber: 7, issueTitle: 'déjà actif' });
+    vi.spyOn(store, 'findActiveByIssue').mockReturnValue(null);
+    const deps = { source, store, machine, log: pino({ level: 'silent' }) };
+
+    await expect(pollOnce(deps)).resolves.toEqual([]);
+    expect(store.listActive()).toHaveLength(1);
   });
 });
