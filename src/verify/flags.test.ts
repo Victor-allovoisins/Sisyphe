@@ -5,8 +5,9 @@ describe('flags', () => {
   it('matche les globs de chemins protégés, y compris dotfiles', () => {
     const files = ['App/Config.xcconfig', 'fastlane/Fastfile', '.github/workflows/ci.yml', 'Sources/A.swift'];
     expect(matchProtectedPaths(files, ['**/*.xcconfig', 'fastlane/**', '.github/**'])).toEqual(['App/Config.xcconfig', 'fastlane/Fastfile', '.github/workflows/ci.yml']);
-    expect(matchProtectedPaths(files, [])).toEqual([]);
+    expect(matchProtectedPaths(files, [])).toEqual(['.github/workflows/ci.yml']);
     expect(matchProtectedPaths(['App/Config.XCCONFIG'], ['**/*.xcconfig'])).toEqual(['App/Config.XCCONFIG']);
+    expect(matchProtectedPaths(['.claude/settings.json', '.mcp.json', 'sisyphe.yml', 'src/a.ts'], [])).toEqual(['.claude/settings.json', '.mcp.json', 'sisyphe.yml']);
   });
   it('détecte un gros diff strictement au-dessus du seuil', () => {
     expect(isLargeDiff(800, 800)).toBe(false);

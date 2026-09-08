@@ -26,6 +26,7 @@ describe('decidePath', () => {
     const d = decidePath(wt, `${wt}/App/Config.xcconfig`, ['**/*.xcconfig']);
     expect(d.allowed).toBe(false);
     expect(d.allowed === false && d.reason).toContain('protégé');
+    expect(decidePath(wt, '.claude/settings.json', []).allowed).toBe(false);
   });
   it('refuse un worktree vide', () => {
     expect(() => decidePath('', 'x', [])).toThrow(/vide/);

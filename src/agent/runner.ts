@@ -12,6 +12,7 @@ export interface AgentRunOptions {
   maxTurns: number;
   maxBudgetUsd: number;
   resumeSessionId?: string;
+  /** Liste blanche : seuls ces outils existent pour l'agent (option SDK `tools`) et ils sont auto-approuvés (option `allowedTools`). */
   allowedTools: string[];
   disallowedTools: string[];
   hooks?: Options['hooks'];
@@ -33,7 +34,7 @@ export interface AgentResult<T> {
   durationMs: number;
   stopReason: AgentStopReason;
   transcriptPath: string;
-  /** Détail quand stopReason vaut 'error' (message SDK ou erreurs du result). */
+  /** Détail SDK quand la session ne s'est pas terminée normalement (erreur, limite, timeout) ; absent sinon. */
   errorMessage?: string;
 }
 
