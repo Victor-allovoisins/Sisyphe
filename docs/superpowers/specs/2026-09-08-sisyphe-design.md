@@ -289,7 +289,7 @@ Fichiers par job dans `~/.sisyphe/jobs/<id>/` : `transcript-<phase>-<attempt>.js
 
 Suivi des PR : toutes les heures, pour les jobs `done` ou `failed` dont la PR est encore ouverte et a moins de 30 jours, mise à jour de `pr_state` et `pr_merged_at`. C'est ce qui alimente le taux de merge, le KPI principal du business case.
 
-Logs du daemon : pino JSON dans `~/.sisyphe/logs/daemon.log`, rotation quotidienne, 14 jours conservés.
+Logs du daemon : pino JSON sur stdout et dans `~/.sisyphe/logs/daemon-YYYY-MM-DD.log`, un fichier par démarrage du daemon nommé par sa date de lancement (pas de rotation à minuit : un daemon qui tourne plusieurs jours écrit dans le même fichier) ; écriture synchrone pour ne rien perdre sur SIGKILL ; les fichiers de plus de 14 jours (mtime) sont purgés toutes les heures.
 
 ## 7. CLI
 
