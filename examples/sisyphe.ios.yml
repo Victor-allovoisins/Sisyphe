@@ -1,0 +1,45 @@
+# À copier à la racine d'ILokYou-iOS sous le nom sisyphe.yml, sur la branche develop.
+# Vérifier le nom du scheme dans project.yml et le device disponible sur la machine Sisyphe.
+baseBranch: develop
+branchPrefix: feature/
+commands:
+  setup: xcodegen generate
+  build: >-
+    xcodebuild build -scheme AlloVoisins
+    -destination 'platform=iOS Simulator,name=iPhone 17'
+    -derivedDataPath "$SISYPHE_CACHE_DIR/DerivedData"
+    -quiet
+  test: >-
+    xcodebuild test -scheme AlloVoisins
+    -destination 'platform=iOS Simulator,name=iPhone 17'
+    -derivedDataPath "$SISYPHE_CACHE_DIR/DerivedData"
+    -quiet
+protectedPaths:
+  - "**/*.xcconfig"
+  - "**/*.entitlements"
+  - "**/GoogleService-Info.plist"
+  - "fastlane/**"
+  - ".github/**"
+  - "project.yml"
+models:
+  triage: claude-sonnet-5
+  implement: claude-opus-5
+budget:
+  triageUsd: 1
+  implementUsd: 8
+limits:
+  maxAttempts: 3
+  maxDiffLines: 800
+  maxFilesEstimate: 15
+timeouts:
+  triageMinutes: 10
+  implementMinutes: 60
+  verifyMinutes: 40
+pr:
+  labels: [sisyphe]
+  reviewers: []
+  draft: false
+instructions: |
+  Swift et SwiftUI uniquement, pas d'UIKit nouveau. Respecter l'architecture décrite dans CLAUDE.md.
+  Pour un test ciblé : xcodebuild test -scheme AlloVoisins -only-testing:<Target>/<Classe> avec les mêmes options.
+  Ne jamais toucher aux fichiers de localisation .xcstrings à la main : passer par le tooling décrit dans CLAUDE.md.
