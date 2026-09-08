@@ -21,8 +21,12 @@ export const SISYPHE_AUTHOR = { name: 'Sisyphe', email: 'sisyphe[bot]@users.nore
 /** Namespace du miroir où vivent les branches de base : jamais extraites dans un worktree, donc toujours rafraîchissables. */
 export const BASE_REF_PREFIX = 'refs/sisyphe/base/';
 
-/** Environnement hermétique : ni config globale ni système (gpgsign, hooks, insteadOf, credential helper), pas de prompt. */
+/**
+ * Environnement hermétique : ni config globale ni système (gpgsign, hooks, insteadOf, credential helper), pas de prompt.
+ * LC_ALL=C : messages git en anglais, stables pour le matching.
+ */
 const GIT_ENV = {
+  LC_ALL: 'C',
   GIT_TERMINAL_PROMPT: '0',
   GIT_CONFIG_GLOBAL: '/dev/null',
   GIT_CONFIG_SYSTEM: '/dev/null',
