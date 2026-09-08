@@ -44,6 +44,15 @@ describe('runJob', () => {
     expect(h.agent.calls[1].prompt).toContain('1. créer src/feature.txt');
   });
 
+  it('accumule durationMs au lieu de l’écraser (cas d’un job requeué)', async () => {
+    const h = await makeHarness({ steps: [{ output: readyVerdict }, { output: report('Créé'), sideEffect: writeFeature('hello\n') }] });
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    h.store.update(job.id, { durationMs: 3_600_000 });
+    const done = await runJob(job.id, h.deps, signal());
+    expect(done.state).toBe('done');
+    expect(done.durationMs).toBeGreaterThan(3_600_000);
+  });
+
   it('triage non concluant : blocked avec questions', async () => {
     const h = await makeHarness({ steps: [{ output: { ...readyVerdict, verdict: 'needs_clarification', questions: ['Quel écran ?'] } }] });
     const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });

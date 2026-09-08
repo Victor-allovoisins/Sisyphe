@@ -70,7 +70,10 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
   const dir = jobDirFor(deps.paths, job.id);
   const startedAt = Date.now();
   const elapsed = () => Date.now() - startedAt;
-  const finish = (state: JobState, patch: JobPatch = {}) => store.transition(job.id, state, { ...patch, durationMs: elapsed() });
+  const finish = (state: JobState, patch: JobPatch = {}) => {
+    const current = store.get(job.id) ?? job;
+    return store.transition(job.id, state, { ...patch, durationMs: (current.durationMs ?? 0) + elapsed() });
+  };
   const record = (res: AgentResult<unknown>) => {
     job = store.update(job.id, {
       costUsd: job.costUsd + res.costUsd,
