@@ -47,6 +47,19 @@ describe('createLogger', () => {
     const parsed = JSON.parse(lines[0]) as { msg: string };
     expect(parsed.msg).toBe('doit apparaître');
   });
+
+  it('dégrade en stdout si le fichier de log ne peut pas être ouvert', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sisyphe-log-'));
+    const day = new Date().toISOString().slice(0, 10);
+    // Un dossier au chemin exact du fichier attendu provoque EISDIR à l'ouverture.
+    await mkdir(join(dir, `daemon-${day}.log`));
+
+    let log!: ReturnType<typeof createLogger>;
+    expect(() => {
+      log = createLogger({ logsDir: dir });
+    }).not.toThrow();
+    expect(() => log.info('x')).not.toThrow();
+  });
 });
 
 describe('purgeOldFiles', () => {

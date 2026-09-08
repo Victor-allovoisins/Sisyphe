@@ -63,8 +63,11 @@ export class Daemon {
     });
   }
 
-  /** Arrêt propre, idempotent : tout appelant reçoit la même promesse, résolue une fois le premier arrêt terminé. */
-  async stop(): Promise<void> {
+  /**
+   * Arrêt propre, idempotent : tout appelant reçoit la même promesse, résolue une fois le premier arrêt terminé.
+   * Pas de `async` ici : il renverrait un nouveau wrapper à chaque appel au lieu de la promesse mémoïsée elle-même.
+   */
+  stop(): Promise<void> {
     return (this.stopped ??= this.doStop());
   }
 

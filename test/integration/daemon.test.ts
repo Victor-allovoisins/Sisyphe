@@ -116,7 +116,9 @@ describe('Daemon', () => {
       agentEntered,
       new Promise((_resolve, reject) => setTimeout(() => reject(new Error("l'agent n'a jamais démarré")), 2000)),
     ]);
-    await Promise.all([daemon.stop(), daemon.stop()]);
+    const s1 = daemon.stop();
+    expect(daemon.stop()).toBe(s1);
+    await s1;
     await started;
 
     const job = h.store.listRecent(1)[0];
@@ -133,6 +135,17 @@ describe('Daemon', () => {
     });
     const daemon = new Daemon(h.deps);
     await daemon.runOnce();
+
+    // Épingle la clé par issue plutôt que par job : on annule le job en attente puis on en recrée un
+    // nouveau (id différent) sur la même issue ; le budget étant toujours dépassé, un seul commentaire doit sortir.
+    const queuedBefore = h.store.listByStates(['queued']);
+    expect(queuedBefore.map((j) => j.issueNumber)).toEqual([8]);
+    h.store.transition(queuedBefore[0].id, 'cancelled');
+    await pollOnce(h.deps);
+    const queuedAfter = h.store.listByStates(['queued']);
+    expect(queuedAfter.map((j) => j.issueNumber)).toEqual([8]);
+    expect(queuedAfter[0].id).not.toBe(queuedBefore[0].id);
+
     await daemon.runOnce();
     const comments = h.source.commentsOf({ repo: repoRef, number: 8 }).filter((c) => c.toLowerCase().includes('budget'));
     expect(comments).toHaveLength(1);
