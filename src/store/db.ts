@@ -1,7 +1,9 @@
 import { DatabaseSync } from 'node:sqlite';
+import { JOB_STATES, TERMINAL_STATES } from './types.js';
 
-const STATES = "'queued','triaging','implementing','verifying','delivering','done','blocked','failed','cancelled'";
-const TERMINALS = "'done','blocked','failed','cancelled'";
+const sqlList = (values: Iterable<string>) => [...values].map((s) => `'${s}'`).join(',');
+const STATES = sqlList(JOB_STATES);
+const TERMINALS = sqlList(TERMINAL_STATES);
 
 const MIGRATIONS: readonly string[] = [
   `
