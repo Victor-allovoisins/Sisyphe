@@ -1,0 +1,18 @@
+import { describe, expect, it } from 'vitest';
+import { renderPlist } from './launchd.js';
+
+describe('renderPlist', () => {
+  it('produit un plist launchd complet et échappé', () => {
+    const p = renderPlist({
+      label: 'com.sisyphe.daemon', nodePath: '/opt/homebrew/bin/node', scriptPath: '/x/dist/cli/index.js',
+      dataDir: '/Users/v/.sisyphe', logsDir: '/Users/v/.sisyphe/logs', env: { ANTHROPIC_API_KEY: 'sk-<a&b>', PATH: '/bin' },
+    });
+    expect(p).toContain('<key>Label</key><string>com.sisyphe.daemon</string>');
+    expect(p).toContain('<string>/x/dist/cli/index.js</string>');
+    expect(p).toContain('<string>start</string>');
+    expect(p).toContain('<key>ANTHROPIC_API_KEY</key>');
+    expect(p).toContain('<string>sk-&lt;a&amp;b&gt;</string>');
+    expect(p).toContain('<key>KeepAlive</key><true/>');
+    expect(p).toContain('/Users/v/.sisyphe/logs/launchd.err.log');
+  });
+});
