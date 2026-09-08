@@ -152,4 +152,45 @@ describe('reconcile', () => {
     expect(h.source.labelsOf({ repo: repoRef, number: 7 })).toContain('sisyphe:failed');
     expect(existsSync(wt.worktreePath)).toBe(true);
   });
+
+  it('corrige un label in-progress resté en place quand le job est déjà done avec une PR ouverte', async () => {
+    const h = await makeHarness({ steps: [] });
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 't' });
+    h.store.transition(job.id, 'triaging');
+    h.store.transition(job.id, 'implementing', { branch: 'feature/issue-7-t' });
+    h.store.transition(job.id, 'verifying');
+    h.store.transition(job.id, 'delivering');
+    h.store.transition(job.id, 'done', { prNumber: 100, prUrl: 'https://example.test/pr/100', prState: 'open', branch: 'feature/issue-7-t' });
+    // Livraison réussie mais le setStatus final avait échoué (warning côté deliver) : le label est resté en place.
+    await h.source.setStatus({ repo: repoRef, number: 7 }, 'in-progress');
+
+    await reconcile(h.deps);
+    const j = h.store.get(job.id)!;
+    expect(j.state).toBe('done');
+    const labels = h.source.labelsOf({ repo: repoRef, number: 7 });
+    expect(labels).toContain('sisyphe:done');
+    expect(labels).not.toContain('sisyphe:in-progress');
+    const comments = h.source.commentsOf({ repo: repoRef, number: 7 });
+    expect(comments.some((c) => c.includes('redémarré'))).toBe(false);
+  });
+
+  it('corrige un label in-progress resté en place quand le job est déjà failed avec une PR ouverte', async () => {
+    const h = await makeHarness({ steps: [] });
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 't' });
+    h.store.transition(job.id, 'triaging');
+    h.store.transition(job.id, 'implementing', { branch: 'feature/issue-7-t' });
+    h.store.transition(job.id, 'verifying');
+    h.store.transition(job.id, 'delivering');
+    h.store.transition(job.id, 'failed', { prNumber: 100, prUrl: 'https://example.test/pr/100', prState: 'open', branch: 'feature/issue-7-t' });
+    await h.source.setStatus({ repo: repoRef, number: 7 }, 'in-progress');
+
+    await reconcile(h.deps);
+    const j = h.store.get(job.id)!;
+    expect(j.state).toBe('failed');
+    const labels = h.source.labelsOf({ repo: repoRef, number: 7 });
+    expect(labels).toContain('sisyphe:failed');
+    expect(labels).not.toContain('sisyphe:in-progress');
+    const comments = h.source.commentsOf({ repo: repoRef, number: 7 });
+    expect(comments.some((c) => c.includes('redémarré'))).toBe(false);
+  });
 });
