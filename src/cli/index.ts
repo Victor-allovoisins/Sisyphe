@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import { cancelCommand } from './commands/cancel.js';
 import { doctorCommand } from './commands/doctor.js';
 import { logsCommand } from './commands/logs.js';
@@ -7,6 +7,9 @@ import { reportCommand } from './commands/report.js';
 import { setupCommand } from './commands/setup.js';
 import { startCommand } from './commands/start.js';
 import { statusCommand } from './commands/status.js';
+
+/** Les seules valeurs que produit réellement le pipeline (voir jobs/pipeline.ts, verify/verify.ts) : pas de phase `deliver` (elle n'écrit pas de fichier dédié dans le jobDir). */
+const PHASES = ['triage', 'implement', 'setup', 'verify'] as const;
 
 const program = new Command('sisyphe')
   .description('Transforme des issues GitHub en pull requests avec un agent Claude')
@@ -18,10 +21,15 @@ program
   .command('logs')
   .description("Transcript et logs d'un job")
   .argument('<jobId>', 'id complet ou préfixe')
-  .option('--phase <name>', 'triage | implement | verify | deliver | setup')
+  .addOption(new Option('--phase <name>', 'triage | implement | setup | verify').choices(PHASES))
   .option('--raw', 'fichiers bruts')
   .action(logsCommand);
-program.command('report').description('KPI en markdown').option('--since <durée>', 'ex. 30d, 2w, 12h', '30d').option('--repo <owner/repo>').action(reportCommand);
+program
+  .command('report')
+  .description('KPI en markdown')
+  .option('--since <durée>', 'ex. 30d, 2w, 12h', '30d')
+  .option('--repo <owner/repo>', 'ne garder que ce repo')
+  .action(reportCommand);
 program.command('cancel').description('Annule un job actif en retirant le label trigger').argument('<jobId>').action(cancelCommand);
 program.command('doctor').description("Vérifie l'installation").action(doctorCommand);
 program.command('setup').description('Configuration interactive et installation launchd').action(setupCommand);
