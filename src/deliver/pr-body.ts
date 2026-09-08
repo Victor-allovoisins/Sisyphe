@@ -10,6 +10,7 @@ export interface PrBodyInput {
   report: ImplementationReport;
   verify: VerifyResult;
   phases: Phase[];
+  /** Template de PR du repo lu sur la branche de base par le pipeline ; null s'il n'y en a pas. */
   prTemplate: string | null;
   costUsd: number;
   durationMs: number;
@@ -71,8 +72,9 @@ export function renderPrBody(i: PrBodyInput): string {
     lines.push(`- ${p.name} (tentative ${p.attempt}, ${p.model ?? '?'}) : $${p.costUsd.toFixed(2)}, ${p.numTurns} tours`);
   }
   lines.push(`- Total : $${i.costUsd.toFixed(2)}, ${fmtDuration(i.durationMs)}, ${job.attempt} tentative(s)`, '');
+  // Template du repo, lu sur la branche de base (pas dans le worktree modifié par l'agent) : contenu de confiance, inséré tel quel.
+  if (i.prTemplate?.trim()) lines.push('---', '', i.prTemplate.trim(), '');
+  // Toujours en dernier : clampForGitHub préserve la fin du corps.
   lines.push(`Closes #${job.issueNumber}`, '', jobMarker(job.id));
-  // Le template vient du worktree après le passage de l'agent (fichier PR template versionné, possiblement modifié) : il n'est pas de confiance.
-  if (i.prTemplate?.trim()) lines.push('', '---', '', sanitizeModelText(i.prTemplate.trim(), { multiline: true }));
   return lines.join('\n');
 }
