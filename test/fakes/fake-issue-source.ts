@@ -8,14 +8,18 @@ export interface FakeIssueInput {
   title: string;
   body?: string;
   author?: string;
+  /** Remplace la liste par défaut `[triggerLabel]` : passer `[triggerLabel, ...]` pour la compléter. */
   labels?: string[];
   comments?: Issue['comments'];
-  labeledBy?: string;
+  /** null simule l'absence d'événement `labeled` du label trigger ; omis, retombe sur `author`. */
+  labeledBy?: string | null;
   state?: 'open' | 'closed';
 }
 
 export interface FakePull {
   number: number;
+  /** Nom complet du repo (owner/name), pour isoler les PR entre repos homonymes de branche. */
+  repo: string;
   url: string;
   title: string;
   head: string;
@@ -34,7 +38,7 @@ export class FakeIssueSource implements IssueSource {
   readonly issues = new Map<string, StoredIssue>();
   readonly comments = new Map<string, string[]>();
   readonly pulls: FakePull[] = [];
-  readonly permissions: Record<string, 'admin' | 'write' | 'read'> = {};
+  readonly permissions: Record<string, 'admin' | 'write' | 'maintain' | 'read'> = {};
   readonly calls: string[] = [];
   readonly labelsEnsured: string[] = [];
   defaultBranch = 'main';
@@ -55,10 +59,10 @@ export class FakeIssueSource implements IssueSource {
 
   addIssue(repo: RepoRef, input: FakeIssueInput): void {
     const author = input.author ?? 'alice';
-    this.issues.set(`${repo.full}#${input.number}`, {
+    this.issues.set(this.key({ repo, number: input.number }), {
       repo, number: input.number, title: input.title, body: input.body ?? '', author,
       state: input.state ?? 'open', labels: input.labels ?? [this.triggerLabel], comments: input.comments ?? [],
-      labeledBy: input.labeledBy ?? author,
+      labeledBy: 'labeledBy' in input ? (input.labeledBy ?? null) : author,
     });
   }
 
@@ -91,10 +95,11 @@ export class FakeIssueSource implements IssueSource {
   async canTrigger(ref: IssueRef): Promise<TriggerCheck> {
     const login = this.stored(ref).labeledBy;
     const p = login ? this.permissions[login] : undefined;
-    return { ok: p === 'admin' || p === 'write', login };
+    return { ok: p === 'admin' || p === 'write' || p === 'maintain', login };
   }
 
   async removeTriggerLabel(ref: IssueRef): Promise<void> {
+    this.calls.push('removeTriggerLabel');
     const i = this.stored(ref);
     i.labels = i.labels.filter((l) => l !== this.triggerLabel);
   }
@@ -127,28 +132,30 @@ export class FakeIssueSource implements IssueSource {
   }
 
   async openPullRequest(input: PullRequestInput): Promise<PullRef> {
+    this.calls.push('openPullRequest');
     const number = this.nextPr++;
     const url = `https://github.com/${input.repo.full}/pull/${number}`;
     this.pulls.push({
-      number, url, title: input.title, head: input.head, base: input.base, body: input.body, draft: input.draft,
+      number, repo: input.repo.full, url, title: input.title, head: input.head, base: input.base, body: input.body, draft: input.draft,
       labels: [...input.labels], reviewers: [...input.reviewers], state: 'open', mergedAt: null,
     });
     return { repo: input.repo, number, url };
   }
 
   async updatePullRequest(ref: PullRef, patch: { title: string; body: string; draft: boolean }): Promise<void> {
-    const pr = this.pulls.find((p) => p.number === ref.number);
+    this.calls.push('updatePullRequest');
+    const pr = this.pulls.find((p) => p.repo === ref.repo.full && p.number === ref.number);
     if (!pr) throw new Error(`PR inconnue : ${ref.number}`);
     Object.assign(pr, patch);
   }
 
   async findPullRequest(repo: RepoRef, headBranch: string): Promise<PullRef | null> {
-    const pr = this.pulls.find((p) => p.head === headBranch && p.state === 'open');
+    const pr = this.pulls.find((p) => p.repo === repo.full && p.head === headBranch && p.state === 'open');
     return pr ? { repo, number: pr.number, url: pr.url } : null;
   }
 
   async getPullRequestState(ref: PullRef): Promise<PullRequestState> {
-    const pr = this.pulls.find((p) => p.number === ref.number);
+    const pr = this.pulls.find((p) => p.repo === ref.repo.full && p.number === ref.number);
     if (!pr) throw new Error(`PR inconnue : ${ref.number}`);
     return { state: pr.state, mergedAt: pr.mergedAt };
   }

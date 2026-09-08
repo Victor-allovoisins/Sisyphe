@@ -26,4 +26,17 @@ describe('FakeIssueSource', () => {
     expect(await s.canTrigger({ repo, number: 1 })).toEqual({ ok: true, login: 'alice' });
     expect(await s.canTrigger({ repo, number: 2 })).toEqual({ ok: false, login: 'mallory' });
   });
+
+  it('isole les PR par repo et accepte maintain', async () => {
+    const s = new FakeIssueSource();
+    const other = parseRepo('acme/other');
+    await s.openPullRequest({ repo, title: 'a', head: 'feature/issue-7-x', base: 'main', body: '', draft: false, labels: [], reviewers: [] });
+    expect(await s.findPullRequest(other, 'feature/issue-7-x')).toBeNull();
+    expect((await s.findPullRequest(repo, 'feature/issue-7-x'))?.number).toBe(100);
+    s.permissions.carol = 'maintain';
+    s.addIssue(repo, { number: 3, title: 'c', labeledBy: 'carol' });
+    s.addIssue(repo, { number: 4, title: 'd', labeledBy: null });
+    expect((await s.canTrigger({ repo, number: 3 })).ok).toBe(true);
+    expect(await s.canTrigger({ repo, number: 4 })).toEqual({ ok: false, login: null });
+  });
 });
