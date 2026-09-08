@@ -45,6 +45,11 @@ describe('safeText', () => {
     expect(safeText('abcdef', 4)).toBe('abc…');
     expect(safeText('  déjà propre  ', 100)).toBe('déjà propre');
   });
+
+  it("ne laisse pas de double espace quand un caractère de contrôle isolé est entouré d'espaces", () => {
+    const esc = String.fromCharCode(27);
+    expect(safeText(`a ${esc} b`, 100)).toBe('a b');
+  });
 });
 
 describe('summarizeTranscript', () => {

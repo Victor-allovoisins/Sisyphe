@@ -19,7 +19,9 @@ export function safeText(s: string, max: number): string {
   for (const ch of collapsed) {
     if (!isControlCodePoint(ch.codePointAt(0) ?? 0)) stripped += ch;
   }
-  const cleaned = stripped.trim();
+  // Un caractère de contrôle entouré d'espaces (ex. "a  b" après retrait d'un octet isolé) peut
+  // laisser un double espace : un second aplatissement referme cette fenêtre avant le trim final.
+  const cleaned = stripped.replace(/\s+/g, ' ').trim();
   return cleaned.length > max ? `${cleaned.slice(0, Math.max(0, max - 1))}…` : cleaned;
 }
 
