@@ -67,7 +67,7 @@ describe('GitHubIssueSource (Octokit factice)', () => {
     expect(r).toEqual({ ok: false, login: 'dependabot[bot]' });
   });
 
-  it('canTrigger : erreur de la requête de permission → ok false', async () => {
+  it('canTrigger : erreur 4xx de la requête de permission → ok false', async () => {
     const src = makeClient();
     inject(src, {
       rest: { issues: {}, repos: { getCollaboratorPermissionLevel: async () => { throw httpErr(403); } } },
@@ -76,6 +76,26 @@ describe('GitHubIssueSource (Octokit factice)', () => {
     });
     const r = await src.canTrigger({ repo, number: 1 });
     expect(r).toEqual({ ok: false, login: 'alice' });
+  });
+
+  it('canTrigger : une erreur 500 à la vérification de permission fait rejeter (transitoire)', async () => {
+    const src = makeClient();
+    inject(src, {
+      rest: { issues: {}, repos: { getCollaboratorPermissionLevel: async () => { throw httpErr(500); } } },
+      paginate: async () => [{ event: 'labeled', label: { name: 'sisyphe' }, actor: { login: 'alice' } }],
+      graphql: async () => ({}),
+    });
+    await expect(src.canTrigger({ repo, number: 1 })).rejects.toThrow();
+  });
+
+  it('canTrigger : une erreur réseau (sans statut) à la vérification de permission fait rejeter', async () => {
+    const src = makeClient();
+    inject(src, {
+      rest: { issues: {}, repos: { getCollaboratorPermissionLevel: async () => { throw new Error('ECONNRESET'); } } },
+      paginate: async () => [{ event: 'labeled', label: { name: 'sisyphe' }, actor: { login: 'alice' } }],
+      graphql: async () => ({}),
+    });
+    await expect(src.canTrigger({ repo, number: 1 })).rejects.toThrow();
   });
 
   it('canTrigger : un labeler humain identifié sans droits ne se replie jamais sur l’auteur', async () => {

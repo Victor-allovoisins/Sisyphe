@@ -126,8 +126,11 @@ export class GitHubIssueSource implements IssueSource {
     try {
       const perm = await this.call((o) => o.rest.repos.getCollaboratorPermissionLevel({ owner: ref.repo.owner, repo: ref.repo.name, username: login }));
       return { ok: hasWriteAccess(perm.data.permission), login };
-    } catch {
-      // Erreur réseau, 404, 403… : jamais d'autorisation accordée sur un doute.
+    } catch (err) {
+      const s = status(err);
+      // Transitoire (réseau, 5xx) : on laisse remonter, poll ignore l'issue et réessaiera au prochain cycle
+      // plutôt que de retirer le label et d'accuser à tort. 4xx : refus, jamais d'autorisation sur un doute.
+      if (s === undefined || s >= 500) throw err;
       return { ok: false, login };
     }
   }
@@ -197,8 +200,12 @@ export class GitHubIssueSource implements IssueSource {
     } catch (err) {
       // 422 : GitHub refuse souvent une 2e création faute d'avoir vu la 1re aboutir (retry applicatif, double appel…).
       if (status(err) === 422) {
-        const existing = await this.findPullRequest(input.repo, input.head);
-        if (existing) return existing;
+        try {
+          const existing = await this.findPullRequest(input.repo, input.head);
+          if (existing) return existing;
+        } catch {
+          // La recherche de secours a échoué à son tour : on relance le 422 d'origine, pas cette erreur-ci.
+        }
       }
       throw err;
     }
