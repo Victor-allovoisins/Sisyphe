@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { LEAK_EXIT_CODE, SecretScanError, fileAtPatchLine, isAddedLine, parseGitleaksReport, scanPatch } from './secrets.js';
 
+// Clé factice retenue parce que gitleaks 8.30 la détecte (entropie 4.02) ; d'autres clés AKIA… au format valide passent sous son seuil.
 const KEY = 'AKIAZ7Q2X4L6M3N5P2R7';
 const patchAdded = `diff --git a/Config.swift b/Config.swift
 --- a/Config.swift

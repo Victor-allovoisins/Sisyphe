@@ -91,7 +91,7 @@ export async function runRepoCommand(command: string, opts: RunOptions): Promise
   const grace = opts.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
   const exitCode = await Promise.race([
     subprocess.then((r) => r.exitCode ?? -1),
-    killed.then(() => new Promise<number>((resolve) => setTimeout(() => resolve(-1), grace))),
+    killed.then(() => new Promise<number>((resolve) => setTimeout(() => resolve(-1), grace).unref())),
   ]);
   clearTimeout(timer);
   opts.signal?.removeEventListener('abort', onAbort);
