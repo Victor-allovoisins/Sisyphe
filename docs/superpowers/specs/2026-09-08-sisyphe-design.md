@@ -116,7 +116,7 @@ tout état actif → cancelled
 
 Toutes les `pollIntervalSeconds` (défaut 60), pour chaque repo configuré, Sisyphe liste les issues ouvertes portant le label trigger (défaut `sisyphe`) et aucun label de statut (`sisyphe:in-progress`, `sisyphe:blocked`, `sisyphe:done`, `sisyphe:failed`), sans job actif en base pour ce couple repo/issue.
 
-Pour chaque candidate, `canTrigger` vérifie que le dernier événement `labeled` du label trigger a été posé par un utilisateur ayant la permission write, maintain ou admin sur le repo. Sinon : commentaire « label ignoré, permission insuffisante », retrait du label, pas de job.
+Pour chaque candidate, `canTrigger` vérifie que le dernier événement `labeled` du label trigger a été posé par un utilisateur ayant la permission write, maintain ou admin sur le repo. Si aucun événement n'existe alors que le label est présent (label posé à la création de l'issue), c'est l'auteur de l'issue qui est vérifié. Un label posé par un bot est refusé, et une erreur lors de la vérification vaut refus. Sinon : commentaire « label ignoré, permission insuffisante », retrait du label, pas de job.
 
 Une candidate valide devient un job `queued`.
 
