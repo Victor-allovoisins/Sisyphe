@@ -74,7 +74,11 @@ export class PhaseStore {
     return (this.db.prepare('SELECT * FROM phases WHERE job_id = ? ORDER BY id ASC').all(jobId) as Row[]).map(rowToPhase);
   }
 
-  /** Somme des coûts des phases terminées depuis l'instant donné (budget quotidien). */
+  /**
+   * Somme des coûts des phases terminées depuis l'instant donné (budget quotidien).
+   * Les phases en cours ne comptent pas : avec plusieurs jobs en parallèle, le budget
+   * peut être dépassé du coût des phases en vol.
+   */
   costSince(sinceIso: string): number {
     const r = this.db.prepare('SELECT COALESCE(SUM(cost_usd), 0) AS total FROM phases WHERE finished_at >= ?').get(sinceIso) as { total: number };
     return r.total;

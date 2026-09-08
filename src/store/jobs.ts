@@ -64,7 +64,7 @@ export class JobStore {
          VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)`,
       )
       .run(id, input.repo, input.issueNumber, input.issueTitle, JSON.stringify(emptyFlags()), ts, ts);
-    return this.get(id)!;
+    return this.must(id);
   }
 
   get(id: string): Job | null {
@@ -74,29 +74,29 @@ export class JobStore {
 
   findActiveByIssue(repo: string, issueNumber: number): Job | null {
     const r = this.db
-      .prepare(`SELECT * FROM jobs WHERE repo = ? AND issue_number = ? AND state NOT IN (${TERMINAL_LIST}) ORDER BY created_at DESC LIMIT 1`)
+      .prepare(`SELECT * FROM jobs WHERE repo = ? AND issue_number = ? AND state NOT IN (${TERMINAL_LIST}) ORDER BY created_at DESC, rowid DESC LIMIT 1`)
       .get(repo, issueNumber) as Row | undefined;
     return r ? rowToJob(r) : null;
   }
 
   listActive(): Job[] {
-    return (this.db.prepare(`SELECT * FROM jobs WHERE state NOT IN (${TERMINAL_LIST}) ORDER BY created_at ASC`).all() as Row[]).map(rowToJob);
+    return (this.db.prepare(`SELECT * FROM jobs WHERE state NOT IN (${TERMINAL_LIST}) ORDER BY created_at ASC, rowid ASC`).all() as Row[]).map(rowToJob);
   }
 
   listByStates(states: JobState[]): Job[] {
     if (states.length === 0) return [];
     const marks = states.map(() => '?').join(',');
-    return (this.db.prepare(`SELECT * FROM jobs WHERE state IN (${marks}) ORDER BY created_at ASC`).all(...states) as Row[]).map(rowToJob);
+    return (this.db.prepare(`SELECT * FROM jobs WHERE state IN (${marks}) ORDER BY created_at ASC, rowid ASC`).all(...states) as Row[]).map(rowToJob);
   }
 
   listRecent(limit: number): Job[] {
-    return (this.db.prepare('SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?').all(limit) as Row[]).map(rowToJob);
+    return (this.db.prepare('SELECT * FROM jobs ORDER BY created_at DESC, rowid DESC LIMIT ?').all(limit) as Row[]).map(rowToJob);
   }
 
   listSince(sinceIso: string, repo?: string): Job[] {
     const rows = repo
-      ? this.db.prepare('SELECT * FROM jobs WHERE created_at >= ? AND repo = ? ORDER BY created_at ASC').all(sinceIso, repo)
-      : this.db.prepare('SELECT * FROM jobs WHERE created_at >= ? ORDER BY created_at ASC').all(sinceIso);
+      ? this.db.prepare('SELECT * FROM jobs WHERE created_at >= ? AND repo = ? ORDER BY created_at ASC, rowid ASC').all(sinceIso, repo)
+      : this.db.prepare('SELECT * FROM jobs WHERE created_at >= ? ORDER BY created_at ASC, rowid ASC').all(sinceIso);
     return (rows as Row[]).map(rowToJob);
   }
 
@@ -104,42 +104,56 @@ export class JobStore {
     const since = new Date(Date.now() - maxAgeDays * 86_400_000).toISOString();
     return (
       this.db
-        .prepare(`SELECT * FROM jobs WHERE pr_number IS NOT NULL AND (pr_state IS NULL OR pr_state = 'open') AND created_at >= ?`)
+        .prepare(`SELECT * FROM jobs WHERE pr_number IS NOT NULL AND (pr_state IS NULL OR pr_state = 'open') AND COALESCE(finished_at, created_at) >= ?`)
         .all(since) as Row[]
     ).map(rowToJob);
   }
 
   nextQueued(): Job | null {
-    const r = this.db.prepare(`SELECT * FROM jobs WHERE state = 'queued' ORDER BY created_at ASC LIMIT 1`).get() as Row | undefined;
+    const r = this.db.prepare(`SELECT * FROM jobs WHERE state = 'queued' ORDER BY created_at ASC, rowid ASC LIMIT 1`).get() as Row | undefined;
     return r ? rowToJob(r) : null;
   }
 
-  update(id: string, patch: JobPatch): Job {
-    const keys = Object.keys(patch) as (keyof JobPatch)[];
-    if (keys.length > 0) {
-      const sets = keys.map((k) => `${COLUMNS[k]} = ?`);
-      const values = keys.map((k) => {
-        const v = patch[k];
-        if (JSON_KEYS.has(k)) return v === null || v === undefined ? null : JSON.stringify(v);
-        return v === undefined ? null : (v as string | number | null);
-      });
-      this.db.prepare(`UPDATE jobs SET ${sets.join(', ')}, updated_at = ? WHERE id = ?`).run(...values, nowIso(), id);
-    }
+  private must(id: string): Job {
     const job = this.get(id);
     if (!job) throw new Error(`Job inconnu : ${id}`);
     return job;
   }
 
+  /** Une seule instruction UPDATE pour le patch et, le cas échéant, l'état : pas d'écriture déchirée. */
+  private write(id: string, patch: JobPatch, state?: JobState): void {
+    const sets: string[] = [];
+    const values: (string | number | null)[] = [];
+    for (const k of Object.keys(patch) as (keyof JobPatch)[]) {
+      const column = COLUMNS[k];
+      if (!column) throw new Error(`Colonne inconnue : ${String(k)}`);
+      const v = patch[k];
+      sets.push(`${column} = ?`);
+      if (JSON_KEYS.has(k)) values.push(v === null || v === undefined ? null : JSON.stringify(v));
+      else values.push(v === undefined ? null : (v as string | number | null));
+    }
+    if (state) {
+      sets.push('state = ?');
+      values.push(state);
+    }
+    if (sets.length === 0) return;
+    this.db.prepare(`UPDATE jobs SET ${sets.join(', ')}, updated_at = ? WHERE id = ?`).run(...values, nowIso(), id);
+  }
+
+  /** Un champ présent avec la valeur `undefined` écrit NULL ; un patch vide n'écrit rien. */
+  update(id: string, patch: JobPatch): Job {
+    this.write(id, patch);
+    return this.must(id);
+  }
+
   transition(id: string, to: JobState, patch: JobPatch = {}): Job {
-    const job = this.get(id);
-    if (!job) throw new Error(`Job inconnu : ${id}`);
+    const job = this.must(id);
     assertTransition(job.state, to);
     const ts = nowIso();
     const extra: JobPatch = { ...patch };
     if (job.state === 'queued' && !job.startedAt) extra.startedAt = ts;
     if (isTerminal(to)) extra.finishedAt = ts;
-    this.update(id, extra);
-    this.db.prepare('UPDATE jobs SET state = ?, updated_at = ? WHERE id = ?').run(to, ts, id);
-    return this.get(id)!;
+    this.write(id, extra, to);
+    return this.must(id);
   }
 }

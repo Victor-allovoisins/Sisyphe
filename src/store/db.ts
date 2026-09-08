@@ -1,5 +1,8 @@
 import { DatabaseSync } from 'node:sqlite';
 
+const STATES = "'queued','triaging','implementing','verifying','delivering','done','blocked','failed','cancelled'";
+const TERMINALS = "'done','blocked','failed','cancelled'";
+
 const MIGRATIONS: readonly string[] = [
   `
   CREATE TABLE jobs (
@@ -7,7 +10,7 @@ const MIGRATIONS: readonly string[] = [
     repo TEXT NOT NULL,
     issue_number INTEGER NOT NULL,
     issue_title TEXT NOT NULL,
-    state TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN (${STATES})),
     attempt INTEGER NOT NULL DEFAULT 0,
     requeues INTEGER NOT NULL DEFAULT 0,
     branch TEXT,
@@ -18,7 +21,7 @@ const MIGRATIONS: readonly string[] = [
     flags_json TEXT NOT NULL,
     pr_number INTEGER,
     pr_url TEXT,
-    pr_state TEXT,
+    pr_state TEXT CHECK (pr_state IS NULL OR pr_state IN ('open','closed')),
     pr_merged_at TEXT,
     cost_usd REAL NOT NULL DEFAULT 0,
     input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -31,12 +34,14 @@ const MIGRATIONS: readonly string[] = [
     finished_at TEXT,
     updated_at TEXT NOT NULL
   );
-  CREATE INDEX jobs_state ON jobs(state);
+  CREATE INDEX jobs_state ON jobs(state, created_at);
   CREATE INDEX jobs_repo_issue ON jobs(repo, issue_number);
+  CREATE INDEX jobs_pr ON jobs(pr_number) WHERE pr_number IS NOT NULL;
+  CREATE UNIQUE INDEX jobs_active_issue ON jobs(repo, issue_number) WHERE state NOT IN (${TERMINALS});
   CREATE TABLE phases (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id TEXT NOT NULL REFERENCES jobs(id),
-    name TEXT NOT NULL,
+    name TEXT NOT NULL CHECK (name IN ('triage','implement','verify','deliver')),
     attempt INTEGER NOT NULL,
     model TEXT,
     session_id TEXT,
@@ -46,24 +51,40 @@ const MIGRATIONS: readonly string[] = [
     cache_read_tokens INTEGER NOT NULL DEFAULT 0,
     num_turns INTEGER NOT NULL DEFAULT 0,
     stop_reason TEXT,
-    outcome TEXT,
+    outcome TEXT CHECK (outcome IS NULL OR outcome IN ('success','failure')),
     started_at TEXT NOT NULL,
     finished_at TEXT
   );
   CREATE INDEX phases_job ON phases(job_id);
+  CREATE INDEX phases_finished ON phases(finished_at);
   `,
 ];
 
+/**
+ * Ouvre (ou crée) la base et applique les migrations manquantes, chacune dans une transaction.
+ * L'index unique `jobs_active_issue` rend structurel l'invariant « un seul job actif par issue ».
+ */
 export function openDatabase(path: string): DatabaseSync {
   const db = new DatabaseSync(path);
   db.exec('PRAGMA foreign_keys = ON;');
+  db.exec('PRAGMA busy_timeout = 5000;');
   if (path !== ':memory:') db.exec('PRAGMA journal_mode = WAL;');
   const row = db.prepare('PRAGMA user_version').get() as { user_version: number };
   for (let v = row.user_version; v < MIGRATIONS.length; v++) {
-    db.exec('BEGIN');
-    db.exec(MIGRATIONS[v]);
-    db.exec(`PRAGMA user_version = ${v + 1}`);
-    db.exec('COMMIT');
+    try {
+      db.exec('BEGIN');
+      db.exec(MIGRATIONS[v]);
+      db.exec(`PRAGMA user_version = ${v + 1}`);
+      db.exec('COMMIT');
+    } catch (err) {
+      try {
+        db.exec('ROLLBACK');
+      } catch {
+        /* aucune transaction ouverte */
+      }
+      db.close();
+      throw new Error(`Migration ${v + 1} échouée : ${(err as Error).message}`, { cause: err });
+    }
   }
   return db;
 }
