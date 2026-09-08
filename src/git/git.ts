@@ -1,11 +1,12 @@
 import { execa } from 'execa';
-import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { mkdir, rm, stat } from 'node:fs/promises';
+import { dirname, sep } from 'node:path';
 import { mirrorPath, worktreePath as worktreePathFor, type DataPaths } from '../config/paths.js';
+import { isValidBranchName } from '../jobs/slug.js';
 
 export class GitError extends Error {
   constructor(message: string, public readonly command: string, public readonly output: string) {
-    super(`${message}\n${output}`);
+    super(output ? `${message}\n${output}` : message);
     this.name = 'GitError';
   }
 }
@@ -17,16 +18,27 @@ export interface DiffStat {
 
 export const SISYPHE_AUTHOR = { name: 'Sisyphe', email: 'sisyphe[bot]@users.noreply.github.com' };
 
+/** Namespace du miroir où vivent les branches de base : jamais extraites dans un worktree, donc toujours rafraîchissables. */
+export const BASE_REF_PREFIX = 'refs/sisyphe/base/';
+
+/** Environnement hermétique : ni config globale ni système (gpgsign, hooks, insteadOf, credential helper), pas de prompt. */
 const GIT_ENV = {
   GIT_TERMINAL_PROMPT: '0',
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_SYSTEM: '/dev/null',
   GIT_AUTHOR_NAME: SISYPHE_AUTHOR.name,
   GIT_AUTHOR_EMAIL: SISYPHE_AUTHOR.email,
   GIT_COMMITTER_NAME: SISYPHE_AUTHOR.name,
   GIT_COMMITTER_EMAIL: SISYPHE_AUTHOR.email,
 };
 
+const MAX_OUTPUT = 2000;
+
+/** Masque tout userinfo d'URL (`//user:secret@`) et les tokens GitHub nus. */
 export function redact(text: string): string {
-  return text.replace(/x-access-token:[^@\s]+@/g, 'x-access-token:***@');
+  return text
+    .replace(/\/\/[^/@\s]+:[^@\s]+@/g, '//***:***@')
+    .replace(/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, 'gh*_***');
 }
 
 async function exists(p: string): Promise<boolean> {
@@ -38,71 +50,120 @@ async function exists(p: string): Promise<boolean> {
   }
 }
 
+interface ExecOutcome {
+  exitCode?: number;
+  all?: string;
+  stderr?: string;
+  message?: string;
+}
+
 export class Git {
+  private readonly locks = new Map<string, Promise<unknown>>();
+
   constructor(private readonly paths: DataPaths) {}
 
+  private exec(args: string[], cwd?: string) {
+    return execa('git', args, { cwd, env: GIT_ENV, reject: false, all: true });
+  }
+
+  private fail(args: string[], result: ExecOutcome): GitError {
+    const detail = redact((result.all || result.stderr || result.message || '').slice(-MAX_OUTPUT));
+    return new GitError(`git ${args[0]} a échoué (code ${result.exitCode ?? 'spawn'})`, redact(`git ${args.join(' ')}`), detail);
+  }
+
   private async run(args: string[], cwd?: string): Promise<string> {
-    const result = await execa('git', args, { cwd, env: GIT_ENV, reject: false, all: true });
-    if (result.exitCode !== 0) {
-      throw new GitError(`git ${args[0]} a échoué (code ${result.exitCode})`, redact(`git ${args.join(' ')}`), redact(result.all ?? ''));
-    }
+    const result = await this.exec(args, cwd);
+    if (result.exitCode !== 0) throw this.fail(args, result);
     return result.stdout.trim();
   }
 
+  /** Sérialise les opérations sur le miroir d'un repo : plusieurs jobs peuvent viser le même repo. */
+  private withRepoLock<T>(repo: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.locks.get(repo) ?? Promise.resolve();
+    const next = prev.catch(() => undefined).then(fn);
+    this.locks.set(repo, next);
+    return next;
+  }
+
+  private assertBranchName(name: string): void {
+    if (!isValidBranchName(name)) throw new GitError(`Nom de branche invalide : ${name}`, 'check-ref-format', '');
+  }
+
   /**
-   * Clone --mirror la première fois (aucun worktree n'existe alors), puis ne rafraîchit que les
-   * branches demandées : ne jamais toucher une branche extraite dans le worktree d'un job.
-   * `publicUrl` est stocké dans le miroir, `fetchUrl` (avec token) ne l'est jamais.
-   * `--no-write-fetch-head` évite que l'URL avec token finisse dans `FETCH_HEAD`.
+   * Crée le miroir bare la première fois (`init` + remote public, pour l'identification seulement), puis
+   * rafraîchit les branches demandées dans `refs/sisyphe/base/<b>`. Ce namespace n'est jamais extrait
+   * dans un worktree, donc git ne refuse jamais la mise à jour, et un agent ne peut pas le déplacer.
+   * L'URL avec token ne passe que sur la ligne de commande du fetch : `--no-write-fetch-head` et reflogs
+   * désactivés, rien n'atterrit sur le disque.
    */
   async ensureMirror(repo: string, fetchUrl: string, publicUrl: string, branches: string[]): Promise<string> {
-    const dir = mirrorPath(this.paths, repo);
-    if (!(await exists(dir))) {
-      await mkdir(dirname(dir), { recursive: true });
-      await this.run(['clone', '--mirror', '-q', fetchUrl, dir]);
-      await this.run(['remote', 'set-url', 'origin', publicUrl], dir);
-    } else if (branches.length > 0) {
-      const refspecs = [...new Set(branches)].map((b) => `+refs/heads/${b}:refs/heads/${b}`);
-      await this.run(['fetch', '-q', '--force', '--no-write-fetch-head', fetchUrl, ...refspecs], dir);
-    }
-    return dir;
+    return this.withRepoLock(repo, async () => {
+      const dir = mirrorPath(this.paths, repo);
+      if (!(await exists(dir))) {
+        await mkdir(dirname(dir), { recursive: true });
+        await this.run(['init', '-q', '--bare', dir]);
+        await this.run(['remote', 'add', 'origin', publicUrl], dir);
+        await this.run(['config', 'core.logAllRefUpdates', 'false'], dir);
+      }
+      const wanted = [...new Set(branches)];
+      for (const b of wanted) this.assertBranchName(b);
+      if (wanted.length > 0) {
+        const refspecs = wanted.map((b) => `+refs/heads/${b}:${BASE_REF_PREFIX}${b}`);
+        await this.run(['fetch', '-q', '--force', '--no-write-fetch-head', fetchUrl, ...refspecs], dir);
+      }
+      return dir;
+    });
   }
 
-  async readFileAtRef(repo: string, ref: string, path: string): Promise<string | null> {
-    const mirror = mirrorPath(this.paths, repo);
-    const result = await execa('git', ['show', `refs/heads/${ref}:${path}`], { cwd: mirror, env: GIT_ENV, reject: false });
-    return result.exitCode === 0 ? result.stdout : null;
+  /** Contenu d'un fichier sur une branche de base rafraîchie ; null si le fichier n'y existe pas ; erreur si la branche n'a pas été rafraîchie. */
+  async readFileAtRef(repo: string, branch: string, path: string): Promise<string | null> {
+    this.assertBranchName(branch);
+    const result = await this.exec(['show', `${BASE_REF_PREFIX}${branch}:${path}`], mirrorPath(this.paths, repo));
+    if (result.exitCode === 0) return result.stdout;
+    if (/does not exist in/.test(result.all ?? '')) return null;
+    throw this.fail(['show'], result);
   }
 
+  /** Worktree neuf sur la base ; un worktree ou une branche laissés par un job précédent sont d'abord nettoyés. */
   async createWorktree(repo: string, issueNumber: number, branch: string, baseBranch: string): Promise<{ worktreePath: string; baseSha: string }> {
+    this.assertBranchName(branch);
+    this.assertBranchName(baseBranch);
     const mirror = mirrorPath(this.paths, repo);
     const wt = worktreePathFor(this.paths, repo, issueNumber);
-    if (await exists(wt)) await this.removeWorktree(repo, wt, branch);
+    await this.removeWorktree(repo, wt, branch); // prune inclus : un dossier disparu ne bloque plus la branche
     await mkdir(dirname(wt), { recursive: true });
-    const baseSha = await this.run(['rev-parse', `refs/heads/${baseBranch}`], mirror);
+    const baseSha = await this.run(['rev-parse', '--verify', `${BASE_REF_PREFIX}${baseBranch}^{commit}`], mirror);
     await this.run(['worktree', 'add', '-q', '-B', branch, wt, baseSha], mirror);
     return { worktreePath: wt, baseSha };
   }
 
   async removeWorktree(repo: string, wt: string, branch?: string): Promise<void> {
+    if (!wt.startsWith(this.paths.workDir + sep)) throw new GitError(`Refus de supprimer hors de workDir : ${wt}`, 'removeWorktree', '');
     const mirror = mirrorPath(this.paths, repo);
-    await execa('git', ['worktree', 'remove', '--force', wt], { cwd: mirror, env: GIT_ENV, reject: false });
+    await this.exec(['worktree', 'remove', '--force', wt], mirror);
     await rm(wt, { recursive: true, force: true });
-    await execa('git', ['worktree', 'prune'], { cwd: mirror, env: GIT_ENV, reject: false });
-    if (branch) await execa('git', ['branch', '-D', branch], { cwd: mirror, env: GIT_ENV, reject: false });
+    await this.exec(['worktree', 'prune'], mirror);
+    if (branch) await this.exec(['branch', '-D', branch], mirror);
   }
 
-  private async stageAll(wt: string): Promise<void> {
+  /** `git add -A`, puis refus d'un dépôt git imbriqué ajouté par l'agent (gitlink 160000) : la PR porterait un sous-module pointant nulle part. */
+  private async stageAll(wt: string, baseSha: string): Promise<void> {
     await this.run(['add', '-A'], wt);
+    const raw = await this.run(['diff', '--cached', '--raw', '--no-renames', baseSha], wt);
+    const nested = raw
+      .split('\n')
+      .filter((l) => /^:\d{6} 160000 /.test(l) && !l.startsWith(':160000 160000 '))
+      .map((l) => l.split('\t')[1]);
+    if (nested.length > 0) throw new GitError(`Dépôt git imbriqué ajouté par l'agent : ${nested.join(', ')}`, 'git diff --cached --raw', '');
   }
 
   async hasChanges(wt: string, baseSha: string): Promise<boolean> {
-    await this.stageAll(wt);
+    await this.stageAll(wt, baseSha);
     return (await this.run(['diff', '--cached', '--name-only', baseSha], wt)).length > 0;
   }
 
   async diffStat(wt: string, baseSha: string): Promise<DiffStat> {
-    await this.stageAll(wt);
+    await this.stageAll(wt, baseSha);
     const out = await this.run(['diff', '--cached', '--numstat', '--no-renames', baseSha], wt);
     const files: string[] = [];
     let changedLines = 0;
@@ -115,21 +176,26 @@ export class Git {
     return { files, changedLines };
   }
 
+  /** Patch binaire écrit octet pour octet dans `outFile` (pas de décodage UTF-8, saut de ligne final conservé). */
   async writePatch(wt: string, baseSha: string, outFile: string): Promise<void> {
-    await this.stageAll(wt);
-    const result = await execa('git', ['diff', '--cached', '--binary', '--no-renames', baseSha], { cwd: wt, env: GIT_ENV });
-    await writeFile(outFile, result.stdout);
+    await this.stageAll(wt, baseSha);
+    const args = ['diff', '--cached', '--binary', '--no-renames', baseSha];
+    const result = await execa('git', args, { cwd: wt, env: GIT_ENV, reject: false, stdout: { file: outFile }, stderr: 'pipe' });
+    if (result.exitCode !== 0) throw this.fail(args, { exitCode: result.exitCode, stderr: result.stderr, message: result.message });
   }
 
-  /** Ramène tout le travail en un seul commit au-dessus de baseSha. */
-  async squashCommit(wt: string, baseSha: string, message: string): Promise<string> {
+  /** Ramène tout le travail en un seul commit sur la branche du job, quel que soit l'état où l'agent a laissé HEAD. */
+  async squashCommit(wt: string, branch: string, baseSha: string, message: string): Promise<string> {
+    this.assertBranchName(branch);
+    await this.run(['symbolic-ref', 'HEAD', `refs/heads/${branch}`], wt); // HEAD détaché ou autre branche : retour sur la branche du job, index et fichiers intacts
     await this.run(['reset', '-q', '--soft', baseSha], wt);
-    await this.stageAll(wt);
+    await this.stageAll(wt, baseSha);
     await this.run(['commit', '-q', '--no-verify', '-m', message], wt);
     return this.run(['rev-parse', 'HEAD'], wt);
   }
 
   async push(wt: string, pushUrl: string, branch: string): Promise<void> {
+    this.assertBranchName(branch);
     await this.run(['push', '-q', '--force', pushUrl, `HEAD:refs/heads/${branch}`], wt);
   }
 }

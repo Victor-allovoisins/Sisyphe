@@ -2,7 +2,8 @@ import { execa } from 'execa';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
-const TEST_ENV = {
+export const TEST_ENV = {
+  GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
   GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.com',
   GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@example.com',
 };
@@ -22,7 +23,7 @@ export async function createRemoteRepo(
   await git(['commit', '-q', '-m', 'init']);
   const headSha = (await git(['rev-parse', 'HEAD'])).stdout.trim();
   const remotePath = join(root, 'remote.git');
-  await execa('git', ['clone', '-q', '--bare', src, remotePath]);
+  await execa('git', ['clone', '-q', '--bare', src, remotePath], { env: TEST_ENV });
   return { remotePath, headSha };
 }
 
