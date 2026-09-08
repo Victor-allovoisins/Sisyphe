@@ -3,9 +3,12 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { stringify } from 'yaml';
+import { createApp, type App } from '../../app.js';
 import { MachineConfigError, parseMachineConfig, type MachineConfig } from '../../config/machine.js';
 import { dataPaths, defaultDataDir, ensureDataDirs, expandHome, machineConfigPath } from '../../config/paths.js';
 import { parseRepo } from '../../github/source.js';
+import { buildChecks } from './doctor.js';
+import { runChecks } from '../checks.js';
 import { LAUNCHD_LABEL, installLaunchAgent, plistPath, renderPlist } from '../launchd.js';
 
 /** Réponse affichée par défaut quand ANTHROPIC_API_KEY est déjà dans l'environnement : la clé elle-même n'est jamais échouée à l'écran. */
@@ -135,6 +138,31 @@ export async function setupCommand(): Promise<void> {
     await writeFile(configPath, stringify(raw), { mode: 0o600 });
     await chmod(configPath, 0o600); // le mode de writeFile n'est appliqué qu'à la création
     console.log(`Config écrite : ${configPath}`);
+
+    // On revérifie tout (accès GitHub App, sisyphe.yml de chaque repo, outils...) avant d'installer
+    // quoi que ce soit : mieux vaut refuser d'installer un daemon qui échouera au premier tick.
+    console.log('Vérification de la configuration...');
+    let app: App | null = null;
+    let initError: unknown = null;
+    try {
+      app = await createApp({ needsAgent: false });
+    } catch (err) {
+      initError = err;
+    }
+    // La clé n'est pas forcément exportée dans l'environnement de cette session (c'est justement ce que
+    // setup vient de recueillir) : on l'injecte pour que le check et la sonde API portent sur la bonne valeur.
+    const checkEnv = { ...process.env, ANTHROPIC_API_KEY: apiKey };
+    const checks = buildChecks({ machine: app?.machine, github: app?.github, env: checkEnv, paths: app?.paths });
+    if (initError && !(initError instanceof MachineConfigError)) {
+      const err = initError;
+      checks.push({ name: 'initialisation', run: async () => { throw err; } });
+    }
+    const { ok, lines } = await runChecks(checks);
+    console.log(lines.join('\n'));
+    if (!ok) {
+      console.log('Corriger les points ci-dessus puis relancer sisyphe setup (le config est conservé).');
+      return;
+    }
 
     if (process.platform === 'darwin') {
       const argv1 = resolve(process.argv[1]);
