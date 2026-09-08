@@ -90,6 +90,7 @@ export interface IssueSource {
   getAuthenticatedRemoteUrl(repo: RepoRef): Promise<string>;
   openPullRequest(input: PullRequestInput): Promise<PullRef>;
   updatePullRequest(ref: PullRef, patch: { title: string; body: string; draft: boolean; base: string }): Promise<void>;
+  /** Recherche la PR ouverte dont la branche source est headBranch ; les PR fermées ou fusionnées ne comptent pas. */
   findPullRequest(repo: RepoRef, headBranch: string): Promise<PullRef | null>;
   getPullRequestState(ref: PullRef): Promise<PullRequestState>;
   ensureLabels(repo: RepoRef): Promise<void>;
