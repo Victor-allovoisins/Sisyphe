@@ -22,14 +22,19 @@ describe('TriageVerdictSchema', () => {
     expect(v.verdict).toBe('ready');
   });
 
-  it('refuse un verdict inconnu et une confiance hors bornes', () => {
-    expect(TriageVerdictSchema.safeParse({ verdict: 'maybe' }).success).toBe(false);
-    expect(
-      TriageVerdictSchema.safeParse({
-        verdict: 'ready', confidence: 2, summary: '', change_type: 'fix',
-        plan: [], files_likely_touched: [], questions: [], reasons: [],
-      }).success,
-    ).toBe(false);
+  const valid = {
+    verdict: 'ready', confidence: 0.8, summary: 'Ajouter un bouton', change_type: 'feat',
+    plan: ['créer la vue'], files_likely_touched: ['Sources/A.swift'], questions: [], reasons: [],
+  };
+
+  it('refuse un verdict inconnu', () => {
+    expect(TriageVerdictSchema.safeParse({ ...valid, verdict: 'maybe' }).success).toBe(false);
+  });
+
+  it('refuse une confiance hors bornes et un résumé vide', () => {
+    expect(TriageVerdictSchema.safeParse({ ...valid, confidence: 2 }).success).toBe(false);
+    expect(TriageVerdictSchema.safeParse({ ...valid, confidence: -0.1 }).success).toBe(false);
+    expect(TriageVerdictSchema.safeParse({ ...valid, summary: '' }).success).toBe(false);
   });
 });
 
@@ -51,11 +56,18 @@ describe('ImplementationReportSchema', () => {
 });
 
 describe('JSON Schema', () => {
-  it('cible draft-07 et liste les champs requis', () => {
-    expect(triageJsonSchema.$schema).toBe('http://json-schema.org/draft-07/schema#');
-    expect(triageJsonSchema.required).toEqual(
-      expect.arrayContaining(['verdict', 'plan', 'questions', 'reasons']),
-    );
-    expect(reportJsonSchema.required).toEqual(expect.arrayContaining(['summary', 'changes']));
+  it('cible draft-07, exige tous les champs et interdit les champs inconnus', () => {
+    const draft07 = 'http://json-schema.org/draft-07/schema#';
+    expect(triageJsonSchema.$schema).toBe(draft07);
+    expect(reportJsonSchema.$schema).toBe(draft07);
+    expect(triageJsonSchema.required).toEqual(['verdict', 'confidence', 'summary', 'change_type', 'plan', 'files_likely_touched', 'questions', 'reasons']);
+    expect(reportJsonSchema.required).toEqual(['summary', 'changes', 'decisions', 'tests_run', 'risks', 'follow_ups', 'confidence']);
+    expect(triageJsonSchema.additionalProperties).toBe(false);
+    expect(reportJsonSchema.additionalProperties).toBe(false);
+  });
+
+  it('propage les descriptions dans le contrat du modèle', () => {
+    const props = triageJsonSchema.properties as Record<string, { description?: string }>;
+    expect(props.questions.description).toContain('needs_clarification');
   });
 });

@@ -1,37 +1,38 @@
 import { z } from 'zod';
 
 export const TriageVerdictSchema = z.object({
-  verdict: z.enum(['ready', 'needs_clarification', 'too_big', 'out_of_scope']),
-  confidence: z.number().min(0).max(1),
-  summary: z.string(),
-  change_type: z.enum(['feat', 'fix', 'refactor', 'chore', 'docs']),
-  plan: z.array(z.string()),
-  files_likely_touched: z.array(z.string()),
-  questions: z.array(z.string()),
-  reasons: z.array(z.string()),
+  verdict: z
+    .enum(['ready', 'needs_clarification', 'too_big', 'out_of_scope'])
+    .describe('ready : implémentable sans question ; needs_clarification : une information indispensable manque ; too_big : à découper ; out_of_scope : pas une tâche de code sur ce repo'),
+  confidence: z.number().min(0).max(1).describe('Confiance dans le verdict, de 0 à 1'),
+  summary: z.string().min(1).describe('Reformulation du besoin en une phrase'),
+  change_type: z.enum(['feat', 'fix', 'refactor', 'chore', 'docs']).describe('Type de changement, repris dans le message de commit'),
+  plan: z.array(z.string()).describe("Étapes concrètes, exploitables par un autre agent qui n'a pas lu l'exploration"),
+  files_likely_touched: z.array(z.string()).describe('Chemins relatifs probablement modifiés'),
+  questions: z.array(z.string()).describe('Questions à poser, uniquement si needs_clarification'),
+  reasons: z.array(z.string()).describe('Raisons et découpage proposé, uniquement si too_big ou out_of_scope'),
 });
 export type TriageVerdict = z.infer<typeof TriageVerdictSchema>;
 
 export const ImplementationReportSchema = z.object({
-  summary: z.string(),
-  changes: z.array(z.object({ file: z.string(), what: z.string() })),
-  decisions: z.array(z.string()),
-  tests_run: z.array(z.string()),
-  risks: z.array(z.string()),
-  follow_ups: z.array(z.string()),
-  confidence: z.number().min(0).max(1),
+  summary: z.string().min(1).describe('Ce qui a été fait, 2 à 4 phrases'),
+  changes: z.array(
+    z.object({
+      file: z.string().min(1).describe('Chemin relatif du fichier'),
+      what: z.string().min(1).describe('Quoi et pourquoi'),
+    }),
+  ),
+  decisions: z.array(z.string()).describe('Choix non évidents et alternatives écartées'),
+  tests_run: z.array(z.string()).describe('Une entrée par commande, au format « commande : résultat »'),
+  risks: z.array(z.string()).describe('Ce que le relecteur doit regarder en priorité'),
+  follow_ups: z.array(z.string()).describe("Ce qui reste à faire, hors périmètre de l'issue"),
+  confidence: z.number().min(0).max(1).describe('Confiance dans le résultat, de 0 à 1'),
 });
 export type ImplementationReport = z.infer<typeof ImplementationReportSchema>;
 
 // Le SDK valide en draft-07 : Zod 4 cible 2020-12 par défaut, d'où l'option.
-export const triageJsonSchema = z.toJSONSchema(TriageVerdictSchema, { target: 'draft-7' }) as Record<string, unknown> & {
-  $schema: string;
-  required: string[];
-};
-export const reportJsonSchema = z.toJSONSchema(ImplementationReportSchema, { target: 'draft-7' }) as Record<string, unknown> & {
-  $schema: string;
-  required: string[];
-};
+export const triageJsonSchema = z.toJSONSchema(TriageVerdictSchema, { target: 'draft-07' });
+export const reportJsonSchema = z.toJSONSchema(ImplementationReportSchema, { target: 'draft-07' });
 
 /** Rapport de secours quand l'agent n'a pas produit de JSON conforme. */
 export function fallbackReport(reason: string): ImplementationReport {
