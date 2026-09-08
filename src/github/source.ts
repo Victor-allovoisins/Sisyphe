@@ -22,6 +22,7 @@ export function issueRefOf(job: { repo: string; issueNumber: number }): IssueRef
 export interface IssueComment {
   author: string;
   body: string;
+  /** ISO 8601. */
   createdAt: string;
 }
 
@@ -29,6 +30,7 @@ export interface Issue {
   repo: RepoRef;
   number: number;
   title: string;
+  /** Jamais null : chaîne vide si l'issue n'a pas de description. */
   body: string;
   author: string;
   state: 'open' | 'closed';
@@ -62,6 +64,7 @@ export interface PullRequestState {
 
 export interface TriggerCheck {
   ok: boolean;
+  /** null quand aucun événement `labeled` du label trigger n'a été trouvé. */
   login: string | null;
 }
 
@@ -83,7 +86,7 @@ export interface IssueSource {
   /** Ouverte et label trigger toujours présent. */
   isStillActive(ref: IssueRef): Promise<boolean>;
   getDefaultBranch(repo: RepoRef): Promise<string>;
-  /** URL HTTPS avec token court, pour fetch et push. Jamais stockée. */
+  /** URL HTTPS avec token d'installation, valide environ une heure : à ré-obtenir juste avant chaque fetch ou push, jamais mémorisée au-delà d'une opération. */
   getAuthenticatedRemoteUrl(repo: RepoRef): Promise<string>;
   openPullRequest(input: PullRequestInput): Promise<PullRef>;
   updatePullRequest(ref: PullRef, patch: { title: string; body: string; draft: boolean }): Promise<void>;

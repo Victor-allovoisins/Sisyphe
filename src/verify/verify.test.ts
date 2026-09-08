@@ -66,7 +66,7 @@ describe('runVerification', () => {
   });
 
   it('signale les fichiers suivis modifiés par la vérification, sans les inclure dans l’arbre livré', async () => {
-    await writeFiles(worktreePath, { 'src/feature.txt': 'hello\n', 'build.sh': 'echo bumped > lock.txt; test -f src/feature.txt', 'lock.txt': 'v1\n' });
+    await writeFiles(worktreePath, { 'src/feature.txt': 'hello\n', 'build.sh': 'echo bumped > lock.txt; echo out > build-output.log; test -f src/feature.txt', 'lock.txt': 'v1\n' });
     const r = await run();
     expect(r.ok).toBe(true);
     expect(r.driftedFiles).toEqual(['lock.txt']);

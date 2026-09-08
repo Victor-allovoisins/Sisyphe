@@ -41,6 +41,7 @@ describe('parseMachineConfig', () => {
     expect(() => parseMachineConfig(minimal.replace('  - ILokYou/ILokYou-iOS', '  - a/b\n  - a/b'))).toThrow(/double/);
     expect(() => parseMachineConfig(minimal.replace('ILokYou/ILokYou-iOS', 'my_org/repo'))).toThrow(/owner\/repo/);
     expect(() => parseMachineConfig(`${minimal}maxConcurrentJobs: 100\n`)).toThrow(/maxConcurrentJobs/);
+    expect(() => parseMachineConfig(`${minimal}triggerLabel: "a b"\n`)).toThrow(/triggerLabel/);
   });
 
   it('refuse un chemin relatif au répertoire courant', () => {

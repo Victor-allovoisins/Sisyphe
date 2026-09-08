@@ -120,7 +120,11 @@ describe('Git', () => {
     expect(err).toBeInstanceOf(GitError);
     expect((err as Error).message).not.toContain('SUPERSECRET');
     expect((err as GitError).command).not.toContain('SUPERSECRET');
-    await expect(git.push(worktreePath, remotePath, BRANCH, 'nope')).rejects.toBeInstanceOf(GitError);
+  });
+
+  it('refuse de pousser autre chose qu’un sha complet ou HEAD', async () => {
+    const { worktreePath } = await git.createWorktree(repo, 7, BRANCH, 'main');
+    await expect(git.push(worktreePath, remotePath, BRANCH, 'main')).rejects.toThrow(/Sha invalide/);
   });
 
   describe('worktree hostile', () => {

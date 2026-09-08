@@ -207,9 +207,10 @@ export class Git {
     await this.run(['push', '-q', '--force', pushUrl, `${sha}:refs/heads/${branch}`], wt);
   }
 
-  /** Fichiers différant entre deux arbres (ou commits). */
-  async changedFilesBetween(wt: string, fromTree: string, toTree: string): Promise<string[]> {
-    const out = await this.run(['diff', '--name-only', '--no-renames', fromTree, toTree], wt);
+  /** Fichiers suivis dont le contenu du worktree diffère de `treeSha`. Ne touche pas l'index. */
+  async modifiedTrackedSince(wt: string, treeSha: string): Promise<string[]> {
+    if (!/^[0-9a-f]{40}$/.test(treeSha)) throw new GitError(`Arbre invalide : ${treeSha}`, 'diff', '');
+    const out = await this.run(['diff', '--name-only', '--no-renames', treeSha, '--'], wt);
     return out.split('\n').filter(Boolean);
   }
 }

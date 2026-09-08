@@ -33,6 +33,8 @@ export interface AgentResult<T> {
   durationMs: number;
   stopReason: AgentStopReason;
   transcriptPath: string;
+  /** Détail quand stopReason vaut 'error' (message SDK ou erreurs du result). */
+  errorMessage?: string;
 }
 
 export interface AgentRunner {

@@ -19,7 +19,7 @@ export const MachineConfigSchema = z.strictObject({
     .array(z.string().regex(REPO_PATTERN, 'format attendu : owner/repo'))
     .min(1)
     .refine((v) => new Set(v).size === v.length, 'repos en double'),
-  triggerLabel: z.string().min(1).default('sisyphe'),
+  triggerLabel: z.string().min(1).max(38).regex(/^[A-Za-z0-9][\w.-]*$/, 'lettres, chiffres, . _ -').default('sisyphe'),
   pollIntervalSeconds: z.number().int().min(10).max(3600).default(60),
   maxConcurrentJobs: z.number().int().min(1).max(8).default(1),
   dailyBudgetUsd: z.number().positive().max(1000).default(60),

@@ -34,7 +34,7 @@ export interface VerifyResult {
   files: string[];
   changedLines: number;
   flags: VerifyFlags;
-  /** Fichiers suivis modifiés par les étapes de vérification elles-mêmes (lockfiles, projet régénéré) : ils ne font pas partie du commit livré, le relecteur doit le savoir. */
+  /** Fichiers suivis modifiés par les étapes de vérification elles-mêmes (lockfiles, projet régénéré). Ils ne font pas partie du commit livré. Calculé seulement quand la vérification passe. */
   driftedFiles: string[];
 }
 
@@ -104,8 +104,14 @@ export async function runVerification(i: VerifyInput): Promise<VerifyResult> {
       return result({ ...common, steps, failedStep: name, failureTail: [head, tail(r.output, 200)].filter(Boolean).join('\n') });
     }
   }
-  await i.git.stage(i.worktreePath, i.baseSha);
-  const after = await i.git.writeTree(i.worktreePath);
-  const driftedFiles = after === treeSha ? [] : await i.git.changedFilesBetween(i.worktreePath, treeSha, after);
+  // Dérive informative, jamais bloquante : fichiers suivis que setup/build/test ont modifiés. Ils ne sont pas dans l'arbre livré.
+  let driftedFiles: string[] = [];
+  if (remaining() > 0) {
+    try {
+      driftedFiles = await i.git.modifiedTrackedSince(i.worktreePath, treeSha);
+    } catch {
+      /* la dérive n'est qu'une information */
+    }
+  }
   return result({ ...common, ok: true, steps, driftedFiles });
 }
