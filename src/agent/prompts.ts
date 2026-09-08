@@ -96,7 +96,7 @@ Commandes du repo :
 ${commandBullets(config)}
 
 Exigences :
-- Suis les conventions du repo (son CLAUDE.md est chargé).
+- Suis les conventions du repo (son CLAUDE.md figure dans tes instructions système).
 - Ne modifie pas les chemins protégés. N'exécute pas git push.
 - Avant de conclure, exécute les commandes ${verifyStepsSentence(config)} ci-dessus et corrige jusqu'au vert : Sisyphe relancera exactement ces commandes, et un échec de l'une d'elles, lint compris, coûte une tentative.
 - Nettoie le worktree de tes fichiers de travail : tout fichier non ignoré part dans le commit.
