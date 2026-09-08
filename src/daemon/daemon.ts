@@ -8,8 +8,12 @@ import { purgeOldFiles } from '../log/logger.js';
 import { startCaffeinate } from './caffeinate.js';
 import { pollOnce } from './poll.js';
 
+/** Délai maximal laissé aux jobs en vol pour se terminer avant que stop() abandonne (ex. sleep de rate limit d'une heure). */
+const STOP_GRACE_MS = 30_000;
+
 export interface DaemonOptions {
   intervals?: { pollMs?: number; cancelMs?: number; prTrackMs?: number; purgeMs?: number };
+  stopGraceMs?: number;
 }
 
 export class Daemon {
@@ -71,12 +75,27 @@ export class Daemon {
     return (this.stopped ??= this.doStop());
   }
 
-  /** Les jobs en cours sont interrompus avec la raison SHUTDOWN et laissés en place pour la réconciliation. */
+  /**
+   * Les jobs en cours sont interrompus avec la raison SHUTDOWN et laissés en place pour la réconciliation.
+   * L'attente est bornée : un job bloqué (ex. sleep de rate limit d'une heure côté client GitHub) ne doit pas
+   * empêcher l'arrêt du daemon — la réconciliation au prochain démarrage reprendra le job resté non terminal.
+   */
   private async doStop(): Promise<void> {
     this.stopping = true;
     for (const t of this.timers) clearInterval(t);
     for (const c of this.running.values()) c.abort(SHUTDOWN);
-    await Promise.allSettled([...this.inflight]);
+
+    let graceTimer: NodeJS.Timeout | undefined;
+    const grace = new Promise<'timeout'>((resolve) => {
+      graceTimer = setTimeout(() => resolve('timeout'), this.opts.stopGraceMs ?? STOP_GRACE_MS);
+      graceTimer.unref();
+    });
+    const outcome = await Promise.race([Promise.allSettled([...this.inflight]).then((): 'done' => 'done'), grace]);
+    clearTimeout(graceTimer);
+    if (outcome === 'timeout') {
+      this.log.warn({ inflight: this.inflight.size }, 'arrêt : jobs encore en vol abandonnés, la réconciliation les reprendra');
+    }
+
     this.stopCaffeinate?.();
     this.log.info('daemon arrêté');
     this.resolveStopped?.();

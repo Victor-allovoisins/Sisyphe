@@ -127,6 +127,41 @@ describe('Daemon', () => {
     expect(h.source.labelsOf({ repo: repoRef, number: job.issueNumber })).not.toContain('sisyphe:done');
   });
 
+  it('stop() abandonne un job bloqué après stopGraceMs plutôt que de pendre', async () => {
+    const h = await makeHarness({ steps: [] });
+    const daemon = new Daemon(h.deps, {
+      intervals: { pollMs: 3_600_000, cancelMs: 3_600_000, prTrackMs: 3_600_000, purgeMs: 3_600_000 },
+      stopGraceMs: 50,
+    });
+    let agentStarted: () => void = () => undefined;
+    const agentEntered = new Promise<void>((resolve) => {
+      agentStarted = resolve;
+    });
+    const fakeAgent = {
+      // Ne résout jamais et ignore le signal d'abandon (ex. bloqué dans un sleep de rate limit d'une heure).
+      async run() {
+        agentStarted();
+        await new Promise<never>(() => undefined);
+      },
+    };
+    h.deps.agent = fakeAgent as never;
+
+    const started = daemon.start();
+    await Promise.race([
+      agentEntered,
+      new Promise((_resolve, reject) => setTimeout(() => reject(new Error("l'agent n'a jamais démarré")), 2000)),
+    ]);
+
+    await Promise.race([
+      daemon.stop(),
+      new Promise((_resolve, reject) => setTimeout(() => reject(new Error("stop() ne s'est pas résolu après stopGraceMs")), 2000)),
+    ]);
+    await started;
+
+    const job = h.store.listRecent(1)[0];
+    expect(isTerminal(job.state)).toBe(false);
+  });
+
   it('budget : un seul commentaire de pause par issue et par jour', async () => {
     const h = await makeHarness({
       steps: [{ output: readyVerdict }, { output: report('a'), sideEffect: writeFeature('hello\n') }],
