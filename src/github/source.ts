@@ -89,7 +89,7 @@ export interface IssueSource {
   /** URL HTTPS avec token d'installation, valide environ une heure : à ré-obtenir juste avant chaque fetch ou push, jamais mémorisée au-delà d'une opération. */
   getAuthenticatedRemoteUrl(repo: RepoRef): Promise<string>;
   openPullRequest(input: PullRequestInput): Promise<PullRef>;
-  updatePullRequest(ref: PullRef, patch: { title: string; body: string; draft: boolean }): Promise<void>;
+  updatePullRequest(ref: PullRef, patch: { title: string; body: string; draft: boolean; base: string }): Promise<void>;
   findPullRequest(repo: RepoRef, headBranch: string): Promise<PullRef | null>;
   getPullRequestState(ref: PullRef): Promise<PullRequestState>;
   ensureLabels(repo: RepoRef): Promise<void>;

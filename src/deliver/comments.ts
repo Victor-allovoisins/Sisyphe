@@ -74,12 +74,12 @@ export function renderCancelledComment(jobId: string): string {
   return `🪨 Job annulé (label retiré ou issue fermée).\n\n${jobMarker(jobId)}`;
 }
 
-export function renderDoneComment(i: { prUrl: string; status: 'done' | 'failed'; costUsd: number; durationMs: number; attempts: number }): string {
+export function renderDoneComment(i: { jobId: string; prUrl: string; status: 'done' | 'failed'; costUsd: number; durationMs: number; attempts: number }): string {
   const head =
     i.status === 'done'
       ? `🪨 PR prête : ${i.prUrl}`
       : `🪨 La vérification a échoué après ${i.attempts} tentative(s). PR draft pour inspection : ${i.prUrl}`;
-  return `${head}\n\nCoût estimé : $${i.costUsd.toFixed(2)} · Durée : ${fmtDuration(i.durationMs)} · Tentatives : ${i.attempts}`;
+  return `${head}\n\nCoût estimé : $${i.costUsd.toFixed(2)} · Durée : ${fmtDuration(i.durationMs)} · Tentatives : ${i.attempts}\n\n${jobMarker(i.jobId)}`;
 }
 
 export function renderPermissionDeniedComment(login: string | null, trigger: string): string {

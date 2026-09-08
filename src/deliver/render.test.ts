@@ -126,8 +126,10 @@ describe('comments', () => {
     expect(invalid).toContain('commands.build');
     expect(invalid).not.toContain('Ajoutez un fichier');
   });
-  it('renderDoneComment distingue succès et draft', () => {
-    expect(renderDoneComment({ prUrl: 'u', status: 'done', costUsd: 2, durationMs: 60_000, attempts: 1 })).toContain('PR prête');
-    expect(renderDoneComment({ prUrl: 'u', status: 'failed', costUsd: 2, durationMs: 60_000, attempts: 3 })).toContain('draft');
+  it('renderDoneComment distingue succès et draft, et porte le marqueur de job', () => {
+    expect(renderDoneComment({ jobId: 'job-1', prUrl: 'u', status: 'done', costUsd: 2, durationMs: 60_000, attempts: 1 })).toContain('PR prête');
+    const failed = renderDoneComment({ jobId: 'job-1', prUrl: 'u', status: 'failed', costUsd: 2, durationMs: 60_000, attempts: 3 });
+    expect(failed).toContain('draft');
+    expect(failed).toContain(jobMarker('job-1'));
   });
 });

@@ -142,7 +142,7 @@ export class FakeIssueSource implements IssueSource {
     return { repo: input.repo, number, url };
   }
 
-  async updatePullRequest(ref: PullRef, patch: { title: string; body: string; draft: boolean }): Promise<void> {
+  async updatePullRequest(ref: PullRef, patch: { title: string; body: string; draft: boolean; base: string }): Promise<void> {
     this.calls.push('updatePullRequest');
     const pr = this.pulls.find((p) => p.repo === ref.repo.full && p.number === ref.number);
     if (!pr) throw new Error(`PR inconnue : ${ref.number}`);
