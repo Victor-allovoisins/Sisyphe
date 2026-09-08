@@ -84,7 +84,9 @@ export class FakeIssueSource implements IssueSource {
 
   async listWithStatus(repo: RepoRef, status: StatusLabel): Promise<IssueRef[]> {
     const name = statusLabelName(this.triggerLabel, status);
-    return [...this.issues.values()].filter((i) => i.repo.full === repo.full && i.labels.includes(name)).map((i) => ({ repo, number: i.number }));
+    return [...this.issues.values()]
+      .filter((i) => i.repo.full === repo.full && i.state === 'open' && i.labels.includes(name))
+      .map((i) => ({ repo, number: i.number }));
   }
 
   async getIssue(ref: IssueRef): Promise<Issue> {

@@ -1,9 +1,10 @@
 import { App } from '@octokit/app';
 import { Octokit } from '@octokit/rest';
 import { readFile } from 'node:fs/promises';
+import type { Logger } from 'pino';
 import { clampForGitHub } from '../deliver/sanitize.js';
 import { allStatusLabelNames, labelDefinitions, statusLabelName } from './labels.js';
-import { withRetry } from './retry.js';
+import { withRetry, type RetryOptions } from './retry.js';
 import type {
   Issue, IssueRef, IssueSource, PullRef, PullRequestInput, PullRequestState, RepoRef, StatusLabel, TriggerCheck,
 } from './source.js';
@@ -13,6 +14,7 @@ export interface GitHubClientConfig {
   installationId: number;
   privateKey: string;
   triggerLabel: string;
+  log?: Logger;
 }
 
 export function hasWriteAccess(permission: string | undefined): boolean {
@@ -42,7 +44,7 @@ export class GitHubIssueSource implements IssueSource {
     this.app = new App({ appId: cfg.appId, privateKey: cfg.privateKey, Octokit });
   }
 
-  static async fromFiles(cfg: { appId: number; installationId: number; privateKeyPath: string; triggerLabel: string }): Promise<GitHubIssueSource> {
+  static async fromFiles(cfg: { appId: number; installationId: number; privateKeyPath: string; triggerLabel: string; log?: Logger }): Promise<GitHubIssueSource> {
     return new GitHubIssueSource({ ...cfg, privateKey: await readFile(cfg.privateKeyPath, 'utf8') });
   }
 
@@ -51,8 +53,8 @@ export class GitHubIssueSource implements IssueSource {
     return this.octokitPromise;
   }
 
-  private call<T>(fn: (o: Octokit) => Promise<T>): Promise<T> {
-    return withRetry(async () => fn(await this.octokit()));
+  private call<T>(fn: (o: Octokit) => Promise<T>, opts?: RetryOptions): Promise<T> {
+    return withRetry(async () => fn(await this.octokit()), opts);
   }
 
   /** Vérifie l'authentification de l'App et l'accès à l'installation. Utilisé par `doctor`. */
@@ -113,14 +115,20 @@ export class GitHubIssueSource implements IssueSource {
     const events = await this.call((o) =>
       o.paginate(o.rest.issues.listEvents, { owner: ref.repo.owner, repo: ref.repo.name, issue_number: ref.number, per_page: 100 }),
     );
-    const login = lastLabeler(events as unknown as LabelEvent[], this.cfg.triggerLabel);
+    let login = lastLabeler(events as unknown as LabelEvent[], this.cfg.triggerLabel);
+    // Aucun événement `labeled` retrouvé (historique tronqué, label posé à la création…) : si le label
+    // trigger est bien présent, on retombe sur l'auteur de l'issue plutôt que de refuser sans raison.
+    if (!login) {
+      const issue = await this.call((o) => o.rest.issues.get({ owner: ref.repo.owner, repo: ref.repo.name, issue_number: ref.number }));
+      if (labelNames(issue.data.labels).includes(this.cfg.triggerLabel)) login = issue.data.user?.login ?? null;
+    }
     if (!login || login.endsWith('[bot]')) return { ok: false, login };
     try {
       const perm = await this.call((o) => o.rest.repos.getCollaboratorPermissionLevel({ owner: ref.repo.owner, repo: ref.repo.name, username: login }));
       return { ok: hasWriteAccess(perm.data.permission), login };
-    } catch (err) {
-      if (status(err) === 404) return { ok: false, login };
-      throw err;
+    } catch {
+      // Erreur réseau, 404, 403… : jamais d'autorisation accordée sur un doute.
+      return { ok: false, login };
     }
   }
 
@@ -148,9 +156,15 @@ export class GitHubIssueSource implements IssueSource {
     }
   }
 
-  /** Les corps sont bornés ici, à l'envoi : GitHub refuse au-delà de 65 536 caractères. */
+  /**
+   * Les corps sont bornés ici, à l'envoi : GitHub refuse au-delà de 65 536 caractères.
+   * `retryOnError: false` : un POST qui a abouti puis expiré ne doit pas être rejoué (doublon de commentaire).
+   */
   async comment(ref: IssueRef, markdown: string): Promise<void> {
-    await this.call((o) => o.rest.issues.createComment({ owner: ref.repo.owner, repo: ref.repo.name, issue_number: ref.number, body: clampForGitHub(markdown) }));
+    await this.call(
+      (o) => o.rest.issues.createComment({ owner: ref.repo.owner, repo: ref.repo.name, issue_number: ref.number, body: clampForGitHub(markdown) }),
+      { retryOnError: false },
+    );
   }
 
   async isStillActive(ref: IssueRef): Promise<boolean> {
@@ -167,25 +181,44 @@ export class GitHubIssueSource implements IssueSource {
   }
 
   async getAuthenticatedRemoteUrl(repo: RepoRef): Promise<string> {
-    const o = await this.octokit();
-    const auth = (await o.auth({ type: 'installation' })) as { token: string };
+    const auth = await this.call(async (o) => (await o.auth({ type: 'installation' })) as { token: string });
     return `https://x-access-token:${auth.token}@github.com/${repo.full}.git`;
   }
 
   async openPullRequest(input: PullRequestInput): Promise<PullRef> {
     const { owner, name: repo } = input.repo;
-    const pr = await this.call((o) => o.rest.pulls.create({ owner, repo, title: input.title, head: input.head, base: input.base, body: clampForGitHub(input.body), draft: input.draft }));
+    let pr;
+    try {
+      // retryOnError: false — un create() qui a abouti puis expiré côté client ne doit pas être rejoué (doublon de PR).
+      pr = await this.call(
+        (o) => o.rest.pulls.create({ owner, repo, title: input.title, head: input.head, base: input.base, body: clampForGitHub(input.body), draft: input.draft }),
+        { retryOnError: false },
+      );
+    } catch (err) {
+      // 422 : GitHub refuse souvent une 2e création faute d'avoir vu la 1re aboutir (retry applicatif, double appel…).
+      if (status(err) === 422) {
+        const existing = await this.findPullRequest(input.repo, input.head);
+        if (existing) return existing;
+      }
+      throw err;
+    }
+    const number = pr.data.number;
+    // Après la création, plus rien ne doit pouvoir faire échouer l'opération : la PR existe déjà.
     if (input.labels.length) {
-      await this.call((o) => o.rest.issues.addLabels({ owner, repo, issue_number: pr.data.number, labels: input.labels }));
+      try {
+        await this.call((o) => o.rest.issues.addLabels({ owner, repo, issue_number: number, labels: input.labels }));
+      } catch (err) {
+        this.cfg.log?.warn({ err, repo: input.repo.full, pr: number }, 'openPullRequest : étape post-création échouée');
+      }
     }
     if (input.reviewers.length) {
       try {
-        await this.call((o) => o.rest.pulls.requestReviewers({ owner, repo, pull_number: pr.data.number, reviewers: input.reviewers }));
+        await this.call((o) => o.rest.pulls.requestReviewers({ owner, repo, pull_number: number, reviewers: input.reviewers }));
       } catch (err) {
-        if (status(err) !== 422) throw err; // reviewer sans accès ou auteur de la PR : on ignore
+        this.cfg.log?.warn({ err, repo: input.repo.full, pr: number }, 'openPullRequest : étape post-création échouée');
       }
     }
-    return { repo: input.repo, number: pr.data.number, url: pr.data.html_url };
+    return { repo: input.repo, number, url: pr.data.html_url };
   }
 
   async updatePullRequest(ref: PullRef, patch: { title: string; body: string; draft: boolean; base: string }): Promise<void> {
@@ -215,7 +248,12 @@ export class GitHubIssueSource implements IssueSource {
     const names = new Set(existing.map((l) => l.name));
     for (const def of labelDefinitions(this.cfg.triggerLabel)) {
       if (names.has(def.name)) continue;
-      await this.call((o) => o.rest.issues.createLabel({ owner: repo.owner, repo: repo.name, name: def.name, color: def.color, description: def.description }));
+      try {
+        await this.call((o) => o.rest.issues.createLabel({ owner: repo.owner, repo: repo.name, name: def.name, color: def.color, description: def.description }));
+      } catch (err) {
+        // 422 : le label existe déjà (créé entre-temps, ou déjà là avec une casse différente) — rien à faire.
+        if (status(err) !== 422) throw err;
+      }
     }
   }
 }
