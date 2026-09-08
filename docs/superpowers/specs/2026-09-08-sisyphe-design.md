@@ -15,7 +15,7 @@ Contexte : POC sur le Mac de Victor, destiné à prouver la faisabilité et à j
 
 - **Runtime : un Mac** (laptop pour le POC, Mac mini à terme). Raison : Xcode ne tourne que sur macOS, et on veut que l'agent compile et teste.
 - **Orchestration : daemon custom + Claude Agent SDK**, pas GitHub Actions. Raison : contrôle fin du pipeline en phases (triage, implémentation, vérification, livraison), et portabilité vers d'autres sources d'issues (Jira) et d'autres forges plus tard.
-- **Langage : TypeScript sur Node 22 LTS.** Même runtime que Claude Code, SDK le mieux documenté, launchd trivial.
+- **Langage : TypeScript sur Node 24 ou plus.** Même runtime que Claude Code, SDK le mieux documenté, launchd trivial. Le module intégré `node:sqlite` remplace `better-sqlite3` : aucun module natif à compiler sur un Mac neuf.
 - **Auth Claude : clé API entreprise** via `ANTHROPIC_API_KEY`. L'auth par abonnement claude.ai n'est pas autorisée pour les agents SDK, et la clé API donne le coût réel par issue.
 - **Identité GitHub : une GitHub App `sisyphe[bot]`** installée sur les repos cibles. Raison : GitHub interdit d'approuver sa propre PR, donc les PR ne doivent pas être ouvertes avec le token de Victor. Le bot donne aussi une attribution claire.
 - **Interface de review v1 : GitHub natif** (PR, labels, commentaires). Pas de dashboard web en v1.
@@ -28,7 +28,7 @@ Contexte : POC sur le Mac de Victor, destiné à prouver la faisabilité et à j
 - `config` : chargement et validation (zod) de la config machine `~/.sisyphe/config.yml` et de la config repo `sisyphe.yml`. Applique les défauts.
 - `github` : client GitHub App (Octokit) : issues, labels, commentaires, permissions, PR. Implémente l'interface `IssueSource`.
 - `git` : miroir bare par repo, worktree par job, branches, squash, push, diff. Appelle le binaire `git` via `execa`.
-- `store` : SQLite (`better-sqlite3`), tables `jobs` et `phases`, migrations versionnées.
+- `store` : SQLite via `node:sqlite`, tables `jobs` et `phases`, migrations versionnées.
 - `jobs` : machine à états, scheduler, réconciliation au démarrage.
 - `agent` : `AgentRunner` qui enveloppe le SDK, prompts de triage et d'implémentation, schémas JSON de sortie, hooks de sécurité.
 - `verify` : exécution de build, test, lint ; scan de secrets (gitleaks) ; détection des chemins protégés ; taille du diff.
@@ -39,9 +39,9 @@ Contexte : POC sur le Mac de Victor, destiné à prouver la faisabilité et à j
 
 ### 3.2 Dépendances externes
 
-Node 22, git, gitleaks (via Homebrew), Claude Code CLI (embarqué par le SDK). Les outils du repo cible (Xcode, xcodegen, swiftlint) ne sont pas connus de Sisyphe : ils sont invoqués via les commandes déclarées dans `sisyphe.yml`, et `sisyphe doctor` vérifie seulement que leur premier mot est sur le PATH.
+Node 24 ou plus, git, gitleaks (via Homebrew), Claude Code CLI (embarqué par le SDK). Les outils du repo cible (Xcode, xcodegen, swiftlint) ne sont pas connus de Sisyphe : ils sont invoqués via les commandes déclarées dans `sisyphe.yml`, et `sisyphe doctor` vérifie seulement que leur premier mot est sur le PATH.
 
-Librairies : `@anthropic-ai/claude-agent-sdk`, `@octokit/app`, `@octokit/rest`, `better-sqlite3`, `zod`, `yaml`, `execa`, `pino`, `commander`, `vitest`.
+Librairies : `@anthropic-ai/claude-agent-sdk`, `@octokit/app`, `@octokit/rest`, `zod`, `yaml`, `execa`, `picomatch`, `pino`, `commander`, `vitest`.
 
 ### 3.3 Interfaces internes
 
@@ -321,7 +321,7 @@ Logs du daemon : pino JSON dans `~/.sisyphe/logs/daemon.log`, rotation quotidien
 ## 11. Installation sur un Mac neuf
 
 1. Xcode depuis l'App Store, ouvrir une fois, accepter la licence, installer un simulateur iPhone. Étape manuelle, hors Sisyphe.
-2. Homebrew, puis `brew install node@22 git gitleaks xcodegen`.
+2. Homebrew, puis `brew install node git gitleaks xcodegen` (Node 24 ou plus).
 3. `npm install -g sisyphe` (ou clone du repo et `npm link` pendant le POC).
 4. Créer la GitHub App une fois pour l'organisation, l'installer sur les repos, télécharger la clé privée.
 5. `sisyphe setup`, puis `sisyphe doctor` jusqu'au vert.
