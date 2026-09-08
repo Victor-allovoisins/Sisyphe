@@ -15,4 +15,13 @@ describe('renderPlist', () => {
     expect(p).toContain('<key>KeepAlive</key><true/>');
     expect(p).toContain('/Users/v/.sisyphe/logs/launchd.err.log');
   });
+
+  it('préfixe le PATH avec le répertoire du node exécutant et redirige stdout vers /dev/null', () => {
+    const p = renderPlist({
+      label: 'com.sisyphe.daemon', nodePath: '/opt/homebrew/bin/node', scriptPath: '/x/dist/cli/index.js',
+      dataDir: '/Users/v/.sisyphe', logsDir: '/Users/v/.sisyphe/logs', env: { PATH: '/usr/bin:/bin' },
+    });
+    expect(p).toContain('<string>/opt/homebrew/bin:/usr/bin:/bin</string>');
+    expect(p).toContain('<key>StandardOutPath</key><string>/dev/null</string>');
+  });
 });
