@@ -67,7 +67,8 @@ export function renderSecretsComment(found: string[], trigger: string): string {
 }
 
 export function renderFailedComment(jobId: string, message: string, trigger: string): string {
-  return `🪨 Sisyphe a échoué : ${message}\n\nJob \`${jobId}\`. ${relaunch(trigger, 'failed')}\n\n${jobMarker(jobId)}`;
+  // La sortie de `commands.setup` et les noms de fichiers choisis par l'agent finissent ici : texte non fiable.
+  return `🪨 Sisyphe a échoué : ${sanitizeModelText(message, { multiline: true })}\n\nJob \`${jobId}\`. ${relaunch(trigger, 'failed')}\n\n${jobMarker(jobId)}`;
 }
 
 export function renderCancelledComment(jobId: string): string {

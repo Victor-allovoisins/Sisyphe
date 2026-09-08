@@ -20,8 +20,8 @@ import { deliver } from '../deliver/deliver.js';
 import type { Git } from '../git/git.js';
 import { issueRefOf, type IssueSource } from '../github/source.js';
 import type { JobPatch, JobStore } from '../store/jobs.js';
-import type { PhaseStore } from '../store/phases.js';
-import { isTerminal, type Job, type JobFlags, type JobState } from '../store/types.js';
+import type { PhaseFinish, PhaseStore } from '../store/phases.js';
+import { isTerminal, type Job, type JobFlags, type JobState, type PhaseName } from '../store/types.js';
 import { minutes } from '../util/time.js';
 import { agentEnv, repoEnv, runRepoCommand } from '../verify/commands.js';
 import { runVerification, type ScanFn, type VerifyResult } from '../verify/verify.js';
@@ -52,7 +52,10 @@ export const IMPLEMENT_DENY = [
 const TRIAGE_MAX_TURNS = 40;
 const IMPLEMENT_MAX_TURNS = 200;
 
-/** Raisons d'abort : un arrêt du daemon laisse le job en place, une annulation le termine. */
+/**
+ * Raisons d'abort. Seul `CANCELLED` termine le job : un arrêt du daemon (`SHUTDOWN`) comme toute
+ * autre raison — y compris l'`AbortError` par défaut — laisse le job en place pour la réconciliation.
+ */
 export const SHUTDOWN = 'shutdown';
 export const CANCELLED = 'cancelled';
 
@@ -77,8 +80,33 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
     });
   };
 
+  /** Ouvre une phase, exécute, et la ferme quoi qu'il arrive : une phase orpheline échapperait au budget quotidien. */
+  const runPhase = async <T>(
+    name: PhaseName,
+    attempt: number,
+    model: string | null,
+    fn: () => Promise<T>,
+    close: (out: T) => PhaseFinish,
+  ): Promise<T> => {
+    const phase = phases.start({ jobId: job.id, name, attempt, model });
+    let closed = false;
+    try {
+      const out = await fn();
+      phases.finish(phase.id, close(out));
+      closed = true;
+      return out;
+    } finally {
+      if (!closed) phases.finish(phase.id, { outcome: 'failure', stopReason: 'exception' });
+    }
+  };
+
   let worktreePath: string | null = null;
   let branch: string | null = null;
+  /** Le nettoyage ne fait jamais échouer un job : un worktree résiduel se répare, un job perdu non. */
+  const cleanup = async () => {
+    if (!worktreePath) return;
+    await deps.git.removeWorktree(job.repo, worktreePath, branch ?? undefined).catch((err) => log.warn({ err }, 'worktree non supprimé'));
+  };
 
   try {
     signal.throwIfAborted();
@@ -109,40 +137,47 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
     if (config.baseBranch !== defaultBranch) await deps.git.ensureMirror(job.repo, fetchUrl, publicUrl, [config.baseBranch]);
     branch = branchName(config.branchPrefix, job.issueNumber, job.issueTitle);
     const wt = await deps.git.createWorktree(job.repo, job.issueNumber, branch, config.baseBranch);
-    worktreePath = wt.worktreePath;
-    job = store.update(job.id, { branch, baseSha: wt.baseSha, worktreePath });
+    // Constante : les closures ci-dessous (agent, vérification, livraison) ne conservent pas le rétrécissement d'un `let`.
+    const wtPath = wt.worktreePath;
+    worktreePath = wtPath;
+    job = store.update(job.id, { branch, baseSha: wt.baseSha, worktreePath: wtPath });
     const envExtra = { cacheDir: repoCachePath(deps.paths, job.repo), issueNumber: job.issueNumber, branch };
     const env = repoEnv(deps.env, envExtra);
     const agentEnvVars = agentEnv(deps.env, envExtra);
     await mkdir(env.SISYPHE_CACHE_DIR, { recursive: true });
     if (config.commands.setup) {
       const r = await runRepoCommand(config.commands.setup, {
-        cwd: worktreePath, env, timeoutMs: minutes(config.timeouts.verifyMinutes), logFile: join(dir, 'setup.log'), signal,
+        cwd: wtPath, env, timeoutMs: minutes(config.timeouts.verifyMinutes), logFile: join(dir, 'setup.log'), signal,
       });
       if (r.cancelled) signal.throwIfAborted();
       if (r.exitCode !== 0) throw new Error(`commands.setup a échoué (code ${r.exitCode}) : ${r.output.slice(-300)}`);
     }
 
     // Le SDK ne charge rien depuis le repo cible : Sisyphe lit lui-même son CLAUDE.md et l'injecte.
-    const repoContext = await readRepoContext(worktreePath);
+    const repoContext = await readRepoContext(wtPath);
     const appendix = systemAppend(config, repoContext);
 
     // Triage
     signal.throwIfAborted();
-    const tphase = phases.start({ jobId: job.id, name: 'triage', attempt: 1, model: config.models.triage });
-    const tres = await deps.agent.run<TriageVerdict>({
-      cwd: worktreePath, model: config.models.triage, systemPromptAppend: appendix,
-      prompt: triagePrompt(issue, config), outputSchema: triageJsonSchema,
-      maxTurns: TRIAGE_MAX_TURNS, maxBudgetUsd: config.budget.triageUsd,
-      allowedTools: TRIAGE_TOOLS, disallowedTools: TRIAGE_DENY, env: agentEnvVars,
-      timeoutMs: minutes(config.timeouts.triageMinutes), signal, transcriptPath: join(dir, 'transcript-triage-1.jsonl'),
-    });
+    const tres = await runPhase(
+      'triage',
+      1,
+      config.models.triage,
+      () =>
+        deps.agent.run<TriageVerdict>({
+          cwd: wtPath, model: config.models.triage, systemPromptAppend: appendix,
+          prompt: triagePrompt(issue, config), outputSchema: triageJsonSchema,
+          maxTurns: TRIAGE_MAX_TURNS, maxBudgetUsd: config.budget.triageUsd,
+          allowedTools: TRIAGE_TOOLS, disallowedTools: TRIAGE_DENY, env: agentEnvVars,
+          timeoutMs: minutes(config.timeouts.triageMinutes), signal, transcriptPath: join(dir, 'transcript-triage-1.jsonl'),
+        }),
+      (res) => ({
+        sessionId: res.sessionId, costUsd: res.costUsd, usage: res.usage, numTurns: res.numTurns,
+        stopReason: res.stopReason, outcome: TriageVerdictSchema.safeParse(res.output).success ? 'success' : 'failure',
+      }),
+    );
     record(tres);
     const tparsed = TriageVerdictSchema.safeParse(tres.output);
-    phases.finish(tphase.id, {
-      sessionId: tres.sessionId, costUsd: tres.costUsd, usage: tres.usage, numTurns: tres.numTurns,
-      stopReason: tres.stopReason, outcome: tparsed.success ? 'success' : 'failure',
-    });
     signal.throwIfAborted();
     const verdict: TriageVerdict = tparsed.success
       ? tparsed.data
@@ -154,7 +189,7 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
     if (verdict.verdict !== 'ready') {
       await source.comment(issueRef, renderBlockedComment(verdict, trigger));
       await source.setStatus(issueRef, 'blocked');
-      await deps.git.removeWorktree(job.repo, worktreePath, branch);
+      await cleanup();
       return finish('blocked', { error: `triage : ${verdict.verdict}` });
     }
 
@@ -168,23 +203,29 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
       signal.throwIfAborted();
       job = store.update(job.id, { attempt });
       const prompt = verify?.failedStep ? retryPrompt(verify.failedStep, verify.failureTail) : implementPrompt(issue, verdict, config);
-      const iphase = phases.start({ jobId: job.id, name: 'implement', attempt, model: config.models.implement });
-      const ires = await deps.agent.run<ImplementationReport>({
-        cwd: worktreePath, model: config.models.implement, systemPromptAppend: appendix,
-        prompt, outputSchema: reportJsonSchema,
-        maxTurns: IMPLEMENT_MAX_TURNS, maxBudgetUsd: config.budget.implementUsd, resumeSessionId: sessionId,
-        allowedTools: IMPLEMENT_TOOLS, disallowedTools: IMPLEMENT_DENY,
-        hooks: { PreToolUse: [{ matcher: 'Edit|Write', hooks: [pathGuardHook(worktreePath, config.protectedPaths)] }] },
-        env: agentEnvVars,
-        timeoutMs: minutes(config.timeouts.implementMinutes), signal, transcriptPath: join(dir, `transcript-implement-${attempt}.jsonl`),
-      });
+      const resume = sessionId;
+      const ires = await runPhase(
+        'implement',
+        attempt,
+        config.models.implement,
+        () =>
+          deps.agent.run<ImplementationReport>({
+            cwd: wtPath, model: config.models.implement, systemPromptAppend: appendix,
+            prompt, outputSchema: reportJsonSchema,
+            maxTurns: IMPLEMENT_MAX_TURNS, maxBudgetUsd: config.budget.implementUsd, resumeSessionId: resume,
+            allowedTools: IMPLEMENT_TOOLS, disallowedTools: IMPLEMENT_DENY,
+            hooks: { PreToolUse: [{ matcher: 'Edit|Write', hooks: [pathGuardHook(wtPath, config.protectedPaths)] }] },
+            env: agentEnvVars,
+            timeoutMs: minutes(config.timeouts.implementMinutes), signal, transcriptPath: join(dir, `transcript-implement-${attempt}.jsonl`),
+          }),
+        (res) => ({
+          sessionId: res.sessionId, costUsd: res.costUsd, usage: res.usage, numTurns: res.numTurns,
+          stopReason: res.stopReason, outcome: ImplementationReportSchema.safeParse(res.output).success ? 'success' : 'failure',
+        }),
+      );
       record(ires);
       sessionId = ires.sessionId ?? sessionId;
       const rparsed = ImplementationReportSchema.safeParse(ires.output);
-      phases.finish(iphase.id, {
-        sessionId: ires.sessionId, costUsd: ires.costUsd, usage: ires.usage, numTurns: ires.numTurns,
-        stopReason: ires.stopReason, outcome: rparsed.success ? 'success' : 'failure',
-      });
       signal.throwIfAborted();
       report = rparsed.success
         ? rparsed.data
@@ -192,16 +233,20 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
       if (ires.stopReason !== 'completed') flags = { ...flags, earlyStop: ires.errorMessage ? `${ires.stopReason} : ${ires.errorMessage}` : ires.stopReason };
 
       job = store.transition(job.id, 'verifying', { report, flags });
-      const vphase = phases.start({ jobId: job.id, name: 'verify', attempt });
-      verify = await runVerification({ worktreePath, baseSha: wt.baseSha, config, jobDir: dir, env, git: deps.git, signal, scan: deps.scan });
-      phases.finish(vphase.id, { outcome: verify.ok ? 'success' : 'failure', stopReason: verify.failedStep });
+      verify = await runPhase(
+        'verify',
+        attempt,
+        null,
+        () => runVerification({ worktreePath: wtPath, baseSha: wt.baseSha, config, jobDir: dir, env, git: deps.git, signal, scan: deps.scan }),
+        (v) => ({ outcome: v.ok ? 'success' : 'failure', stopReason: v.failedStep }),
+      );
       flags = { ...flags, protectedPathsTouched: verify.flags.protectedPathsTouched, largeDiff: verify.flags.largeDiff, secretsFound: verify.flags.secretsFound };
       job = store.update(job.id, { flags });
 
       if (verify.noChanges) {
         await source.comment(issueRef, renderNoChangesComment(report.summary, trigger));
         await source.setStatus(issueRef, 'blocked');
-        await deps.git.removeWorktree(job.repo, worktreePath, branch);
+        await cleanup();
         return finish('blocked', { error: 'aucun changement produit' });
       }
       if (verify.flags.secretsFound.length > 0) {
@@ -218,36 +263,47 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
       flags = { ...flags, verificationFailed: true };
       job = store.update(job.id, { flags });
     }
+    // La boucle tourne au moins une fois (maxAttempts ≥ 1) : l'invariant est explicite plutôt que masqué par un `!`.
+    if (!verify) throw new Error('Aucune vérification exécutée : limits.maxAttempts invalide');
+    const verified = verify;
 
     // Livraison
     job = store.transition(job.id, 'delivering');
-    const dphase = phases.start({ jobId: job.id, name: 'deliver', attempt: job.attempt });
-    const prTemplate = await readPrTemplate(deps.git, job.repo, config.baseBranch);
-    // Le token d'installation vit une heure : on le ré-obtient juste avant le push, un job peut durer plus longtemps.
-    const pushUrl = await source.getAuthenticatedRemoteUrl(issueRef.repo);
-    const delivered = await deliver({
-      job, issue, config, report, verify: verify!, phases: phases.listForJob(job.id),
-      source, git: deps.git, worktreePath, pushUrl, prTemplate, durationMs: elapsed(),
-    });
-    phases.finish(dphase.id, { outcome: 'success' });
+    const delivered = await runPhase(
+      'deliver',
+      job.attempt,
+      null,
+      async () => {
+        const prTemplate = await readPrTemplate(deps.git, job.repo, config.baseBranch);
+        // Le token d'installation vit une heure : on le ré-obtient juste avant le push, un job peut durer plus longtemps.
+        const pushUrl = await source.getAuthenticatedRemoteUrl(issueRef.repo);
+        return deliver({
+          job, issue, config, report, verify: verified, phases: phases.listForJob(job.id),
+          source, git: deps.git, worktreePath: wtPath, pushUrl, prTemplate, durationMs: elapsed(),
+        });
+      },
+      () => ({ outcome: 'success' }),
+    );
+    // La PR existe : on la persiste avant tout nettoyage, pour qu'un incident ensuite n'en perde pas la trace.
+    job = store.update(job.id, { prNumber: delivered.prNumber, prUrl: delivered.prUrl, prState: 'open' });
     if (delivered.warnings.length) log.warn({ warnings: delivered.warnings }, 'livraison : mises à jour de l’issue partielles');
     const final: JobState = job.flags.verificationFailed ? 'failed' : 'done';
-    if (final === 'done') await deps.git.removeWorktree(job.repo, worktreePath, branch);
+    if (final === 'done') await cleanup();
     log.info({ state: final, pr: delivered.prUrl, costUsd: job.costUsd }, 'job terminé');
-    return finish(final, { prNumber: delivered.prNumber, prUrl: delivered.prUrl, prState: 'open' });
+    return finish(final);
   } catch (err) {
     const current = store.get(job.id) ?? job;
     if (isTerminal(current.state)) return current;
     if (signal.aborted) {
-      if (signal.reason === SHUTDOWN) {
-        log.info('arrêt du daemon : job laissé pour la réconciliation');
-        return current;
+      if (signal.reason === CANCELLED) {
+        log.info({ err }, 'job annulé');
+        await cleanup();
+        await source.comment(issueRef, renderCancelledComment(job.id)).catch(() => undefined);
+        await source.setStatus(issueRef, null).catch(() => undefined);
+        return finish('cancelled', { error: 'annulé' });
       }
-      log.info('job annulé');
-      if (worktreePath) await deps.git.removeWorktree(job.repo, worktreePath, branch ?? undefined).catch(() => undefined);
-      await source.comment(issueRef, renderCancelledComment(job.id)).catch(() => undefined);
-      await source.setStatus(issueRef, null).catch(() => undefined);
-      return finish('cancelled', { error: 'annulé' });
+      log.info({ reason: signal.reason, err }, 'arrêt du daemon ou abort inconnu : job laissé pour la réconciliation');
+      return current;
     }
     const message = err instanceof Error ? err.message : String(err);
     log.error({ err }, 'job en échec');

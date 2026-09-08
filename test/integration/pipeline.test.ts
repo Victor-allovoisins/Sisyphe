@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { runJob } from '../../src/jobs/pipeline.js';
-import { REPO, makeHarness, readyVerdict, repoRef, report, writeFeature } from '../helpers/harness.js';
+import { REPO, SISYPHE_YML, makeHarness, readyVerdict, repoRef, report, writeFeature } from '../helpers/harness.js';
 import { remoteBranchSha, remoteCommitParents } from '../helpers/git-fixture.js';
 
 const BRANCH = 'feature/issue-7-ajouter-feature-hello';
@@ -85,6 +85,7 @@ describe('runJob', () => {
     expect(done.flags.verificationFailed).toBe(true);
     expect(h.source.pulls[0].draft).toBe(true);
     expect(h.source.pulls[0].body).toContain('PR en draft');
+    expect(done.prNumber).not.toBeNull();
     expect(h.source.labelsOf(issue7)).toEqual(['sisyphe', 'sisyphe:failed']);
     expect(existsSync(done.worktreePath!)).toBe(true);
   });
@@ -162,5 +163,81 @@ describe('runJob', () => {
     expect(done.state).toBe('failed');
     expect(done.error).toContain('SDK indisponible');
     expect(h.source.labelsOf(issue7)).toEqual(['sisyphe', 'sisyphe:failed']);
+  });
+
+  it('injecte le CLAUDE.md du repo dans le system prompt et refuse un sisyphe.yml invalide', async () => {
+    const h = await makeHarness({
+      steps: [{ output: readyVerdict }, { output: report('a'), sideEffect: writeFeature('hello\n') }],
+      files: { 'CLAUDE.md': '# Conventions maison\nSwift only.' },
+    });
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    await runJob(job.id, h.deps, signal());
+    expect(h.agent.calls[0].systemPromptAppend).toContain('Swift only.');
+
+    const bad = await makeHarness({ steps: [], files: { 'sisyphe.yml': 'baseBranch: main\ncommands:\n  buidl: x\n' } });
+    const job2 = bad.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    const done = await runJob(job2.id, bad.deps, signal());
+    expect(done.state).toBe('blocked');
+    expect(bad.source.commentsOf(issue7).at(-1)).toContain('Corrigez');
+    expect(bad.agent.calls).toHaveLength(0);
+  });
+
+  it('exécute la commande setup et échoue proprement si elle casse', async () => {
+    const withSetup = 'baseBranch: main\ncommands:\n  setup: echo prêt > setup-ran.txt\n  build: sh build.sh\n  test: sh test.sh\n';
+    const ok = await makeHarness({
+      steps: [{ output: readyVerdict }, { output: report('a'), sideEffect: writeFeature('hello\n') }],
+      files: { 'sisyphe.yml': withSetup },
+    });
+    const okJob = ok.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    expect((await runJob(okJob.id, ok.deps, signal())).state).toBe('done');
+    expect(ok.agent.calls[1].prompt).toContain('setup : `echo prêt > setup-ran.txt`');
+
+    // Le setup casse avant tout appel agent : c'est bien le pipeline, et non la vérification, qui l'a exécuté.
+    const ko = await makeHarness({ steps: [], files: { 'sisyphe.yml': withSetup.replace('echo prêt > setup-ran.txt', 'exit 7') } });
+    const koJob = ko.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    const done = await runJob(koJob.id, ko.deps, signal());
+    expect(done.state).toBe('failed');
+    expect(done.error).toContain('commands.setup');
+    expect(ko.source.commentsOf(issue7).at(-1)).toContain('échoué');
+    expect(ko.agent.calls).toHaveLength(0);
+  });
+
+  it('rafraîchit une branche de base différente de la branche par défaut et y lit le template de PR', async () => {
+    const h = await makeHarness({
+      steps: [{ output: readyVerdict }, { output: report('a'), sideEffect: writeFeature('hello\n') }],
+      defaultBranch: 'trunk',
+      extraBranches: ['develop'],
+      files: { 'sisyphe.yml': SISYPHE_YML.replace('baseBranch: main', 'baseBranch: develop'), '.github/PULL_REQUEST_TEMPLATE.md': '## Checklist repo\n- [ ] QA' },
+    });
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    const done = await runJob(job.id, h.deps, signal());
+    expect(done.state).toBe('done');
+    expect(h.source.pulls[0].base).toBe('develop');
+    expect(h.source.pulls[0].body).toContain('## Checklist repo');
+  });
+
+  it('un triage sans JSON exploitable bloque avec un verdict synthétique', async () => {
+    const h = await makeHarness({ steps: [{ output: null, stopReason: 'max_turns' }] });
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    const done = await runJob(job.id, h.deps, signal());
+    expect(done.state).toBe('blocked');
+    expect(done.verdict?.verdict).toBe('needs_clarification');
+    expect(h.source.commentsOf(issue7).at(-1)).toContain('max_turns');
+    expect(h.phases.listForJob(done.id).map((p) => p.outcome)).toEqual(['failure']);
+  });
+
+  it('un abort sans raison laisse le job en place ; une exception ferme la phase', async () => {
+    const controller = new AbortController();
+    const h = await makeHarness({ steps: [{ output: readyVerdict }, { output: report('v1'), sideEffect: async () => controller.abort() }] });
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    const left = await runJob(job.id, h.deps, controller.signal);
+    expect(left.state).toBe('implementing');
+
+    const h2 = await makeHarness({ steps: [{ output: readyVerdict }, { output: report('v1'), sideEffect: async () => { throw new Error('SDK indisponible'); } }] });
+    const job2 = h2.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    await runJob(job2.id, h2.deps, signal());
+    const implementPhase = h2.phases.listForJob(job2.id).find((p) => p.name === 'implement');
+    expect(implementPhase?.outcome).toBe('failure');
+    expect(implementPhase?.finishedAt).not.toBeNull();
   });
 });

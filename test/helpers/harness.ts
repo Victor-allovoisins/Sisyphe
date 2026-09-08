@@ -1,3 +1,4 @@
+import { execa } from 'execa';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,7 +13,7 @@ import { JobStore } from '../../src/store/jobs.js';
 import { PhaseStore } from '../../src/store/phases.js';
 import { FakeIssueSource } from '../fakes/fake-issue-source.js';
 import { ScriptedAgentRunner, type ScriptedStep } from '../fakes/scripted-agent-runner.js';
-import { createRemoteRepo, writeFiles } from './git-fixture.js';
+import { TEST_ENV, createRemoteRepo, writeFiles } from './git-fixture.js';
 
 export const REPO = 'acme/demo';
 export const repoRef = parseRepo(REPO);
@@ -44,21 +45,31 @@ export interface HarnessOptions {
   withConfig?: boolean;
   dailyBudgetUsd?: number;
   issues?: Array<{ number: number; title: string; author?: string; labeledBy?: string }>;
+  /** Fichiers ajoutés au repo distant ; peuvent remplacer ceux du fixture, `sisyphe.yml` compris. */
+  files?: Record<string, string>;
+  /** Branche par défaut du repo distant et de la forge. */
+  defaultBranch?: string;
+  /** Branches créées sur le distant à partir de la branche par défaut, pour tester une base différente. */
+  extraBranches?: string[];
 }
 
 export async function makeHarness(o: HarnessOptions) {
   const root = await mkdtemp(join(tmpdir(), 'sisyphe-it-'));
   const paths = dataPaths(join(root, 'data'));
   await ensureDataDirs(paths);
+  const defaultBranch = o.defaultBranch ?? 'main';
   const files: Record<string, string> = { 'build.sh': 'test -f src/feature.txt', 'test.sh': 'grep -q hello src/feature.txt' };
   if (o.withConfig !== false) files['sisyphe.yml'] = SISYPHE_YML;
-  const { remotePath, headSha } = await createRemoteRepo(root, files);
+  Object.assign(files, o.files ?? {});
+  const { remotePath, headSha } = await createRemoteRepo(root, files, defaultBranch);
+  for (const b of o.extraBranches ?? []) await execa('git', ['branch', b, defaultBranch], { cwd: remotePath, env: TEST_ENV });
 
   const db = openDatabase(':memory:');
   const store = new JobStore(db);
   const phases = new PhaseStore(db);
   const source = new FakeIssueSource('sisyphe');
   source.remoteUrl = remotePath;
+  source.defaultBranch = defaultBranch;
   source.permissions.alice = 'write';
   for (const issue of o.issues ?? [{ number: 7, title: 'Ajouter feature hello' }]) {
     source.addIssue(repoRef, { ...issue, body: 'On veut hello.', author: issue.author ?? 'alice' });
