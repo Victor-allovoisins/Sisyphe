@@ -65,7 +65,7 @@ describe('buildOptions', () => {
     expect(opts.tools).toEqual(['Read', 'Glob']);
     expect(opts.allowedTools).toEqual(['Read', 'Glob']);
     expect(opts.disallowedTools).toEqual(['WebFetch']);
-    expect(opts.settingSources).toEqual(['project']);
+    expect(opts.settingSources).toEqual([]);
     expect(opts.managedSettings).toEqual({ strictPluginOnlyCustomization: ['hooks', 'mcp'] });
     expect(opts.outputFormat).toEqual({ type: 'json_schema', schema: { type: 'object' } });
     expect(opts.sandbox).toMatchObject({ enabled: true, autoAllowBashIfSandboxed: true });

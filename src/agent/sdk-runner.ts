@@ -8,9 +8,9 @@ import type { AgentResult, AgentRunOptions, AgentRunner, AgentStopReason } from 
  * - un `query()` en mode simple LÈVE après avoir émis un result d'erreur : on capture le result avant le catch ;
  * - `env` REMPLACE l'environnement du CLI (rien n'est hérité du daemon au-delà de ce que agentEnv fournit) ;
  * - le sandbox ne gate que les commandes Bash, pas les outils in-process ni le trafic API du CLI.
- * `settingSources: ['project']` charge le CLAUDE.md du repo cible mais aussi son `.claude/settings.json` :
- * ses hooks et serveurs MCP sont désactivés (`strictPluginOnlyCustomization`), sinon un repo, ou l'agent lui-même,
- * pourrait y déposer une commande shell exécutée avec les privilèges du daemon.
+ * `settingSources: []` : rien n'est chargé depuis le repo cible (ni settings, ni hooks, ni MCP, ni CLAUDE.md) ;
+ * le CLAUDE.md est injecté par Sisyphe dans `systemPromptAppend`, ce qui rend la protection indépendante d'un
+ * éventuel tier MDM qui ferait ignorer `managedSettings`.
  */
 export interface SdkRunnerConfig {
   sandbox: boolean;
@@ -29,7 +29,7 @@ export function buildOptions(o: AgentRunOptions, cfg: SdkRunnerConfig, controlle
     cwd: o.cwd,
     model: o.model,
     systemPrompt: { type: 'preset', preset: 'claude_code', append: o.systemPromptAppend },
-    settingSources: ['project'],
+    settingSources: [],
     managedSettings: { strictPluginOnlyCustomization: ['hooks', 'mcp'] },
     permissionMode: 'dontAsk',
     tools: o.allowedTools,

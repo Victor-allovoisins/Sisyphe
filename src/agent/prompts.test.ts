@@ -43,6 +43,9 @@ describe('prompts', () => {
     expect(s).toContain('Utiliser SwiftUI uniquement.');
     expect(s).toContain('git push');
     expect(s).toContain('supprime tes fichiers de travail');
+    expect(systemAppend(config, '# Règles\nSwift only')).toContain('Contexte du repo');
+    expect(systemAppend(config, '# Règles\nSwift only')).toContain('Swift only');
+    expect(systemAppend(config, '   ')).not.toContain('Contexte du repo');
   });
   it('triagePrompt contient l’issue et le seuil de fichiers', () => {
     const p = triagePrompt(issue, config);
