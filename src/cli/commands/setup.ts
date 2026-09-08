@@ -11,7 +11,7 @@ import { buildChecks } from './doctor.js';
 import { runChecks } from '../checks.js';
 import { LAUNCHD_LABEL, installLaunchAgent, plistPath, renderPlist } from '../launchd.js';
 
-/** Réponse affichée par défaut quand ANTHROPIC_API_KEY est déjà dans l'environnement : la clé elle-même n'est jamais échouée à l'écran. */
+/** Réponse affichée par défaut quand ANTHROPIC_API_KEY est déjà dans l'environnement : la clé elle-même n'est jamais affichée à l'écran. */
 export const ENV_KEY_PLACEHOLDER = "[valeur de l'environnement]";
 
 export function validateId(s: string): string | null {
@@ -61,15 +61,17 @@ export interface SetupAnswers {
 }
 
 /**
- * Fusionne les réponses de setup avec une config existante : github, repos et dataDir sont écrasés,
- * tout le reste (triggerLabel, pollIntervalSeconds, maxConcurrentJobs, dailyBudgetUsd, sandbox…) est conservé.
+ * Fusionne les réponses de setup avec une config existante : github et repos sont écrasés. dataDir n'est
+ * redemandé nulle part ici — un dataDir personnalisé déjà présent dans la config existante est conservé
+ * (setup ne doit pas silencieusement ramener les données vers la racine par défaut). Tout le reste
+ * (triggerLabel, pollIntervalSeconds, maxConcurrentJobs, dailyBudgetUsd, sandbox…) est conservé aussi.
  */
 export function buildRawConfig(answers: SetupAnswers, existing?: MachineConfig): Record<string, unknown> {
   return {
     ...(existing ?? {}),
     github: { appId: answers.appId, installationId: answers.installationId, privateKeyPath: answers.privateKeyPath },
     repos: answers.repos,
-    dataDir: answers.dataDir,
+    dataDir: existing?.dataDir ?? answers.dataDir,
   };
 }
 
@@ -135,6 +137,11 @@ export async function setupCommand(): Promise<void> {
     const machine = parseMachineConfig(stringify(raw)); // valide avant d'écrire
     const paths = dataPaths(machine.dataDir);
     await ensureDataDirs(paths);
+    // config.yml vit toujours sous la racine par défaut (machineConfigPath()), même quand dataDir — conservé
+    // d'une config existante — pointe ailleurs : s'assurer que ce dossier existe aussi avant d'y écrire.
+    if (paths.root !== dataDir) {
+      await ensureDataDirs(dataPaths(dataDir));
+    }
     await writeFile(configPath, stringify(raw), { mode: 0o600 });
     await chmod(configPath, 0o600); // le mode de writeFile n'est appliqué qu'à la création
     console.log(`Config écrite : ${configPath}`);
@@ -152,7 +159,11 @@ export async function setupCommand(): Promise<void> {
     // La clé n'est pas forcément exportée dans l'environnement de cette session (c'est justement ce que
     // setup vient de recueillir) : on l'injecte pour que le check et la sonde API portent sur la bonne valeur.
     const checkEnv = { ...process.env, ANTHROPIC_API_KEY: apiKey };
-    const checks = buildChecks({ machine: app?.machine, github: app?.github, env: checkEnv, paths: app?.paths });
+    // « agent launchd » est forcément non chargé à ce stade (on ne l'a pas encore installé) : ce check
+    // n'a de sens que pour `sisyphe doctor` une fois le daemon en place, pas pour le pré-vol de setup.
+    const checks = buildChecks({ machine: app?.machine, github: app?.github, env: checkEnv, paths: app?.paths }).filter(
+      (c) => c.name !== 'agent launchd',
+    );
     if (initError && !(initError instanceof MachineConfigError)) {
       const err = initError;
       checks.push({ name: 'initialisation', run: async () => { throw err; } });

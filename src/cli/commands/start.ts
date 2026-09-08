@@ -1,6 +1,7 @@
 import { createApp } from '../../app.js';
 import { Daemon } from '../../daemon/daemon.js';
 import { acquireLock } from '../../daemon/lock.js';
+import { LAUNCHD_LABEL } from '../launchd.js';
 
 export async function startCommand(opts: { once?: boolean }): Promise<void> {
   const app = await createApp({ logToFile: !opts.once });
@@ -17,7 +18,18 @@ export async function startCommand(opts: { once?: boolean }): Promise<void> {
     process.exit(1);
   });
 
-  const release = await acquireLock(app.paths);
+  let release: () => Promise<void>;
+  try {
+    release = await acquireLock(app.paths);
+  } catch (err) {
+    // Le cas le plus probable : l'agent launchd tourne déjà en tâche de fond (KeepAlive) et on vient de
+    // relancer `sisyphe start` à la main par-dessus — indiquer comment l'arrêter plutôt que de laisser
+    // le message brut du verrou.
+    if (err instanceof Error && err.message.includes('tourne déjà')) {
+      throw new Error(`${err.message} Arrêter l'agent launchd d'abord : launchctl bootout gui/$UID/${LAUNCHD_LABEL}.`);
+    }
+    throw err;
+  }
   try {
     const daemon = new Daemon(app.deps);
     if (opts.once) {

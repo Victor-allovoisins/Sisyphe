@@ -1,10 +1,16 @@
 import { execa } from 'execa';
 
+/** Succès partiel : un check qui aboutit mais doit s'afficher en ⚠️ sans faire basculer `ok` (ex. réseau indisponible). */
+export interface CheckWarnResult {
+  warn: true;
+  message: string;
+}
+
 export interface Check {
   name: string;
-  /** Renvoie un détail en cas de succès, lève en cas d'échec. */
-  run: () => Promise<string>;
-  /** Échec non bloquant : affiché en ⚠️, ne fait pas passer `ok` à false. */
+  /** Une chaîne = succès (✅). `{ warn: true, message }` = succès dégradé (⚠️), sans lever. Lève sinon en cas d'échec. */
+  run: () => Promise<string | CheckWarnResult>;
+  /** Échec (levé) non bloquant : affiché en ⚠️, ne fait pas passer `ok` à false. Statique, pour tout échec du check. */
   warn?: boolean;
 }
 
@@ -13,7 +19,12 @@ export async function runChecks(checks: Check[]): Promise<{ ok: boolean; lines: 
   let ok = true;
   for (const c of checks) {
     try {
-      lines.push(`✅ ${c.name} : ${await c.run()}`);
+      const result = await c.run();
+      if (typeof result === 'string') {
+        lines.push(`✅ ${c.name} : ${result}`);
+      } else {
+        lines.push(`⚠️ ${c.name} : ${result.message}`);
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (c.warn) {

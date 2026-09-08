@@ -60,7 +60,7 @@ describe('validatePrivateKeyPath', () => {
 });
 
 describe('buildRawConfig', () => {
-  it("écrase github/repos/dataDir et conserve le reste (triggerLabel...)", () => {
+  it('écrase github/repos et conserve le reste, y compris dataDir (triggerLabel...)', () => {
     const existing = parseMachineConfig(
       stringify({
         github: { appId: 1, installationId: 2, privateKeyPath: '/old.pem' },
@@ -77,14 +77,32 @@ describe('buildRawConfig', () => {
     const merged = parseMachineConfig(stringify(raw));
     expect(merged.github.appId).toBe(9);
     expect(merged.repos).toEqual(['new/repo']);
-    expect(merged.dataDir).toBe('/new-data');
+    expect(merged.dataDir).toBe('/old-data');
     expect(merged.triggerLabel).toBe('custom-label');
     expect(merged.pollIntervalSeconds).toBe(42);
   });
 
-  it('sans config existante, ne pose que les champs fournis (les défauts du schéma s’appliquent)', () => {
+  it('dataDir existant conservé : un dataDir personnalisé ne doit jamais être écrasé par la relance de setup', () => {
+    const existing = parseMachineConfig(
+      stringify({
+        github: { appId: 1, installationId: 2, privateKeyPath: '/old.pem' },
+        repos: ['old/repo'],
+        dataDir: '~/custom-sisyphe-data',
+      }),
+    );
+    const raw = buildRawConfig(
+      { appId: 1, installationId: 2, privateKeyPath: '/old.pem', repos: ['old/repo'], dataDir: '/Users/x/.sisyphe' },
+      existing,
+    );
+    const merged = parseMachineConfig(stringify(raw));
+    expect(merged.dataDir).toBe(existing.dataDir); // déjà étendu (expandHome) par le premier parseMachineConfig
+    expect(merged.dataDir).not.toBe('/Users/x/.sisyphe');
+  });
+
+  it('sans config existante, ne pose que les champs fournis (les défauts du schéma s’appliquent, dataDir vient des réponses)', () => {
     const raw = buildRawConfig({ appId: 1, installationId: 2, privateKeyPath: '/k.pem', repos: ['a/b'], dataDir: '/d' });
     const merged = parseMachineConfig(stringify(raw));
     expect(merged.triggerLabel).toBe('sisyphe');
+    expect(merged.dataDir).toBe('/d');
   });
 });

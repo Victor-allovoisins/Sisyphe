@@ -27,6 +27,14 @@ describe('checks', () => {
     expect(r.ok).toBe(true);
     expect(r.lines).toEqual(['⚠️ a : mineur']);
   });
+  it("runChecks : run() peut renvoyer { warn: true, message } sans lever, sans faire échouer ok", async () => {
+    const r = await runChecks([
+      { name: 'a', run: async () => ({ warn: true as const, message: 'dégradé' }) },
+      { name: 'b', run: async () => 'ok' },
+    ]);
+    expect(r.ok).toBe(true);
+    expect(r.lines).toEqual(['⚠️ a : dégradé', '✅ b : ok']);
+  });
   it('which : réussit sur un binaire présent, lève sur un binaire absent', async () => {
     await expect(which('sh')).resolves.toContain('sh');
     await expect(which('binaire-inexistant-xyz')).rejects.toThrow('introuvable sur le PATH');

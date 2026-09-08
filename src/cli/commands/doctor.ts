@@ -26,12 +26,19 @@ export interface BuildChecksInput {
   nodeVersion?: string;
 }
 
-async function checkApiKeyLive(key: string): Promise<string> {
-  const res = await fetch('https://api.anthropic.com/v1/models?limit=1', {
-    headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' },
-    signal: AbortSignal.timeout(10_000),
-  });
+async function checkApiKeyLive(key: string): Promise<string | { warn: true; message: string }> {
+  let res: Response;
+  try {
+    res = await fetch('https://api.anthropic.com/v1/models?limit=1', {
+      headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch {
+    // Pas de réseau, DNS, timeout... : ni une clé refusée ni un succès, on ne bloque pas doctor/setup pour ça.
+    return { warn: true, message: 'réseau indisponible' };
+  }
   if (res.status === 200) return 'clé valide';
+  if (res.status === 429) return 'clé acceptée, rate limit';
   if (res.status === 401 || res.status === 403) throw new Error('clé refusée');
   throw new Error(`réponse HTTP ${res.status}`);
 }

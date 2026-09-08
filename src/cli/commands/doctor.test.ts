@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { stringify } from 'yaml';
 import { parseMachineConfig, type MachineConfig } from '../../config/machine.js';
 import { REPO_CONFIG_FILENAME } from '../../config/repo.js';
@@ -17,11 +17,15 @@ function fakeGithub(getFileContent: DoctorGitHub['getFileContent'], access?: { a
   };
 }
 
+// Les checks exercés via ce helper (node, sisyphe.yml par repo, GitHub App) ne renvoient jamais la forme
+// { warn, message } — seule la sonde de clé API le fait, testée séparément plus bas via `probe()`.
 async function run(checks: ReturnType<typeof buildChecks>, name: string): Promise<{ ok: true; detail: string } | { ok: false; message: string }> {
   const c = checks.find((x) => x.name === name);
   if (!c) throw new Error(`check absent : ${name}`);
   try {
-    return { ok: true, detail: await c.run() };
+    const result = await c.run();
+    if (typeof result !== 'string') throw new Error(`${name} a renvoyé la forme warn, inattendue ici`);
+    return { ok: true, detail: result };
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : String(err) };
   }
@@ -126,6 +130,47 @@ describe('buildChecks — GitHub App', () => {
   });
 });
 
-// Volontairement non exercés : lecture du vrai config.yml (config machine), appel réseau live
-// (clé API), et `launchctl print` / `statfs` réels (agent launchd, espace disque). Ces checks sont
-// couverts par leur seule présence dans buildChecks ci-dessus ; leur .run() n'est jamais invoqué ici.
+describe('buildChecks — clé API (appel minimal), fetch simulé (jamais de réseau réel)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function probe(status: number): Promise<string | { warn: true; message: string }> {
+    vi.stubGlobal('fetch', async () => new Response(null, { status }));
+    const checks = buildChecks({ env: { ANTHROPIC_API_KEY: 'sk-test' } });
+    const check = checks.find((c) => c.name === 'clé API (appel minimal)');
+    if (!check) throw new Error('check absent');
+    return check.run();
+  }
+
+  it('200 -> clé valide', async () => {
+    expect(await probe(200)).toBe('clé valide');
+  });
+
+  it('429 -> succès, clé acceptée en rate limit', async () => {
+    expect(await probe(429)).toBe('clé acceptée, rate limit');
+  });
+
+  it('401 et 403 -> échec dur (clé refusée)', async () => {
+    await expect(probe(401)).rejects.toThrow('clé refusée');
+    await expect(probe(403)).rejects.toThrow('clé refusée');
+  });
+
+  it('autre statut -> échec dur avec le code HTTP', async () => {
+    await expect(probe(500)).rejects.toThrow('réponse HTTP 500');
+  });
+
+  it('fetch qui rejette (réseau indisponible) -> warn, ne lève pas', async () => {
+    vi.stubGlobal('fetch', async () => {
+      throw new TypeError('fetch failed');
+    });
+    const checks = buildChecks({ env: { ANTHROPIC_API_KEY: 'sk-test' } });
+    const check = checks.find((c) => c.name === 'clé API (appel minimal)');
+    if (!check) throw new Error('check absent');
+    await expect(check.run()).resolves.toEqual({ warn: true, message: 'réseau indisponible' });
+  });
+});
+
+// Volontairement non exercés (au-delà de la sonde de clé API ci-dessus, mockée) : lecture du vrai
+// config.yml (config machine), et `launchctl print` / `statfs` réels (agent launchd, espace disque).
+// Ces checks sont couverts par leur seule présence dans buildChecks ; leur .run() n'est jamais invoqué ici.
