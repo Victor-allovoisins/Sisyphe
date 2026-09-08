@@ -1,0 +1,88 @@
+import type { ImplementationReport, TriageVerdict } from '../agent/schemas.js';
+
+export const JOB_STATES = [
+  'queued', 'triaging', 'implementing', 'verifying', 'delivering',
+  'done', 'blocked', 'failed', 'cancelled',
+] as const;
+export type JobState = (typeof JOB_STATES)[number];
+
+export const TERMINAL_STATES: ReadonlySet<JobState> = new Set<JobState>(['done', 'blocked', 'failed', 'cancelled']);
+export const RUNNING_STATES: readonly JobState[] = ['triaging', 'implementing', 'verifying', 'delivering'];
+
+export function isTerminal(state: JobState): boolean {
+  return TERMINAL_STATES.has(state);
+}
+
+export interface JobFlags {
+  verificationFailed: boolean;
+  protectedPathsTouched: string[];
+  largeDiff: boolean;
+  secretsFound: string[];
+  earlyStop: string | null;
+}
+
+export function emptyFlags(): JobFlags {
+  return { verificationFailed: false, protectedPathsTouched: [], largeDiff: false, secretsFound: [], earlyStop: null };
+}
+
+export interface AgentUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+}
+
+export function zeroUsage(): AgentUsage {
+  return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+}
+
+export interface Job {
+  id: string;
+  repo: string; // owner/name
+  issueNumber: number;
+  issueTitle: string;
+  state: JobState;
+  attempt: number;
+  requeues: number;
+  branch: string | null;
+  baseSha: string | null;
+  worktreePath: string | null;
+  verdict: TriageVerdict | null;
+  report: ImplementationReport | null;
+  flags: JobFlags;
+  prNumber: number | null;
+  prUrl: string | null;
+  prState: 'open' | 'closed' | null;
+  prMergedAt: string | null;
+  costUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  durationMs: number;
+  error: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  updatedAt: string;
+}
+
+export type PhaseName = 'triage' | 'implement' | 'verify' | 'deliver';
+export type PhaseOutcome = 'success' | 'failure';
+
+export interface Phase {
+  id: number;
+  jobId: string;
+  name: PhaseName;
+  attempt: number;
+  model: string | null;
+  sessionId: string | null;
+  costUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  numTurns: number;
+  stopReason: string | null;
+  outcome: PhaseOutcome | null;
+  startedAt: string;
+  finishedAt: string | null;
+}
