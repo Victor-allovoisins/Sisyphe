@@ -8,14 +8,14 @@ export function expandHome(p: string): string {
   return resolve(p);
 }
 
+/** `owner/repo` → `owner__repo`. Un seul segment de chemin par construction, quel que soit l'input. */
 export function repoKey(repo: string): string {
-  return repo.replace('/', '__');
+  return repo.replaceAll('/', '__');
 }
 
 export interface DataPaths {
   root: string;
   dbPath: string;
-  configPath: string;
   mirrorsDir: string;
   workDir: string;
   cacheDir: string;
@@ -28,7 +28,6 @@ export function dataPaths(dataDir: string): DataPaths {
   return {
     root,
     dbPath: join(root, 'sisyphe.db'),
-    configPath: join(root, 'config.yml'),
     mirrorsDir: join(root, 'mirrors'),
     workDir: join(root, 'work'),
     cacheDir: join(root, 'cache'),
@@ -53,13 +52,19 @@ export function jobDir(p: DataPaths, jobId: string): string {
   return join(p.jobsDir, jobId);
 }
 
+/** Répertoires en 0700 : la clé privée GitHub et les transcripts de repos privés vivent dessous. Idempotent. */
 export async function ensureDataDirs(p: DataPaths): Promise<void> {
   for (const d of [p.root, p.mirrorsDir, p.workDir, p.cacheDir, p.jobsDir, p.logsDir]) {
-    await mkdir(d, { recursive: true });
+    await mkdir(d, { recursive: true, mode: 0o700 });
   }
 }
 
-/** Racine des données : SISYPHE_HOME si défini, sinon ~/.sisyphe. */
+/** Racine par défaut : SISYPHE_HOME si définie et non vide (`||`, pas `??`), sinon ~/.sisyphe. */
 export function defaultDataDir(): string {
-  return process.env.SISYPHE_HOME ?? '~/.sisyphe';
+  return process.env.SISYPHE_HOME || '~/.sisyphe';
+}
+
+/** La config machine vit toujours sous la racine par défaut, même si `dataDir` pointe ailleurs. */
+export function machineConfigPath(): string {
+  return join(expandHome(defaultDataDir()), 'config.yml');
 }
