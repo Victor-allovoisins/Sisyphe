@@ -3,9 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { InvalidTransitionError } from '../jobs/state.js';
-import { openDatabase } from './db.js';
+import { openDatabase, sqlList } from './db.js';
 import { JobStore } from './jobs.js';
 import { PhaseStore } from './phases.js';
+import { JOB_STATES, TERMINAL_STATES } from './types.js';
 
 function setup() {
   const db = openDatabase(':memory:');
@@ -168,5 +169,10 @@ describe('openDatabase', () => {
     expect((b.prepare('PRAGMA journal_mode').get() as { journal_mode: string }).journal_mode).toBe('wal');
     b.close();
     await rm(dir, { recursive: true, force: true });
+  });
+
+  it('fige le littéral des énumérations SQL : le changer exige une nouvelle migration', () => {
+    expect(sqlList(JOB_STATES)).toBe("'queued','triaging','implementing','verifying','delivering','done','blocked','failed','cancelled'");
+    expect(sqlList(TERMINAL_STATES)).toBe("'done','blocked','failed','cancelled'");
   });
 });

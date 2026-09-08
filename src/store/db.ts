@@ -1,10 +1,13 @@
 import { DatabaseSync } from 'node:sqlite';
 import { JOB_STATES, TERMINAL_STATES } from './types.js';
 
-const sqlList = (values: Iterable<string>) => [...values].map((s) => `'${s}'`).join(',');
+export const sqlList = (values: Iterable<string>) => [...values].map((s) => `'${s}'`).join(',');
 const STATES = sqlList(JOB_STATES);
 const TERMINALS = sqlList(TERMINAL_STATES);
 
+// Append-only : une migration livrée ne se modifie jamais. Ajouter un état à JOB_STATES exige
+// une MIGRATIONS[1] qui reconstruit la table (SQLite ne modifie pas un CHECK en place) ; le test
+// « littéral figé » de store.test.ts force cette décision.
 const MIGRATIONS: readonly string[] = [
   `
   CREATE TABLE jobs (

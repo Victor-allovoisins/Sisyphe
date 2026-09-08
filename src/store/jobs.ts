@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { assertTransition } from '../jobs/state.js';
-import { nowIso } from './db.js';
+import { nowIso, sqlList } from './db.js';
 import { TERMINAL_STATES, emptyFlags, isTerminal, parseFlags, type Job, type JobState } from './types.js';
 
 type Row = Record<string, unknown>;
 
-const TERMINAL_LIST = [...TERMINAL_STATES].map((s) => `'${s}'`).join(',');
+const TERMINAL_LIST = sqlList(TERMINAL_STATES);
 
 function rowToJob(r: Row): Job {
   return {

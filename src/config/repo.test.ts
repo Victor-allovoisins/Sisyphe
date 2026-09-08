@@ -67,10 +67,13 @@ limits:
     expect(() => parseRepoConfig('baseBranch: main\ncommands:\n  buidl: make\n  build: make\n')).toThrow(/buidl/);
   });
 
-  it('refuse un glob vide, un label vide et un préfixe de branche exotique', () => {
+  it('refuse un glob vide, un label vide et un préfixe de branche invalide pour git', () => {
     expect(() => parseRepoConfig(`${minimal}protectedPaths: [""]\n`)).toThrow(/protectedPaths/);
     expect(() => parseRepoConfig(`${minimal}pr:\n  labels: [""]\n`)).toThrow(/pr\.labels/);
-    expect(() => parseRepoConfig(`${minimal}branchPrefix: "../evil "\n`)).toThrow(/branchPrefix/);
+    for (const bad of ['../', 'feature/.', 'a//b/', 'feature.lock/', '-']) {
+      expect(() => parseRepoConfig(`${minimal}branchPrefix: "${bad}"\n`), bad).toThrow(/branchPrefix/);
+    }
+    expect(parseRepoConfig(`${minimal}branchPrefix: "sisyphe/fix-"\n`).branchPrefix).toBe('sisyphe/fix-');
   });
 
   it('traite une section vide comme absente', () => {

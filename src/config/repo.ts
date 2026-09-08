@@ -1,5 +1,6 @@
 import { parse } from 'yaml';
 import { z } from 'zod';
+import { branchName, isValidBranchName } from '../jobs/slug.js';
 
 export const REPO_CONFIG_FILENAME = 'sisyphe.yml';
 
@@ -21,7 +22,11 @@ const section = <T extends z.ZodTypeAny>(schema: T) => nullable(schema);
 // `strictObject` partout : une clé inconnue (faute de frappe sur protectedPaths) désactiverait une barrière en silence.
 export const RepoConfigSchema = z.strictObject({
   baseBranch: nonEmpty,
-  branchPrefix: z.string().regex(/^[A-Za-z0-9._/-]*$/, 'caractères autorisés : lettres, chiffres, . _ / -').default('feature/'),
+  branchPrefix: z
+    .string()
+    .regex(/^[A-Za-z0-9._/-]*$/, 'caractères autorisés : lettres, chiffres, . _ / -')
+    .default('feature/')
+    .refine((p) => isValidBranchName(branchName(p, 1, 'x')), 'préfixe produisant un nom de branche git invalide'),
   commands: z.strictObject({
     setup: nonEmpty.optional(),
     build: nonEmpty,
