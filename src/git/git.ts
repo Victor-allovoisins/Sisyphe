@@ -53,6 +53,7 @@ export class Git {
    * Clone --mirror la première fois (aucun worktree n'existe alors), puis ne rafraîchit que les
    * branches demandées : ne jamais toucher une branche extraite dans le worktree d'un job.
    * `publicUrl` est stocké dans le miroir, `fetchUrl` (avec token) ne l'est jamais.
+   * `--no-write-fetch-head` évite que l'URL avec token finisse dans `FETCH_HEAD`.
    */
   async ensureMirror(repo: string, fetchUrl: string, publicUrl: string, branches: string[]): Promise<string> {
     const dir = mirrorPath(this.paths, repo);
@@ -62,7 +63,7 @@ export class Git {
       await this.run(['remote', 'set-url', 'origin', publicUrl], dir);
     } else if (branches.length > 0) {
       const refspecs = [...new Set(branches)].map((b) => `+refs/heads/${b}:refs/heads/${b}`);
-      await this.run(['fetch', '-q', '--force', fetchUrl, ...refspecs], dir);
+      await this.run(['fetch', '-q', '--force', '--no-write-fetch-head', fetchUrl, ...refspecs], dir);
     }
     return dir;
   }

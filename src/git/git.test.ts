@@ -28,6 +28,15 @@ describe('Git', () => {
     await expect(git.ensureMirror(repo, remotePath, remotePath, ['main'])).resolves.toBe(mirror);
   });
 
+  it('ne laisse jamais l’URL de fetch dans le miroir', async () => {
+    const mirror = await git.ensureMirror(repo, remotePath, 'https://github.com/acme/demo.git', ['main']);
+    await git.ensureMirror(repo, remotePath, 'https://github.com/acme/demo.git', ['main']);
+    const config = await readFile(join(mirror, 'config'), 'utf8');
+    expect(config).toContain('https://github.com/acme/demo.git');
+    expect(config).not.toContain(remotePath);
+    await expect(stat(join(mirror, 'FETCH_HEAD'))).rejects.toThrow();
+  });
+
   it('rafraîchit la base sans toucher une branche extraite dans un worktree', async () => {
     await git.ensureMirror(repo, remotePath, remotePath, ['main']);
     const { worktreePath } = await git.createWorktree(repo, 7, 'feature/issue-7-x', 'main');
