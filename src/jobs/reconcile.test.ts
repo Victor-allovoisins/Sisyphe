@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { REPO, makeHarness, repoRef } from '../../test/helpers/harness.js';
 import { writeFiles } from '../../test/helpers/git-fixture.js';
 import { emptyFlags } from '../store/types.js';
@@ -192,5 +192,65 @@ describe('reconcile', () => {
     expect(labels).not.toContain('sisyphe:in-progress');
     const comments = h.source.commentsOf({ repo: repoRef, number: 7 });
     expect(comments.some((c) => c.includes('redémarré'))).toBe(false);
+  });
+
+  it('laisse le job en delivering si findPullRequest échoue', async () => {
+    const h = await makeHarness({ steps: [] });
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 't' });
+    h.store.transition(job.id, 'triaging');
+    h.store.transition(job.id, 'implementing', { branch: 'feature/issue-7-t' });
+    h.store.transition(job.id, 'verifying');
+    h.store.transition(job.id, 'delivering');
+    h.source.findPullRequest = async () => {
+      throw new Error('rate limit');
+    };
+
+    await reconcile(h.deps);
+    const j = h.store.get(job.id)!;
+    expect(j.state).toBe('delivering');
+    expect(j.requeues).toBe(0);
+    expect(h.source.commentsOf({ repo: repoRef, number: 7 })).toEqual([]);
+  });
+
+  it("une exception sur un job n'empêche pas la réconciliation des autres", async () => {
+    const h = await makeHarness({
+      steps: [],
+      issues: [
+        { number: 7, title: 't7' },
+        { number: 8, title: 't8' },
+        { number: 9, title: 't9' },
+      ],
+    });
+
+    const job7 = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 't7' });
+    h.store.transition(job7.id, 'triaging');
+    h.store.transition(job7.id, 'implementing', { branch: 'feature/issue-7-t' });
+    h.store.transition(job7.id, 'verifying');
+    h.store.transition(job7.id, 'delivering');
+
+    const job8 = h.store.create({ repo: REPO, issueNumber: 8, issueTitle: 't8' });
+    h.store.transition(job8.id, 'triaging');
+    h.store.transition(job8.id, 'implementing', { branch: 'feature/issue-8-t' });
+    h.store.transition(job8.id, 'verifying');
+    h.store.transition(job8.id, 'delivering');
+    await h.source.openPullRequest({ repo: repoRef, title: 't8', head: 'feature/issue-8-t', base: 'main', body: '', draft: false, labels: [], reviewers: [] });
+
+    await h.source.setStatus({ repo: repoRef, number: 9 }, 'in-progress');
+
+    const originalTransition = h.store.transition.bind(h.store);
+    vi.spyOn(h.store, 'transition').mockImplementation((id, to, patch) => {
+      if (id === job7.id) throw new Error('boom');
+      return originalTransition(id, to, patch);
+    });
+
+    await reconcile(h.deps);
+
+    expect(h.store.get(job7.id)!.state).toBe('delivering');
+    const j8 = h.store.get(job8.id)!;
+    expect(j8.state).toBe('done');
+    expect(j8.prNumber).toBe(100);
+    expect(h.source.labelsOf({ repo: repoRef, number: 8 })).toContain('sisyphe:done');
+    expect(h.source.labelsOf({ repo: repoRef, number: 9 })).not.toContain('sisyphe:in-progress');
+    expect(h.source.commentsOf({ repo: repoRef, number: 9 }).at(-1)).toContain('redémarré');
   });
 });
