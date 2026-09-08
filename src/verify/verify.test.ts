@@ -1,8 +1,9 @@
+import { execa } from 'execa';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { createRemoteRepo, writeFiles } from '../../test/helpers/git-fixture.js';
+import { TEST_ENV, createRemoteRepo, writeFiles } from '../../test/helpers/git-fixture.js';
 import { dataPaths, type DataPaths } from '../config/paths.js';
 import { parseRepoConfig } from '../config/repo.js';
 import { Git } from '../git/git.js';
@@ -61,6 +62,16 @@ describe('runVerification', () => {
     expect(r.steps.map((s) => [s.name, s.status])).toEqual([['build', 'ok'], ['test', 'ok']]);
     expect(r.files).toEqual(['src/feature.txt']);
     expect(r.flags).toEqual({ protectedPathsTouched: [], largeDiff: false, secretsFound: [] });
+    expect(r.driftedFiles).toEqual([]);
+  });
+
+  it('signale les fichiers suivis modifiés par la vérification, sans les inclure dans l’arbre livré', async () => {
+    await writeFiles(worktreePath, { 'src/feature.txt': 'hello\n', 'build.sh': 'echo bumped > lock.txt; test -f src/feature.txt', 'lock.txt': 'v1\n' });
+    const r = await run();
+    expect(r.ok).toBe(true);
+    expect(r.driftedFiles).toEqual(['lock.txt']);
+    const delivered = (await execa('git', ['show', `${r.treeSha}:lock.txt`], { cwd: worktreePath, env: TEST_ENV })).stdout;
+    expect(delivered).toBe('v1');
   });
 
   it('échoue au build avec la fin de la sortie et marque le test non exécuté', async () => {

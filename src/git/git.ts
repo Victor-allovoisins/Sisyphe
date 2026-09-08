@@ -203,6 +203,13 @@ export class Git {
 
   async push(wt: string, pushUrl: string, branch: string, sha = 'HEAD'): Promise<void> {
     this.assertBranchName(branch);
+    if (!/^(HEAD|[0-9a-f]{40})$/.test(sha)) throw new GitError(`Sha invalide : ${sha}`, 'push', '');
     await this.run(['push', '-q', '--force', pushUrl, `${sha}:refs/heads/${branch}`], wt);
+  }
+
+  /** Fichiers différant entre deux arbres (ou commits). */
+  async changedFilesBetween(wt: string, fromTree: string, toTree: string): Promise<string[]> {
+    const out = await this.run(['diff', '--name-only', '--no-renames', fromTree, toTree], wt);
+    return out.split('\n').filter(Boolean);
   }
 }

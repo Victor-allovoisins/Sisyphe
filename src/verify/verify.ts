@@ -34,6 +34,8 @@ export interface VerifyResult {
   files: string[];
   changedLines: number;
   flags: VerifyFlags;
+  /** Fichiers suivis modifiés par les étapes de vérification elles-mêmes (lockfiles, projet régénéré) : ils ne font pas partie du commit livré, le relecteur doit le savoir. */
+  driftedFiles: string[];
 }
 
 export interface VerifyInput {
@@ -54,7 +56,7 @@ const ORDER: VerifyStepName[] = ['setup', 'build', 'test', 'lint'];
 export async function runVerification(i: VerifyInput): Promise<VerifyResult> {
   const flags: VerifyFlags = { protectedPathsTouched: [], largeDiff: false, secretsFound: [] };
   const result = (over: Partial<VerifyResult>): VerifyResult => ({
-    ok: false, noChanges: false, treeSha: null, steps: [], failedStep: null, failureTail: '', files: [], changedLines: 0, flags, ...over,
+    ok: false, noChanges: false, treeSha: null, steps: [], failedStep: null, failureTail: '', files: [], changedLines: 0, flags, driftedFiles: [], ...over,
   });
   const deadline = Date.now() + minutes(i.config.timeouts.verifyMinutes);
   const remaining = () => deadline - Date.now();
@@ -102,5 +104,8 @@ export async function runVerification(i: VerifyInput): Promise<VerifyResult> {
       return result({ ...common, steps, failedStep: name, failureTail: [head, tail(r.output, 200)].filter(Boolean).join('\n') });
     }
   }
-  return result({ ...common, ok: true, steps });
+  await i.git.stage(i.worktreePath, i.baseSha);
+  const after = await i.git.writeTree(i.worktreePath);
+  const driftedFiles = after === treeSha ? [] : await i.git.changedFilesBetween(i.worktreePath, treeSha, after);
+  return result({ ...common, ok: true, steps, driftedFiles });
 }

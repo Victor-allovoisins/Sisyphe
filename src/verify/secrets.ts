@@ -75,6 +75,7 @@ export function isAddedLine(patchText: string, line: number): boolean {
  */
 export async function scanPatch(patchFile: string, reportFile: string, opts: ScanOptions, run: GitleaksRunner = runGitleaks): Promise<SecretFinding[]> {
   const { exitCode, output } = await run(patchFile, reportFile, opts);
+  opts.signal?.throwIfAborted();
   if (exitCode === 0) return [];
   if (exitCode !== LEAK_EXIT_CODE) throw new SecretScanError(`gitleaks a échoué (code ${exitCode}) : ${output.slice(-500)}`);
   let report: string;

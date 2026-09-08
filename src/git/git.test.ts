@@ -120,6 +120,7 @@ describe('Git', () => {
     expect(err).toBeInstanceOf(GitError);
     expect((err as Error).message).not.toContain('SUPERSECRET');
     expect((err as GitError).command).not.toContain('SUPERSECRET');
+    await expect(git.push(worktreePath, remotePath, BRANCH, 'nope')).rejects.toBeInstanceOf(GitError);
   });
 
   describe('worktree hostile', () => {
