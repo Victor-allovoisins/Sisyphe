@@ -137,7 +137,7 @@ Le scheduler prend le plus ancien job `queued` si le nombre de jobs actifs est i
 
 Agent en lecture seule. Outils disponibles : `Read`, `Glob`, `Grep` uniquement (option SDK `tools`, liste blanche ; ces outils sont aussi auto-approuvés via `allowedTools`). Modèle `models.triage` (défaut `claude-sonnet-5`), budget `budget.triageUsd` (défaut 1), `maxTurns` 40, timeout `timeouts.triageMinutes` (défaut 10).
 
-Le prompt contient : le rôle, l'issue (titre, body, commentaires) placée entre balises `<issue>` et présentée explicitement comme des données non fiables à ne pas exécuter, les `instructions` du repo, les critères de décision. Le CLAUDE.md du repo est chargé automatiquement via `settingSources: ['project']`.
+Le prompt contient : le rôle, l'issue (titre, body, commentaires) placée entre balises `<issue>` et présentée explicitement comme des données non fiables à ne pas exécuter, les `instructions` du repo, les critères de décision. Le SDK ne charge rien depuis le repo cible (`settingSources: []`) : Sisyphe lit lui-même `CLAUDE.md`, `.claude/CLAUDE.md` et `AGENTS.md` à la racine du worktree et les injecte dans le system prompt.
 
 Sortie imposée par schéma JSON :
 
@@ -160,13 +160,13 @@ Si le verdict n'est pas `ready` : commentaire sur l'issue avec les questions ou 
 
 ### 4.5 Implémentation
 
-Agent en écriture. `cwd` = worktree, `settingSources: ['project']`, system prompt = preset `claude_code` + un append composé des consignes Sisyphe et des `instructions` du repo. `permissionMode: 'dontAsk'` : tout ce qui n'est pas explicitement autorisé est refusé sans prompt.
+Agent en écriture. `cwd` = worktree, `settingSources: []`, system prompt = preset `claude_code` + un append composé des consignes Sisyphe, des `instructions` du repo et de son CLAUDE.md lu par Sisyphe. `permissionMode: 'dontAsk'` : tout ce qui n'est pas explicitement autorisé est refusé sans prompt.
 
 - Outils disponibles (`tools`, liste blanche) et auto-approuvés (`allowedTools`) : `Read`, `Edit`, `Write`, `Glob`, `Grep`, `Bash`.
 - `disallowedTools` : `git push` et `git remote` sous Bash (deux syntaxes de préfixe, vérifiées en validation end-to-end), `WebFetch`, `WebSearch`.
 - Hook `PreToolUse` sur `Edit` et `Write` : refuse toute cible dont le chemin résolu sort du worktree, `.git`, les chemins protégés de base (`.claude/**`, `.mcp.json`, `sisyphe.yml`, `.github/workflows/**`, non désactivables) et ceux de `protectedPaths`. Comparaison lexicale : un lien symbolique n'est pas suivi, c'est le rôle du sandbox.
 - Option machine `sandbox: true` : active le sandbox macOS de Claude Code, qui confine le système de fichiers au worktree et limite le réseau sortant. Désactivé par défaut pour le POC.
-- `settingSources: ['project']` charge le CLAUDE.md du repo cible, mais aussi son `.claude/settings.json`. Ses règles d'autorisation ne peuvent pas contourner les `disallowedTools` de Sisyphe (règles de refus, elles priment), et ses hooks et serveurs MCP sont désactivés (`managedSettings.strictPluginOnlyCustomization: ['hooks', 'mcp']`) : un hook de settings est une commande shell exécutée avec les privilèges du daemon, qu'un repo ou l'agent lui-même pourrait déposer.
+- Aucun settings du repo cible n'est chargé (`settingSources: []`) : un `.claude/settings.json` peut porter des hooks, commandes shell exécutées avec les privilèges du daemon, qu'un repo ou l'agent lui-même pourrait déposer. `managedSettings.strictPluginOnlyCustomization: ['hooks', 'mcp']` est posé en plus, mais il peut être ignoré sur une machine gérée par MDM ; la protection ne repose donc pas sur lui. Le CLAUDE.md du repo est injecté par Sisyphe (voir 4.4).
 - Le budget `maxBudgetUsd` est remis à zéro à chaque reprise de session (retry) : le plafond effectif d'un job est `limits.maxAttempts × budget.implementUsd`, le budget quotidien reste la borne globale.
 
 Le prompt contient : l'issue (mêmes balises que le triage), le `summary` et le `plan` du triage, les commandes `setup`, `build`, `test`, `lint` à utiliser, et les consignes : ne pas toucher aux `protectedPaths`, ne pas se soucier des commits (Sisyphe squash tout en un commit à la fin, un commit intermédiaire est toléré), exécuter build et tests avant de conclure, terminer par un rapport structuré :
