@@ -198,7 +198,7 @@ describe('Daemon', () => {
     expect(h.source.labelsOf(ref).some((l) => l.startsWith('sisyphe:'))).toBe(false);
   });
 
-  it('watchCancellations ne annule pas un job passé triaging pendant l’attente réseau (course avec le poll)', async () => {
+  it('watchCancellations n’annule pas un job passé triaging pendant l’attente réseau (course avec le poll)', async () => {
     const h = await makeHarness({ steps: [] });
     await pollOnce(h.deps);
     const queued = h.store.listByStates(['queued'])[0];
@@ -241,6 +241,7 @@ describe('Daemon', () => {
 
     expect(job.state).toBe('cancelled');
     expect(h.source.pulls).toHaveLength(0);
+    expect(h.agent.calls).toHaveLength(0); // l'agent scripté n'a jamais été appelé (aucun triage, aucune implémentation)
   });
 
   it('startNext() ne démarre aucun job pendant qu’une purge est en cours', async () => {
