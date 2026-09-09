@@ -1,3 +1,4 @@
+import { request as httpRequest } from 'node:http';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -31,6 +32,25 @@ type JsonBody = Record<string, any>;
 async function getJson(url: string): Promise<{ res: Response; body: JsonBody }> {
   const res = await fetch(url);
   return { res, body: (await res.json()) as JsonBody };
+}
+
+/** `fetch` impose l'en-tête Host ; ces tests-là ont justement besoin de le choisir. */
+function rawRequest(port: number, path: string, opts: { method?: string; headers?: Record<string, string> } = {}) {
+  return new Promise<{ status: number; body: string }>((resolve, reject) => {
+    const req = httpRequest(
+      { host: '127.0.0.1', port, path, method: opts.method ?? 'GET', headers: opts.headers ?? { host: `127.0.0.1:${port}` } },
+      (res) => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk: string) => {
+          body += chunk;
+        });
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
+      },
+    );
+    req.on('error', reject);
+    req.end();
+  });
 }
 
 async function startTestServer(port = 0): Promise<{ server: UiServer; db: DatabaseSync; base: string }> {
@@ -198,6 +218,49 @@ describe('startUiServer', () => {
     const post = await fetch(`${base}/api/overview`, { method: 'POST' });
     expect(post.status).toBe(405);
     expect(post.headers.get('allow')).toBe('GET');
+  });
+
+  it('refuse un en-tête Host étranger (DNS rebinding) et accepte les noms locaux', async () => {
+    const { server } = await startTestServer();
+
+    const foreign = await rawRequest(server.port, '/', { headers: { host: 'sisyphe.attaquant.example' } });
+    expect(foreign.status).toBe(403);
+    expect(JSON.parse(foreign.body).error).toBe('Hôte non autorisé');
+
+    expect((await rawRequest(server.port, '/', { headers: { host: `127.0.0.1:${server.port}` } })).status).toBe(200);
+    expect((await rawRequest(server.port, '/', { headers: { host: `localhost:${server.port}` } })).status).toBe(200);
+    expect((await rawRequest(server.port, '/', { headers: { host: `127.0.0.1:${server.port + 1}` } })).status).toBe(403);
+  });
+
+  it('/api/jobs/ sans identifiant répond 404 plutôt que d’énumérer tous les jobs', async () => {
+    const { base, db } = await startTestServer();
+    insertJob(db, 'e1', 'done');
+    insertJob(db, 'e2', 'done');
+
+    const res = await getJson(`${base}/api/jobs/`);
+
+    expect(res.res.status).toBe(404);
+    expect(res.body.error).toBe('Job inconnu : (identifiant vide)');
+    expect(res.body.error).not.toContain('e1');
+  });
+
+  it('un identifiant mal encodé répond 400, pas 500', async () => {
+    const { server } = await startTestServer();
+
+    const res = await rawRequest(server.port, '/api/jobs/%');
+
+    expect(res.status).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('Identifiant de job mal encodé');
+  });
+
+  it('HEAD sur la page renvoie les en-têtes sans corps, une cible non absolue est un 404', async () => {
+    const { server } = await startTestServer();
+
+    const head = await rawRequest(server.port, '/', { method: 'HEAD' });
+    expect(head.status).toBe(200);
+    expect(head.body).toBe('');
+
+    expect((await rawRequest(server.port, '//evil.example')).status).toBe(404);
   });
 
   it('/favicon.ico répond 204 : le navigateur le demande à chaque chargement', async () => {

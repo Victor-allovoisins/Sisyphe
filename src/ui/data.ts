@@ -1,4 +1,4 @@
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { open, readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { summarizeTranscript } from '../cli/format.js';
 import { probeLaunchd, type LaunchdStatus } from '../cli/launchd.js';
@@ -24,8 +24,10 @@ const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 500;
 /** Au-delà, `perDay` ne renvoie que les jours réellement peuplés : inutile de fabriquer des milliers de zéros. */
 const MAX_FILLED_DAYS = 400;
-/** Lignes de transcript relues pour un fil : largement de quoi produire 30 lignes résumées sans relire des mégaoctets à chaque snapshot. */
+/** Lignes de transcript retenues pour un fil : largement de quoi produire 30 lignes résumées. */
 const FEED_SOURCE_LINES = 400;
+/** Le fil ne lit que la fin du transcript : un transcript en cours grossit sans borne et le snapshot tombe toutes les 2 s. */
+const FEED_TAIL_BYTES = 256 * 1024;
 /** L'état launchd change rarement ; le snapshot SSE, lui, tombe toutes les 2 s : sans ce cache, un `launchctl print` par tic. */
 const LAUNCHD_TTL_MS = 30_000;
 const TRANSCRIPT_RE = /^transcript-([a-z]+)-(\d+)\.jsonl$/;
@@ -160,7 +162,8 @@ export function resolveSince(text: string, now: Date): string {
       throw new UiInputError((err as Error).message);
     }
   }
-  const d = new Date(t);
+  // `new Date('7')` rend juillet 2001 : sans cette forme imposée, une durée mal tapée passerait pour une date.
+  const d = /^\d{4}-\d{2}-\d{2}/.test(t) ? new Date(t) : new Date(Number.NaN);
   if (Number.isNaN(d.getTime())) throw new UiInputError(`Période invalide : ${text} (attendu 24h, 7d, 2w ou une date ISO)`);
   return d.toISOString();
 }
@@ -169,7 +172,8 @@ function diffStat(text: string): DiffStat {
   let additions = 0;
   let deletions = 0;
   for (const line of text.split('\n')) {
-    if (line.startsWith('+++') || line.startsWith('---')) continue;
+    // L'espace compte : une ligne de contenu `---` ou `++i;` n'est pas un en-tête de patch.
+    if (line.startsWith('+++ ') || line.startsWith('--- ')) continue;
     if (line.startsWith('+')) additions++;
     else if (line.startsWith('-')) deletions++;
   }
@@ -177,6 +181,29 @@ function diffStat(text: string): DiffStat {
 }
 
 const readTextOrNull = (path: string) => readFile(path, 'utf8').catch(() => null);
+
+/**
+ * Derniers octets d'un fichier, sans charger le reste. La première ligne du bloc lu est presque
+ * toujours tronquée (et peut couper un caractère multi-octets) : elle est écartée.
+ */
+async function readTailOrNull(path: string, maxBytes: number): Promise<string | null> {
+  const handle = await open(path, 'r').catch(() => null);
+  if (!handle) return null;
+  try {
+    const { size } = await handle.stat();
+    const length = Math.min(size, maxBytes);
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, size - length);
+    const text = buffer.toString('utf8');
+    if (size <= length) return text;
+    const firstBreak = text.indexOf('\n');
+    return firstBreak === -1 ? '' : text.slice(firstBreak + 1);
+  } catch {
+    return null;
+  } finally {
+    await handle.close();
+  }
+}
 const listDir = (dir: string) => readdir(dir).catch(() => [] as string[]);
 
 /** Transcript le plus récent du dossier : mtime d'abord, tentative ensuite (`-10` est plus récent que `-9`). */
@@ -209,7 +236,7 @@ export function createUiData(deps: UiDataDeps): UiData {
     const dir = jobDir(paths, jobId);
     const newest = await newestTranscript(dir, await listDir(dir));
     if (!newest) return [];
-    const text = await readTextOrNull(join(dir, newest.file));
+    const text = await readTailOrNull(join(dir, newest.file), FEED_TAIL_BYTES);
     if (text === null) return [];
     return summarizeTranscript(text.split('\n').slice(-FEED_SOURCE_LINES)).slice(-FEED_LINES);
   }

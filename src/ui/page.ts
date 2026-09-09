@@ -115,6 +115,7 @@ export const PAGE_HTML = `<!doctype html>
   tbody tr:last-child td { border-bottom: none; }
   tbody tr.row { cursor: pointer; }
   tbody tr.row:hover { background: var(--panel-2); }
+  tbody tr.row:focus { outline: 2px solid #58a6ff; outline-offset: -2px; }
   td.num { text-align: right; font-variant-numeric: tabular-nums; }
   .title-cell { max-width: 460px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .muted { color: var(--muted); }
@@ -164,6 +165,7 @@ export const PAGE_HTML = `<!doctype html>
     <div class="budget" id="budget"></div>
     <h2 class="section-title">Jobs actifs</h2>
     <div class="cards" id="active"></div>
+    <p class="empty" id="active-empty" hidden>Aucun job actif. Le daemon attend une issue étiquetée.</p>
   </section>
 
   <section class="view" id="view-jobs" hidden>
@@ -274,11 +276,16 @@ export const PAGE_HTML = `<!doctype html>
     return box;
   }
 
-  function metric(label, value) {
+  function makeMetric(label, value) {
     var box = el('div');
-    box.appendChild(el('div', 'm-value', value));
+    var valueNode = el('div', 'm-value', value);
+    box.appendChild(valueNode);
     box.appendChild(el('div', 'm-label', label));
-    return box;
+    return { box: box, value: valueNode };
+  }
+
+  function metric(label, value) {
+    return makeMetric(label, value).box;
   }
 
   function getJson(path) {
@@ -293,7 +300,7 @@ export const PAGE_HTML = `<!doctype html>
   // ---------- Onglets ----------
 
   var VIEWS = { dash: 'view-dash', jobs: 'view-jobs', kpis: 'view-kpis' };
-  var loaded = { jobs: false, kpis: false };
+  var loaded = { kpis: false };
 
   function selectTab(name) {
     Object.keys(VIEWS).forEach(function (key) {
@@ -303,7 +310,8 @@ export const PAGE_HTML = `<!doctype html>
     for (var i = 0; i < tabs.length; i++) {
       tabs[i].classList.toggle('is-active', tabs[i].getAttribute('data-tab') === name);
     }
-    if (name === 'jobs' && !loaded.jobs) loadJobs();
+    // La liste des jobs bouge pendant qu'on regarde ailleurs : elle est rechargée à chaque entrée.
+    if (name === 'jobs') loadJobs();
     if (name === 'kpis' && !loaded.kpis) loadReport();
   }
 
@@ -320,7 +328,7 @@ export const PAGE_HTML = `<!doctype html>
     box.appendChild(stat('launchd', launchdValue, launchdTone, l.detail));
     box.appendChild(stat('Backend', o.backend, '', o.repos.join(' · ')));
     box.appendChild(stat('Actifs', o.counts.active, o.counts.active ? 'ok' : '', 'dont ' + o.counts.queued + ' en file'));
-    box.appendChild(stat('Terminés', o.counts.done, 'ok', ''));
+    box.appendChild(stat('Terminés', o.counts.done, o.counts.done ? 'ok' : '', ''));
     box.appendChild(stat('Bloqués', o.counts.blocked, o.counts.blocked ? 'warn' : '', ''));
     box.appendChild(stat('Échecs', o.counts.failed, o.counts.failed ? 'ko' : '', o.counts.cancelled + ' annulé(s)'));
   }
@@ -342,30 +350,74 @@ export const PAGE_HTML = `<!doctype html>
     box.appendChild(bar);
   }
 
+  /** Cartes vivantes, indexées par id de job : un snapshot toutes les 2 s ne doit pas les reconstruire. */
+  var cards = Object.create(null);
+
+  function buildCard(job) {
+    var card = el('div', 'card');
+    var head = el('div', 'card-head');
+    var badgeNode = badge(job.state);
+    var phaseNode = el('span', 'muted', '');
+    head.appendChild(badgeNode);
+    head.appendChild(issueLink(job.repo, job.issueNumber));
+    head.appendChild(phaseNode);
+    card.appendChild(head);
+    var titleNode = el('div', 'card-title', job.issueTitle);
+    card.appendChild(titleNode);
+    var meta = el('div', 'card-meta');
+    var elapsed = makeMetric('écoulé', '');
+    var cost = makeMetric('coût', '');
+    var attempt = makeMetric('tentative', '');
+    meta.appendChild(elapsed.box);
+    meta.appendChild(cost.box);
+    meta.appendChild(attempt.box);
+    card.appendChild(meta);
+    var feedNode = el('pre', 'feed', '');
+    card.appendChild(feedNode);
+    return {
+      card: card, badge: badgeNode, phase: phaseNode, title: titleNode,
+      elapsed: elapsed.value, cost: cost.value, attempt: attempt.value, feed: feedNode, state: null
+    };
+  }
+
+  function updateCard(rec, job) {
+    if (rec.state !== job.state) {
+      rec.state = job.state;
+      rec.badge.className = 'badge ' + (STATE_CLASS[job.state] || 's-queued');
+      rec.badge.textContent = STATE_LABEL[job.state] || String(job.state);
+    }
+    var phaseText = job.phase ? 'phase ' + job.phase.name + ' · essai ' + job.phase.attempt : '';
+    if (rec.phase.textContent !== phaseText) rec.phase.textContent = phaseText;
+    if (rec.title.textContent !== job.issueTitle) rec.title.textContent = job.issueTitle;
+    rec.elapsed.textContent = fmtDuration(job.elapsedMs);
+    rec.cost.textContent = fmtUsd(job.costUsd);
+    rec.attempt.textContent = String(job.attempt);
+    var text = job.feed.length ? job.feed.join('\\n') : 'En attente des premières actions…';
+    if (rec.feed.textContent === text) return;
+    // Défilement automatique seulement si on lisait déjà le bas : sinon on arrache la lecture en cours.
+    var atBottom = rec.feed.scrollHeight - rec.feed.scrollTop - rec.feed.clientHeight < 40;
+    rec.feed.textContent = text;
+    if (atBottom) rec.feed.scrollTop = rec.feed.scrollHeight;
+  }
+
   function renderActive(o) {
     var box = byId('active');
-    clear(box);
-    if (!o.active.length) {
-      box.appendChild(el('p', 'empty', 'Aucun job actif. Le daemon attend une issue étiquetée.'));
-      return;
-    }
-    o.active.forEach(function (job) {
-      var card = el('div', 'card');
-      var head = el('div', 'card-head');
-      head.appendChild(badge(job.state));
-      head.appendChild(issueLink(job.repo, job.issueNumber));
-      if (job.phase) head.appendChild(el('span', 'muted', 'phase ' + job.phase.name + ' · essai ' + job.phase.attempt));
-      card.appendChild(head);
-      card.appendChild(el('div', 'card-title', job.issueTitle));
-      var meta = el('div', 'card-meta');
-      meta.appendChild(metric('écoulé', fmtDuration(job.elapsedMs)));
-      meta.appendChild(metric('coût', fmtUsd(job.costUsd)));
-      meta.appendChild(metric('tentative', job.attempt));
-      card.appendChild(meta);
-      var feed = el('pre', 'feed', job.feed.length ? job.feed.join('\\n') : 'En attente des premières actions…');
-      card.appendChild(feed);
-      box.appendChild(card);
-      feed.scrollTop = feed.scrollHeight;
+    byId('active-empty').hidden = o.active.length > 0;
+    var seen = Object.create(null);
+    o.active.forEach(function (job, index) {
+      var rec = cards[job.id];
+      if (!rec) {
+        rec = buildCard(job);
+        cards[job.id] = rec;
+      }
+      updateCard(rec, job);
+      seen[job.id] = true;
+      if (box.children[index] !== rec.card) box.insertBefore(rec.card, box.children[index] || null);
+    });
+    Object.keys(cards).forEach(function (id) {
+      if (seen[id]) return;
+      if (cards[id].card.parentNode === box) box.removeChild(cards[id].card);
+      delete cards[id];
     });
   }
 
@@ -398,7 +450,6 @@ export const PAGE_HTML = `<!doctype html>
     if (state) params.push('state=' + encodeURIComponent(state));
     params.push('limit=200');
     getJson('/api/jobs' + '?' + params.join('&')).then(function (body) {
-      loaded.jobs = true;
       renderJobs(body.jobs);
     }, function (err) {
       var tbody = byId('jobs-body');
@@ -438,8 +489,16 @@ export const PAGE_HTML = `<!doctype html>
       prCell.appendChild(job.prNumber ? ghLink(job.prUrl, '#' + job.prNumber) : el('span', 'muted', '—'));
       tr.appendChild(prCell);
       tr.appendChild(el('td', 'muted', fmtDate(job.createdAt)));
+      tr.setAttribute('tabindex', '0');
+      tr.setAttribute('role', 'button');
       tr.addEventListener('click', function (event) {
         if (event.target && event.target.tagName === 'A') return;
+        openDetail(job.id);
+      });
+      tr.addEventListener('keydown', function (event) {
+        if (event.key !== 'Enter') return;
+        if (event.target && event.target.tagName === 'A') return;
+        event.preventDefault();
         openDetail(job.id);
       });
       tbody.appendChild(tr);

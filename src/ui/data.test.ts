@@ -252,6 +252,18 @@ describe('jobDetail', () => {
     expect(detail?.transcript?.lines[0]).toContain('result error');
   });
 
+  it('le stat du diff ne confond pas une ligne de contenu avec un en-tête de patch', async () => {
+    const { ui, dir } = await seedDetail();
+    // Une ligne supprimée valant `---` s'écrit `----`, une ligne ajoutée `++i;` s'écrit `+++i;` :
+    // sans l'espace des vrais en-têtes (`--- `, `+++ `), ce sont bien du contenu.
+    const patch = 'diff --git a/x b/x\n--- a/x\n+++ b/x\n----\n+++i;\n+ok\n contexte\n';
+    await writeFile(join(dir, 'diff.patch'), patch);
+
+    const detail = await ui.data.jobDetail('abcdef01');
+
+    expect(detail?.diff).toEqual({ additions: 2, deletions: 1, bytes: Buffer.byteLength(patch) });
+  });
+
   it('un dossier de job absent donne des listes vides, pas une erreur', async () => {
     const ui = await makeUi();
     insertJob(ui.db, { id: 'sansdossier' });
@@ -303,6 +315,10 @@ describe('report', () => {
     const ui = await makeUi();
 
     expect(() => ui.data.report('2026-09-01T00:00:00.000Z')).not.toThrow();
+    expect(() => ui.data.report('2026-09-01')).not.toThrow();
     expect(() => ui.data.report('demain')).toThrow(UiInputError);
+    // `new Date('7')` vaudrait juillet 2001 : une durée mal tapée doit être refusée, pas réinterprétée.
+    expect(() => ui.data.report('7')).toThrow(UiInputError);
+    expect(() => ui.data.report('30 jours')).toThrow(UiInputError);
   });
 });

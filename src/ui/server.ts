@@ -13,6 +13,9 @@ const SECURITY_HEADERS: Record<string, string> = {
   'Referrer-Policy': 'no-referrer',
 };
 const JSON_TYPE = 'application/json; charset=utf-8';
+const HTML_TYPE = 'text/html; charset=utf-8';
+/** Au-delà, le client SSE ne lit plus (onglet gelé, machine en veille) : on ferme plutôt que de gonfler la mémoire. */
+const MAX_SSE_BUFFER_BYTES = 1_048_576;
 /** Une interface locale et rien d'autre : pas d'option `--host`, pas d'écoute sur 0.0.0.0. */
 export const UI_HOST = '127.0.0.1';
 export const DEFAULT_UI_PORT = 7777;
@@ -40,6 +43,16 @@ function send(res: ServerResponse, status: number, type: string, body: string, e
 const sendJson = (res: ServerResponse, status: number, value: unknown, extra?: Record<string, string>) =>
   send(res, status, JSON_TYPE, JSON.stringify(value), extra);
 
+/**
+ * Défense contre le DNS rebinding : un site distant peut faire résoudre son domaine vers 127.0.0.1 et
+ * lire cette interface depuis le navigateur de la victime. La socket n'écoute qu'en local, mais
+ * l'en-tête Host trahit ce détour — seuls les noms locaux, avec le port réellement ouvert, sont servis.
+ */
+function isAllowedHost(host: string | undefined, port: number): boolean {
+  if (!host) return false;
+  return host === `127.0.0.1:${port}` || host === `localhost:${port}` || host === `[::1]:${port}`;
+}
+
 /** Un paramètre absent et un paramètre vide (`?state=`) veulent dire la même chose : pas de filtre. */
 function strParam(value: string | null): string | undefined {
   return value === null || value.trim() === '' ? undefined : value;
@@ -58,7 +71,7 @@ export async function startUiServer(o: UiServerOptions): Promise<UiServer> {
   const clients = new Set<ServerResponse>();
 
   async function route(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
-    if (url.pathname === '/') return send(res, 200, 'text/html; charset=utf-8', page);
+    if (url.pathname === '/') return send(res, 200, HTML_TYPE, page);
     if (url.pathname === '/api/overview') return sendJson(res, 200, await data.overview());
     if (url.pathname === '/api/jobs') {
       const jobs = data.listJobs({
@@ -69,7 +82,14 @@ export async function startUiServer(o: UiServerOptions): Promise<UiServer> {
       return sendJson(res, 200, { jobs });
     }
     if (url.pathname.startsWith('/api/jobs/')) {
-      const id = decodeURIComponent(url.pathname.slice('/api/jobs/'.length));
+      let id: string;
+      try {
+        id = decodeURIComponent(url.pathname.slice('/api/jobs/'.length));
+      } catch {
+        return sendJson(res, 400, { error: 'Identifiant de job mal encodé' });
+      }
+      // `/api/jobs/` sans id : un préfixe vide correspond à tous les jobs, donc à un 409 absurde.
+      if (id === '') return sendJson(res, 404, { error: 'Job inconnu : (identifiant vide)' });
       const detail = await data.jobDetail(id);
       if (!detail) return sendJson(res, 404, { error: `Job inconnu : ${id}` });
       return sendJson(res, 200, detail);
@@ -92,6 +112,8 @@ export async function startUiServer(o: UiServerOptions): Promise<UiServer> {
     const drop = () => clients.delete(res);
     req.on('close', drop);
     res.on('close', drop);
+    // Une socket en erreur émet `error` avant `close` : sans ce relais, un flux mort resterait dans la liste.
+    res.on('error', drop);
     void pushSnapshot([res]);
   }
 
@@ -108,12 +130,31 @@ export async function startUiServer(o: UiServerOptions): Promise<UiServer> {
     }
     const frame = `event: snapshot\ndata: ${payload}\n\n`;
     for (const res of list) {
-      if (!res.writableEnded) res.write(frame);
+      if (res.writableEnded) continue;
+      if (res.writableLength > MAX_SSE_BUFFER_BYTES) {
+        // Client qui n'absorbe plus : on le ferme, son EventSource se reconnectera de lui-même.
+        clients.delete(res);
+        res.end();
+        continue;
+      }
+      res.write(frame);
     }
   }
 
+  let boundPort = o.port ?? DEFAULT_UI_PORT;
+
   const server: Server = createServer((req, res) => {
-    const url = new URL(req.url ?? '/', `http://${UI_HOST}`);
+    const target = req.url ?? '/';
+    // Une cible qui n'est pas un chemin absolu (forme absolute-URI, `//host` traité comme une autorité) :
+    // rien de connu ne l'émet, et `new URL` en tirerait une origine différente.
+    if (!target.startsWith('/') || target.startsWith('//')) return sendJson(res, 404, { error: 'Route inconnue' });
+    if (!isAllowedHost(req.headers.host, boundPort)) return sendJson(res, 403, { error: 'Hôte non autorisé' });
+    const url = new URL(target, `http://${UI_HOST}`);
+    if (req.method === 'HEAD' && url.pathname === '/') {
+      res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': HTML_TYPE, 'Content-Length': Buffer.byteLength(page) });
+      res.end();
+      return;
+    }
     if (req.method !== 'GET') return sendJson(res, 405, { error: `Méthode non autorisée : ${req.method}` }, { Allow: 'GET' });
     route(req, res, url).catch((err: unknown) => {
       if (res.headersSent) return res.end();
@@ -147,6 +188,8 @@ export async function startUiServer(o: UiServerOptions): Promise<UiServer> {
 
   const address = server.address();
   const port = typeof address === 'object' && address ? address.port : (o.port ?? DEFAULT_UI_PORT);
+  // Le port réel n'est connu qu'après `listen` (port 0 en test) : la vérification de Host en a besoin.
+  boundPort = port;
 
   let closed = false;
   return {

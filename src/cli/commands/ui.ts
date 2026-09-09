@@ -24,12 +24,20 @@ export async function uiCommand(opts: { port?: string }): Promise<void> {
   const port = parsePort(opts.port);
   const db = openDatabaseReadOnly(paths.dbPath);
   const data = createUiData({ store: new JobStore(db), phases: new PhaseStore(db), paths, machine });
-  const server = await startUiServer({ data, page: PAGE_HTML, port });
+  let server: Awaited<ReturnType<typeof startUiServer>>;
+  try {
+    server = await startUiServer({ data, page: PAGE_HTML, port });
+  } catch (err) {
+    // Port occupé, par exemple : la connexion SQLite ne doit pas rester ouverte derrière l'erreur.
+    db.close();
+    throw err;
+  }
   console.log(`Sisyphe UI (lecture seule) : http://${server.host}:${server.port}`);
   console.log('Ctrl+C pour arrêter.');
   await new Promise<void>((resolve) => {
+    // `finally` et non `then` : même si la fermeture échoue, Ctrl+C rend la main.
     const stop = () => {
-      void server.close().then(() => {
+      void server.close().finally(() => {
         db.close();
         resolve();
       });
