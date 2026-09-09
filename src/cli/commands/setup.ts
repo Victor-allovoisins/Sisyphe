@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs';
 import { chmod, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -13,6 +14,20 @@ import { LAUNCHD_LABEL, installLaunchAgent, plistPath, renderPlist } from '../la
 
 /** Réponse affichée par défaut quand ANTHROPIC_API_KEY est déjà dans l'environnement : la clé elle-même n'est jamais affichée à l'écran. */
 export const ENV_KEY_PLACEHOLDER = "[valeur de l'environnement]";
+
+/** Le garde-fou de setup n'installe le LaunchAgent que si l'entrée résolue est bien le fichier buildé. */
+export function isBuiltEntry(path: string): boolean {
+  return path.endsWith('.js');
+}
+
+/** Résout argv[1] jusqu'au fichier réel : un lien `npm link` est un symlink vers dist/cli/index.js, pas un `.js` lui-même. */
+export function resolveEntryPath(argv1: string): string {
+  try {
+    return realpathSync(argv1);
+  } catch {
+    return resolve(argv1);
+  }
+}
 
 export function validateId(s: string): string | null {
   const n = Number(s);
@@ -176,8 +191,8 @@ export async function setupCommand(): Promise<void> {
     }
 
     if (process.platform === 'darwin') {
-      const argv1 = resolve(process.argv[1]);
-      if (!argv1.endsWith('.js')) {
+      const argv1 = resolveEntryPath(process.argv[1]);
+      if (!isBuiltEntry(argv1)) {
         console.log(`Lancer setup depuis le build : node dist/cli/index.js setup (argv[1] = ${argv1})`);
         return;
       }

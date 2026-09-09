@@ -30,14 +30,13 @@ Petit projet Node sans dépendance :
 ```bash
 npm run build && npm link
 export ANTHROPIC_API_KEY=sk-ant-...
-node dist/cli/index.js setup   # App ID, Installation ID, chemin .pem, repos : <owner>/sisyphe-playground
+sisyphe setup                  # App ID, Installation ID, chemin .pem, repos : <owner>/sisyphe-playground
 sisyphe doctor                 # aucun ❌ (les ⚠️ — launchd, caffeinate, espace disque — n'empêchent pas de continuer)
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.sisyphe.daemon.plist   # pour piloter à la main pendant la validation
 ```
 
-Deux pièges connus de cette étape :
+Un piège connu de cette étape :
 
-- `sisyphe setup` (la commande liée par `npm link`) refuse d'installer le LaunchAgent : une fois passé par le lien npm, `process.argv[1]` est le chemin du lien (sans extension `.js`), pas celui du fichier réel, et `setup` n'installe que s'il est lancé depuis le build (`node dist/cli/index.js setup`, cf. `src/cli/commands/setup.ts`). Sans ce détour, `setup` écrit quand même `config.yml` et fait tourner les vérifications, mais affiche « Lancer setup depuis le build » et ne pose pas le plist.
 - La question `ANTHROPIC_API_KEY` est affichée en clair par readline pendant la frappe. `export ANTHROPIC_API_KEY=...` avant `setup` fait apparaître un défaut `[valeur de l'environnement]` : appuyer sur Entrée pour l'accepter évite de retaper (et de réafficher) la clé.
 
 ## 4. Scénarios à dérouler (dans l'ordre)
@@ -72,4 +71,3 @@ Points de vigilance pour ce passage (déjà câblés côté code — à reconfir
 - `~/.sisyphe/logs/launchd.err.log` n'est pas tourné (pino, lui, écrit un fichier par jour) : il grossit tant que le daemon tourne.
 - Les commandes du repo (`setup`/`build`/`test`/`lint`) reçoivent l'environnement du daemon presque tel quel, moins une petite liste noire (`SSH_AUTH_SOCK`, `GITHUB_TOKEN`, `GH_TOKEN`, `NPM_TOKEN`, `ANTHROPIC_API_KEY`).
 - `sisyphe --version` renvoie une chaîne fixe (`0.1.0`), pas la version de `package.json`.
-- `sisyphe setup`, lancé via le lien `npm link`, n'installe jamais le LaunchAgent (voir §3) : seul `node dist/cli/index.js setup` le fait.

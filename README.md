@@ -19,10 +19,10 @@ Une App GitHub `sisyphe[bot]`, permissions Contents (read & write), Issues (read
 ```bash
 npm install && npm run build && npm link
 export ANTHROPIC_API_KEY=sk-ant-...
-node dist/cli/index.js setup && sisyphe doctor
+sisyphe setup && sisyphe doctor
 ```
 
-`node dist/cli/index.js setup` (pas `sisyphe setup` via le lien npm, qui refuse d'installer le LaunchAgent — voir `docs/playground.md` §3) : requiert une clé API Anthropic (console), pas un abonnement claude.ai. Les données vivent sous `~/.sisyphe` (redéfinissable via `SISYPHE_HOME`).
+`sisyphe setup` requiert une clé API Anthropic (console), pas un abonnement claude.ai. Les données vivent sous `~/.sisyphe` (redéfinissable via `SISYPHE_HOME`).
 
 ## Côté repo cible
 

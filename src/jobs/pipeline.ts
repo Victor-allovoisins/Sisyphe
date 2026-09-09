@@ -280,6 +280,8 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
         const prTemplate = await readPrTemplate(deps.git, job.repo, config.baseBranch);
         // Le token d'installation vit une heure : on le ré-obtient juste avant le push, un job peut durer plus longtemps.
         const pushUrl = await source.getAuthenticatedRemoteUrl(issueRef.repo);
+        // durationMs ici = durée de ce seul run (depuis startedAt, ligne ~71) ; job.durationMs, lui, cumule
+        // les runs précédents d'un job requeué (voir finish() ci-dessus) — deux grandeurs distinctes.
         return deliver({
           job, issue, config, report, verify: verified, phases: phases.listForJob(job.id),
           source, git: deps.git, worktreePath: wtPath, pushUrl, prTemplate, durationMs: elapsed(),

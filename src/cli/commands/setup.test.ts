@@ -1,12 +1,46 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { stringify } from 'yaml';
 import { parseMachineConfig } from '../../config/machine.js';
 import {
-  buildRawConfig, parseReposAnswer, validateApiKey, validateId, validatePrivateKeyPath, validateRepos,
+  buildRawConfig, isBuiltEntry, parseReposAnswer, resolveEntryPath, validateApiKey, validateId, validatePrivateKeyPath,
+  validateRepos,
 } from './setup.js';
+
+describe('isBuiltEntry', () => {
+  it('accepte un .js, rejette le reste (symlink npm link, script tsx)', () => {
+    expect(isBuiltEntry('/usr/local/lib/node_modules/sisyphe/dist/cli/index.js')).toBe(true);
+    expect(isBuiltEntry('/opt/homebrew/bin/sisyphe')).toBe(false);
+    expect(isBuiltEntry('/Users/x/sisyphe/src/cli/index.ts')).toBe(false);
+  });
+});
+
+describe('resolveEntryPath', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'sisyphe-entry-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('résout un lien symbolique (npm link) vers le fichier buildé réel, qui passe le garde', async () => {
+    const built = join(dir, 'index.js');
+    await writeFile(built, '// build\n');
+    const link = join(dir, 'sisyphe'); // simule le bin posé par npm link, sans extension .js
+    await symlink(built, link);
+    const resolved = resolveEntryPath(link);
+    expect(isBuiltEntry(resolved)).toBe(true);
+    expect(isBuiltEntry(link)).toBe(false); // avant résolution, le lien lui-même échouait le garde
+  });
+
+  it('retombe sur path.resolve si le chemin n’existe pas', () => {
+    const missing = join(dir, 'introuvable.js');
+    expect(resolveEntryPath(missing)).toBe(missing);
+  });
+});
 
 describe('validateId', () => {
   it('rejette vide et NaN, accepte un entier positif', () => {
