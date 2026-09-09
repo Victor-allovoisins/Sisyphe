@@ -184,7 +184,10 @@ export async function doctorCommand(): Promise<void> {
     initError = err;
   }
 
-  const checks = buildChecks({ machine: app?.machine, github: app?.github, env: process.env, paths: app?.paths });
+  // L'init peut échouer après la config (client GitHub, par exemple) : on relit la config seule pour
+  // savoir quel backend agent vérifier, sinon doctor retomberait à tort sur les checks de clé API.
+  const machine = app?.machine ?? (await loadMachineConfig(machineConfigPath()).catch(() => undefined));
+  const checks = buildChecks({ machine, github: app?.github, env: process.env, paths: app?.paths });
 
   // La config invalide est déjà signalée par le check « config machine » : ne pas la répéter ici.
   if (initError && !(initError instanceof MachineConfigError)) {

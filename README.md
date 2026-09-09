@@ -18,11 +18,15 @@ Une App GitHub `sisyphe[bot]`, permissions Contents (read & write), Issues (read
 
 ```bash
 npm install && npm run build && npm link
-export ANTHROPIC_API_KEY=sk-ant-...
 sisyphe setup && sisyphe doctor
 ```
 
-`sisyphe setup` requiert une clé API Anthropic (console), pas un abonnement claude.ai. Les données vivent sous `~/.sisyphe` (redéfinissable via `SISYPHE_HOME`).
+`sisyphe setup` demande le backend agent, écrit dans la config machine sous `agentBackend` :
+
+- `cli` (défaut) : la CLI Claude Code installée localement (`claude -p`), donc l'abonnement claude.ai. Prérequis : `claude auth status` affiche `loggedIn: true`. Le sandbox n'est pas supporté par ce backend.
+- `sdk` : le Agent SDK, qui exige une clé API Anthropic (console) dans `ANTHROPIC_API_KEY` — `export ANTHROPIC_API_KEY=sk-ant-...` avant `sisyphe setup`.
+
+Les données vivent sous `~/.sisyphe` (redéfinissable via `SISYPHE_HOME`).
 
 ## Côté repo cible
 

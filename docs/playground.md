@@ -29,15 +29,18 @@ Petit projet Node sans dépendance :
 
 ```bash
 npm run build && npm link
-export ANTHROPIC_API_KEY=sk-ant-...
-sisyphe setup                  # App ID, Installation ID, chemin .pem, repos : <owner>/sisyphe-playground
+claude auth status --json      # backend cli : loggedIn true attendu, sinon `claude login`
+sisyphe setup                  # backend agent (cli/sdk), App ID, Installation ID, chemin .pem, repos : <owner>/sisyphe-playground
 sisyphe doctor                 # aucun ❌ (les ⚠️ — launchd, caffeinate, espace disque — n'empêchent pas de continuer)
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.sisyphe.daemon.plist   # pour piloter à la main pendant la validation
 ```
 
-Un piège connu de cette étape :
+Le backend agent est enregistré dans `~/.sisyphe/config.yml` sous `agentBackend` : `cli` lance la CLI Claude Code locale (`claude -p`, abonnement claude.ai, pas de clé API, pas de sandbox), `sdk` garde le Agent SDK et sa clé API. Avec `cli`, `sisyphe doctor` remplace les checks de clé par `claude (CLI)` et `claude auth status`.
 
-- La question `ANTHROPIC_API_KEY` est affichée en clair par readline pendant la frappe. `export ANTHROPIC_API_KEY=...` avant `setup` fait apparaître un défaut `[valeur de l'environnement]` : appuyer sur Entrée pour l'accepter évite de retaper (et de réafficher) la clé.
+Deux pièges connus de cette étape :
+
+- Backend `sdk` : la question `ANTHROPIC_API_KEY` est affichée en clair par readline pendant la frappe. `export ANTHROPIC_API_KEY=...` avant `setup` fait apparaître un défaut `[valeur de l'environnement]` : appuyer sur Entrée pour l'accepter évite de retaper (et de réafficher) la clé.
+- Backend `cli` : le daemon lancé par launchd doit voir `claude` sur son PATH et le vrai `HOME` (la session vit dans `~/.claude`) ; `sisyphe setup` résout `claude` et met son dossier dans le PATH du plist.
 
 ## 4. Scénarios à dérouler (dans l'ordre)
 
