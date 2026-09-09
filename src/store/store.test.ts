@@ -176,3 +176,49 @@ describe('openDatabase', () => {
     expect(sqlList(TERMINAL_STATES)).toBe("'done','blocked','failed','cancelled'");
   });
 });
+
+describe('requêtes de lecture de JobStore', () => {
+  function seed() {
+    const { jobs, db } = setup();
+    const mk = (repo: string, issueNumber: number, state: string, createdAt: string) => {
+      const job = jobs.create({ repo, issueNumber, issueTitle: `t${issueNumber}` });
+      db.prepare('UPDATE jobs SET state = ?, created_at = ? WHERE id = ?').run(state, createdAt, job.id);
+      return job.id;
+    };
+    return {
+      jobs,
+      a: mk('acme/one', 1, 'done', '2026-09-01T10:00:00.000Z'),
+      b: mk('acme/two', 2, 'done', '2026-09-02T10:00:00.000Z'),
+      c: mk('acme/one', 3, 'failed', '2026-09-03T10:00:00.000Z'),
+      d: mk('acme/one', 4, 'implementing', '2026-09-04T10:00:00.000Z'),
+    };
+  }
+
+  it('countByState compte tous les états, zéros compris', () => {
+    const { jobs } = seed();
+
+    const counts = jobs.countByState();
+
+    expect(counts.done).toBe(2);
+    expect(counts.failed).toBe(1);
+    expect(counts.implementing).toBe(1);
+    expect(counts.queued).toBe(0);
+    expect(Object.keys(counts).sort()).toEqual([...JOB_STATES].sort());
+  });
+
+  it('listFiltered filtre en SQL et trie du plus récent au plus ancien', () => {
+    const s = seed();
+
+    expect(s.jobs.listFiltered({ limit: 100 }).map((j) => j.id)).toEqual([s.d, s.c, s.b, s.a]);
+    expect(s.jobs.listFiltered({ state: 'done', limit: 100 }).map((j) => j.id)).toEqual([s.b, s.a]);
+    expect(s.jobs.listFiltered({ repo: 'acme/one', limit: 100 }).map((j) => j.id)).toEqual([s.d, s.c, s.a]);
+    expect(s.jobs.listFiltered({ state: 'done', repo: 'acme/one', limit: 100 }).map((j) => j.id)).toEqual([s.a]);
+  });
+
+  it('listFiltered applique la limite après le filtre, jamais avant', () => {
+    const s = seed();
+
+    // Une limite de 1 sans filtre rendrait `d` (implementing) : le filtre doit être en SQL, pas en mémoire.
+    expect(s.jobs.listFiltered({ state: 'done', limit: 1 }).map((j) => j.id)).toEqual([s.b]);
+  });
+});

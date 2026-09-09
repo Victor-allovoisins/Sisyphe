@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
@@ -245,6 +245,10 @@ describe('jobDetail', () => {
     const { ui, dir } = await seedDetail();
     await writeFile(join(dir, 'transcript-implement-9.jsonl'), JSON.stringify({ type: 'result', subtype: 'success', total_cost_usd: 1, num_turns: 3 }));
     await writeFile(join(dir, 'transcript-implement-10.jsonl'), JSON.stringify({ type: 'result', subtype: 'error', total_cost_usd: 2, num_turns: 4 }));
+    // mtimes égalisées : c'est bien le numéro de tentative, comparé en nombre, qui départage.
+    const sameTime = new Date('2026-09-09T10:00:00.000Z');
+    await utimes(join(dir, 'transcript-implement-9.jsonl'), sameTime, sameTime);
+    await utimes(join(dir, 'transcript-implement-10.jsonl'), sameTime, sameTime);
 
     const detail = await ui.data.jobDetail('abcdef01');
 

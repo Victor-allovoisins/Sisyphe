@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { renderPlist } from './launchd.js';
+import { parseLaunchctlPrint, renderPlist } from './launchd.js';
 
 describe('renderPlist', () => {
   it('produit un plist launchd complet et échappé', () => {
@@ -23,5 +23,21 @@ describe('renderPlist', () => {
     });
     expect(p).toContain('<string>/opt/homebrew/bin:/usr/bin:/bin</string>'); // sans doublon du répertoire du node
     expect(p).toContain('<key>StandardOutPath</key><string>/dev/null</string>');
+  });
+});
+
+describe('parseLaunchctlPrint', () => {
+  const print = (lines: string[]) => ['com.sisyphe.daemon = {', ...lines.map((l) => `\t${l}`), '}'].join('\n');
+
+  it('lit state et last exit code', () => {
+    expect(parseLaunchctlPrint(print(['state = running', 'pid = 421', 'last exit code = 0']))).toEqual({ state: 'running', lastExitCode: 0 });
+  });
+
+  it("rend null quand le code de sortie est absent : jamais un 0 inventé", () => {
+    expect(parseLaunchctlPrint(print(['state = running', 'pid = 421']))).toEqual({ state: 'running', lastExitCode: null });
+  });
+
+  it('lit un code de sortie négatif (tué par un signal) et un state inconnu', () => {
+    expect(parseLaunchctlPrint(print(['last exit code = -9']))).toEqual({ state: '?', lastExitCode: -9 });
   });
 });
