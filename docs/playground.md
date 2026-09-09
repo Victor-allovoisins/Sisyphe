@@ -69,5 +69,5 @@ Points de vigilance pour ce passage (déjà câblés côté code — à reconfir
 - La clé API Anthropic est stockée dans le plist LaunchAgent (0600) mais reste lisible via `launchctl print` par les autres processus de l'utilisateur.
 - `sisyphe setup` demande la clé API par un prompt readline qui l'affiche en clair pendant la frappe (voir §3).
 - `~/.sisyphe/logs/launchd.err.log` n'est pas tourné (pino, lui, écrit un fichier par jour) : il grossit tant que le daemon tourne.
-- Les commandes du repo (`setup`/`build`/`test`/`lint`) reçoivent l'environnement du daemon presque tel quel, moins une petite liste noire (`SSH_AUTH_SOCK`, `GITHUB_TOKEN`, `GH_TOKEN`, `NPM_TOKEN`, `ANTHROPIC_API_KEY`).
+- Les commandes du repo (`setup`/`build`/`test`/`lint`) et l'agent reçoivent l'environnement du daemon moins une petite liste noire (`SSH_AUTH_SOCK`, `GITHUB_TOKEN`, `GH_TOKEN`, `NPM_TOKEN`, `ANTHROPIC_API_KEY` pour les commandes), avec les credential helpers git désactivés et les prompts coupés : un `git push` depuis le worktree échoue. Tout autre secret présent dans ton shell reste visible ; une liste blanche serait la réponse durable.
 - `sisyphe --version` renvoie une chaîne fixe (`0.1.0`), pas la version de `package.json`.
