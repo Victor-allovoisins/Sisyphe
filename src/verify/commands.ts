@@ -1,4 +1,5 @@
 import { execa } from 'execa';
+import type { AgentBackend } from '../config/machine.js';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
@@ -135,9 +136,17 @@ export function repoEnv(base: NodeJS.ProcessEnv, extra: { cacheDir: string; issu
   return env;
 }
 
-/** Environnement de l'agent : comme repoEnv, plus la clé API dont le SDK a besoin (exposition connue, spec §9). */
-export function agentEnv(base: NodeJS.ProcessEnv, extra: { cacheDir: string; issueNumber: number; branch: string }): Record<string, string> {
+/**
+ * Environnement de l'agent : comme repoEnv, plus la clé API dont le SDK a besoin (exposition connue, spec §9).
+ * Backend `cli` : la clé reste retirée, sinon la CLI l'utiliserait à la place de la session claude.ai et la
+ * facturation basculerait en silence sur le compte API.
+ */
+export function agentEnv(
+  base: NodeJS.ProcessEnv,
+  extra: { cacheDir: string; issueNumber: number; branch: string },
+  agentBackend: AgentBackend = 'sdk',
+): Record<string, string> {
   const env = repoEnv(base, extra);
-  if (base.ANTHROPIC_API_KEY) env.ANTHROPIC_API_KEY = base.ANTHROPIC_API_KEY;
+  if (agentBackend === 'sdk' && base.ANTHROPIC_API_KEY) env.ANTHROPIC_API_KEY = base.ANTHROPIC_API_KEY;
   return env;
 }

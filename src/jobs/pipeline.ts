@@ -145,7 +145,7 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
     job = store.update(job.id, { branch, baseSha: wt.baseSha, worktreePath: wtPath });
     const envExtra = { cacheDir: repoCachePath(deps.paths, job.repo), issueNumber: job.issueNumber, branch };
     const env = repoEnv(deps.env, envExtra);
-    const agentEnvVars = agentEnv(deps.env, envExtra);
+    const agentEnvVars = agentEnv(deps.env, envExtra, deps.machine.agentBackend);
     await mkdir(env.SISYPHE_CACHE_DIR, { recursive: true });
     if (config.commands.setup) {
       const r = await runRepoCommand(config.commands.setup, {

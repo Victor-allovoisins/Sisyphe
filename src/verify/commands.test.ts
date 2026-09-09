@@ -40,6 +40,9 @@ describe('runRepoCommand', () => {
     expect(r.output.trim()).toBe('42:feature/x:/c:true:none:none:none');
     expect(agentEnv({ ...base, ANTHROPIC_API_KEY: 'sk-x', SSH_AUTH_SOCK: '/s' }, { cacheDir: '/c', issueNumber: 1, branch: 'b' })).toMatchObject({ ANTHROPIC_API_KEY: 'sk-x' });
     expect(agentEnv({ ...base, SSH_AUTH_SOCK: '/s' }, { cacheDir: '/c', issueNumber: 1, branch: 'b' })).not.toHaveProperty('SSH_AUTH_SOCK');
+    // Backend cli : une clé API présente dans l'environnement du daemon ne doit pas basculer la CLI
+    // (abonnement claude.ai) sur une facturation API à l'insu de l'utilisateur.
+    expect(agentEnv({ ...base, ANTHROPIC_API_KEY: 'sk-x' }, { cacheDir: '/c', issueNumber: 1, branch: 'b' }, 'cli')).not.toHaveProperty('ANTHROPIC_API_KEY');
   });
 
   it('repoEnv et agentEnv neutralisent credential helper et prompts git', () => {
