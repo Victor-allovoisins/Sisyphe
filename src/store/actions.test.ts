@@ -43,6 +43,14 @@ describe('ActionStore', () => {
     expect(actions.listRecent(10_000)).toHaveLength(200);
   });
 
+  it('listRecent rejette une limite négative ou fractionnaire vers SQLite', () => {
+    const { actions } = setup();
+    actions.record({ action: 'poll', source: 'cli', outcome: 'ok' });
+    actions.record({ action: 'poll', source: 'cli', outcome: 'ok' });
+    expect(actions.listRecent(-1)).toEqual([]);
+    expect(actions.listRecent(2.9)).toHaveLength(2);
+  });
+
   it('listForJob filtre par job et trie du plus ancien au plus récent', () => {
     const { actions } = setup();
     const a = actions.record({ action: 'enqueue', source: 'ui', jobId: 'job-1', outcome: 'ok' });

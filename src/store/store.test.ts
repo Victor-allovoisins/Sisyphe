@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { InvalidTransitionError } from '../jobs/state.js';
-import { ACTION_OUTCOMES, ACTION_SOURCES } from './actions.js';
+import { ACTION_OUTCOMES, ACTION_SOURCES, ActionStore } from './actions.js';
 import { openDatabase, sqlList } from './db.js';
 import { JobStore } from './jobs.js';
 import { PhaseStore } from './phases.js';
@@ -179,6 +179,7 @@ describe('openDatabase', () => {
     // en supprimant ce que la migration 2 a ajouté.
     const a = openDatabase(file);
     const job = new JobStore(a).create({ repo: 'a/b', issueNumber: 1, issueTitle: 't' });
+    const phase = new PhaseStore(a).start({ jobId: job.id, name: 'triage', attempt: 1 });
     a.exec('DROP TABLE actions');
     a.exec('PRAGMA user_version = 1');
     a.close();
@@ -186,7 +187,9 @@ describe('openDatabase', () => {
     const b = openDatabase(file);
     expect((b.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(2);
     expect(new JobStore(b).get(job.id)?.issueTitle).toBe('t');
+    expect(new PhaseStore(b).listForJob(job.id).map((p) => p.id)).toEqual([phase.id]);
     expect(b.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'actions'").get()).toBeTruthy();
+    expect(new ActionStore(b).record({ action: 'retry', source: 'ui', outcome: 'ok' }).outcome).toBe('ok');
     b.close();
     await rm(dir, { recursive: true, force: true });
   });

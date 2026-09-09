@@ -24,6 +24,16 @@ export interface ActionRow {
   error: string | null;
 }
 
+export interface ActionInput {
+  action: ActionName;
+  source: ActionSource;
+  jobId?: string | null;
+  repo?: string | null;
+  issueNumber?: number | null;
+  outcome: ActionOutcome;
+  error?: string | null;
+}
+
 type Row = Record<string, unknown>;
 
 function rowToAction(r: Row): ActionRow {
@@ -46,15 +56,7 @@ const MAX_RECENT = 200;
 export class ActionStore {
   constructor(private readonly db: DatabaseSync, private readonly now: () => Date = () => new Date()) {}
 
-  record(input: {
-    action: ActionName;
-    source: ActionSource;
-    jobId?: string | null;
-    repo?: string | null;
-    issueNumber?: number | null;
-    outcome: ActionOutcome;
-    error?: string | null;
-  }): ActionRow {
+  record(input: ActionInput): ActionRow {
     const result = this.db
       .prepare('INSERT INTO actions (at, action, source, job_id, repo, issue_number, outcome, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
       .run(
@@ -76,9 +78,10 @@ export class ActionStore {
     return rowToAction(r);
   }
 
-  /** Plus récentes d'abord ; plafonné à 200 quelle que soit la limite demandée. */
+  /** Plus récentes d'abord ; plafonné à 200 et jamais négatif ou fractionnaire, quelle que soit la limite demandée. */
   listRecent(limit: number): ActionRow[] {
-    return (this.db.prepare('SELECT * FROM actions ORDER BY at DESC, id DESC LIMIT ?').all(Math.min(limit, MAX_RECENT)) as Row[]).map(rowToAction);
+    const n = Math.min(Math.max(0, Math.trunc(limit)), MAX_RECENT);
+    return (this.db.prepare('SELECT * FROM actions ORDER BY at DESC, id DESC LIMIT ?').all(n) as Row[]).map(rowToAction);
   }
 
   listForJob(jobId: string): ActionRow[] {
