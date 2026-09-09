@@ -34,6 +34,22 @@ function readPid(raw: string): number | null {
   return Number.isInteger(pid) && pid > 0 ? pid : null;
 }
 
+export interface LockInfo {
+  pid: number;
+  alive: boolean;
+}
+
+/**
+ * Lecture seule du verrou : ni création ni suppression. Renvoie null si le fichier est absent, vide
+ * ou corrompu (verrou périmé qu'`acquireLock` nettoiera), sinon le pid écrit et s'il répond encore.
+ */
+export async function readLock(paths: DataPaths): Promise<LockInfo | null> {
+  const raw = await readFile(join(paths.root, 'daemon.lock'), 'utf8').catch(() => null);
+  if (raw === null) return null;
+  const pid = readPid(raw);
+  return pid === null ? null : { pid, alive: isAlive(pid) };
+}
+
 /**
  * Verrou mono-instance : un seul daemon Sisyphe à la fois sur cette machine (même racine de données).
  * Renvoie la fonction qui relâche le verrou.

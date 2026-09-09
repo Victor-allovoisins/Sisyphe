@@ -52,6 +52,31 @@ ${envXml}
 `;
 }
 
+export interface LaunchdStatus {
+  /** null : plateforme sans launchd (l'agent n'existe que sur macOS). */
+  loaded: boolean | null;
+  /** null : jamais lancé depuis le chargement — ne pas inventer un 0, ce serait un faux succès. */
+  lastExitCode: number | null;
+  detail: string;
+}
+
+/** Extrait `state` et `last exit code` de la sortie de `launchctl print` (fonction pure, testable). */
+export function parseLaunchctlPrint(stdout: string): { state: string; lastExitCode: number | null } {
+  const state = /state = (\S+)/.exec(stdout)?.[1] ?? '?';
+  const raw = /last exit code = (-?\d+)/.exec(stdout)?.[1];
+  return { state, lastExitCode: raw === undefined ? null : Number(raw) };
+}
+
+/** État de l'agent launchd de l'utilisateur courant. Ne lève jamais : l'UI affiche un avertissement, pas une erreur. */
+export async function probeLaunchd(): Promise<LaunchdStatus> {
+  if (process.platform !== 'darwin') return { loaded: null, lastExitCode: null, detail: 'launchd : macOS uniquement' };
+  const uid = process.getuid?.() ?? 501;
+  const r = await execa('launchctl', ['print', `gui/${uid}/${LAUNCHD_LABEL}`], { reject: false }).catch(() => null);
+  if (!r || r.exitCode !== 0) return { loaded: false, lastExitCode: null, detail: 'agent launchd non chargé' };
+  const { state, lastExitCode } = parseLaunchctlPrint(r.stdout);
+  return { loaded: true, lastExitCode, detail: lastExitCode === null ? `state = ${state}` : `state = ${state}, last exit code = ${lastExitCode}` };
+}
+
 export function plistPath(): string {
   return join(homedir(), 'Library', 'LaunchAgents', `${LAUNCHD_LABEL}.plist`);
 }

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { assertTransition } from '../jobs/state.js';
 import { nowIso, sqlList } from './db.js';
-import { TERMINAL_STATES, emptyFlags, isTerminal, parseFlags, type Job, type JobState } from './types.js';
+import { JOB_STATES, TERMINAL_STATES, emptyFlags, isTerminal, parseFlags, type Job, type JobState } from './types.js';
 
 type Row = Record<string, unknown>;
 
@@ -91,6 +91,31 @@ export class JobStore {
 
   listRecent(limit: number): Job[] {
     return (this.db.prepare('SELECT * FROM jobs ORDER BY created_at DESC, rowid DESC LIMIT ?').all(limit) as Row[]).map(rowToJob);
+  }
+
+  /** Nombre de jobs par état, tous les états présents (zéro compris) : compteurs de l'UI sans charger les lignes. */
+  countByState(): Record<JobState, number> {
+    const counts = Object.fromEntries(JOB_STATES.map((s) => [s, 0])) as Record<JobState, number>;
+    for (const r of this.db.prepare('SELECT state, COUNT(*) AS c FROM jobs GROUP BY state').all() as Row[]) {
+      counts[r.state as JobState] = r.c as number;
+    }
+    return counts;
+  }
+
+  /** Liste filtrée du plus récent au plus ancien. Le filtrage est fait en SQL : une limite basse ne doit pas amputer le filtre. */
+  listFiltered(o: { state?: JobState; repo?: string; limit: number }): Job[] {
+    const where: string[] = [];
+    const values: (string | number)[] = [];
+    if (o.state) {
+      where.push('state = ?');
+      values.push(o.state);
+    }
+    if (o.repo) {
+      where.push('repo = ?');
+      values.push(o.repo);
+    }
+    const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    return (this.db.prepare(`SELECT * FROM jobs ${clause} ORDER BY created_at DESC, rowid DESC LIMIT ?`).all(...values, o.limit) as Row[]).map(rowToJob);
   }
 
   listSince(sinceIso: string, repo?: string): Job[] {

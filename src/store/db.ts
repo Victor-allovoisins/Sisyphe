@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { JOB_STATES, TERMINAL_STATES } from './types.js';
 
@@ -92,6 +93,17 @@ export function openDatabase(path: string): DatabaseSync {
     }
   }
   return db;
+}
+
+/**
+ * Ouvre la base en lecture seule : aucune migration, aucun PRAGMA d'écriture, le daemon n'est pas gêné.
+ * Sert l'UI locale. Une base absente est une erreur explicite plutôt qu'un `unable to open database file`.
+ */
+export function openDatabaseReadOnly(path: string): DatabaseSync {
+  if (!existsSync(path)) {
+    throw new Error(`Aucune base Sisyphe à ${path} : lancer \`sisyphe start\` une fois pour la créer.`);
+  }
+  return new DatabaseSync(path, { readOnly: true });
 }
 
 export function nowIso(): string {

@@ -6,7 +6,7 @@ import type { DataPaths } from '../../config/paths.js';
 import { REPO_CONFIG_FILENAME, parseRepoConfig } from '../../config/repo.js';
 import { parseRepo, type RepoRef } from '../../github/source.js';
 import { firstWord, runChecks, which, type Check } from '../checks.js';
-import { LAUNCHD_LABEL } from '../launchd.js';
+import { LAUNCHD_LABEL, parseLaunchctlPrint } from '../launchd.js';
 
 const BYTES_PER_GB = 1024 ** 3;
 const MIN_FREE_DISK_GB = 10;
@@ -84,13 +84,11 @@ async function checkLaunchdAgent(): Promise<string> {
   const uid = process.getuid?.() ?? 501;
   const r = await execa('launchctl', ['print', `gui/${uid}/${LAUNCHD_LABEL}`], { reject: false });
   if (r.exitCode !== 0) throw new Error('agent launchd non chargé');
-  const state = /state = (\S+)/.exec(r.stdout)?.[1] ?? '?';
-  const lastExitRaw = /last exit code = (-?\d+)/.exec(r.stdout)?.[1];
+  const { state, lastExitCode } = parseLaunchctlPrint(r.stdout);
   // Absent (jamais lancé depuis le chargement) : ne pas inventer un code de sortie 0, ce serait un faux succès.
-  if (lastExitRaw === undefined) return `state = ${state}`;
-  const lastExit = Number(lastExitRaw);
-  if (lastExit !== 0) throw new Error(`state = ${state}, last exit code = ${lastExit}`);
-  return `state = ${state}, last exit code = ${lastExit}`;
+  if (lastExitCode === null) return `state = ${state}`;
+  if (lastExitCode !== 0) throw new Error(`state = ${state}, last exit code = ${lastExitCode}`);
+  return `state = ${state}, last exit code = ${lastExitCode}`;
 }
 
 /** Construit la liste des checks, sans en exécuter aucun (fonction pure côté construction). */
