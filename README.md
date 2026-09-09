@@ -34,7 +34,11 @@ Un fichier `sisyphe.yml` à la racine de la branche par défaut (exemple iOS : `
 
 ## Commandes
 
-`sisyphe start [--once]`, `status`, `logs <jobId> [--phase triage|implement|setup|verify] [--raw]`, `report [--since 30d] [--repo owner/repo]`, `cancel <jobId>`, `doctor`, `setup`.
+`sisyphe start [--once]`, `status`, `logs <jobId> [--phase triage|implement|setup|verify] [--raw]`, `report [--since 30d] [--repo owner/repo]`, `ui [--port 7777]`, `cancel <jobId>`, `doctor`, `setup`.
+
+### Interface web
+
+`sisyphe ui` sert une page locale en **lecture seule** sur `http://127.0.0.1:7777` : tableau de bord temps réel (daemon, launchd, budget du jour, jobs actifs et fil des actions de l'agent), historique des jobs avec panneau de détail (phases, transcript résumé, sorties de vérification, diff, secrets détectés) et KPIs par période. La base est ouverte en `readOnly`, aucune action n'est possible depuis l'interface, aucun appel réseau n'est fait, et rien n'est jamais écrit. Captures : `docs/ui/`.
 
 ## Développement
 

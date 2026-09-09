@@ -33,6 +33,7 @@ claude auth status --json      # backend cli : loggedIn true attendu, sinon `cla
 sisyphe setup                  # backend agent (cli/sdk), App ID, Installation ID, chemin .pem, repos : <owner>/sisyphe-playground
 sisyphe doctor                 # aucun ❌ (les ⚠️ — launchd, caffeinate, espace disque — n'empêchent pas de continuer)
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.sisyphe.daemon.plist   # pour piloter à la main pendant la validation
+sisyphe ui                     # facultatif : http://127.0.0.1:7777, lecture seule, à garder ouvert pendant les scénarios
 ```
 
 Le backend agent est enregistré dans `~/.sisyphe/config.yml` sous `agentBackend` : `cli` lance la CLI Claude Code locale (`claude -p`, abonnement claude.ai, pas de clé API, pas de sandbox), `sdk` garde le Agent SDK et sa clé API. Avec `cli`, `sisyphe doctor` remplace les checks de clé par `claude (CLI)` et `claude auth status`.

@@ -7,6 +7,8 @@ import { reportCommand } from './commands/report.js';
 import { setupCommand } from './commands/setup.js';
 import { startCommand } from './commands/start.js';
 import { statusCommand } from './commands/status.js';
+import { uiCommand } from './commands/ui.js';
+import { DEFAULT_UI_PORT } from '../ui/server.js';
 
 /** Les seules valeurs que produit réellement le pipeline (voir jobs/pipeline.ts, verify/verify.ts) : pas de phase `deliver` (elle n'écrit pas de fichier dédié dans le jobDir). */
 const PHASES = ['triage', 'implement', 'setup', 'verify'] as const;
@@ -30,6 +32,11 @@ program
   .option('--since <durée>', 'ex. 30d, 2w, 12h', '30d')
   .option('--repo <owner/repo>', 'ne garder que ce repo')
   .action(reportCommand);
+program
+  .command('ui')
+  .description('Interface web locale en lecture seule (127.0.0.1)')
+  .option('--port <n>', 'port d’écoute', String(DEFAULT_UI_PORT))
+  .action(uiCommand);
 program.command('cancel').description('Annule un job actif en retirant le label trigger').argument('<jobId>').action(cancelCommand);
 program.command('doctor').description("Vérifie l'installation").action(doctorCommand);
 program.command('setup').description('Configuration interactive et installation launchd').action(setupCommand);

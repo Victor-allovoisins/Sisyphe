@@ -300,6 +300,7 @@ Logs du daemon : pino JSON sur stdout et dans `~/.sisyphe/logs/daemon-YYYY-MM-DD
 - `sisyphe status` : jobs actifs et les 20 derniers, avec état, coût, durée, lien PR.
 - `sisyphe logs <jobId> [--phase <name>] [--raw]` : par défaut un résumé lisible du transcript (outils appelés, fichiers touchés, commandes lancées) ; `--raw` affiche les fichiers bruts.
 - `sisyphe report [--since 30d] [--repo <owner/repo>]` : markdown avec nombre de jobs, répartition par état final, taux de PR ouvertes, taux de PR mergées, coût total et médian, coût par PR mergée, durée médiane (cumulée sur les runs requeués), nombre de tentatives moyen, cinq derniers échecs avec raison.
+- `sisyphe ui [--port <n>]` : interface web locale en lecture seule sur `127.0.0.1` (tableau de bord temps réel, jobs, KPIs) — spec dédiée `docs/superpowers/specs/2026-09-09-sisyphe-ui-design.md`.
 - `sisyphe cancel <jobId>` : annule un job actif.
 
 ## 8. Gestion d'erreurs
