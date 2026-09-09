@@ -23,7 +23,7 @@ sisyphe setup && sisyphe doctor
 
 `sisyphe setup` demande le backend agent, écrit dans la config machine sous `agentBackend` :
 
-- `cli` (défaut) : la CLI Claude Code installée localement (`claude -p`), donc l'abonnement claude.ai. Prérequis : `claude auth status` affiche `loggedIn: true`. Le sandbox n'est pas supporté par ce backend.
+- `cli` : la CLI Claude Code installée localement (`claude -p`), donc l'abonnement claude.ai. C'est la réponse proposée par défaut à la question de `sisyphe setup` (le défaut du schéma, pour une config écrite à la main, reste `sdk`). Prérequis : `claude auth status --json` renvoie `loggedIn: true`. Le sandbox n'est pas supporté par ce backend.
 - `sdk` : le Agent SDK, qui exige une clé API Anthropic (console) dans `ANTHROPIC_API_KEY` — `export ANTHROPIC_API_KEY=sk-ant-...` avant `sisyphe setup`.
 
 Les données vivent sous `~/.sisyphe` (redéfinissable via `SISYPHE_HOME`).

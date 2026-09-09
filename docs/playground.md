@@ -40,7 +40,26 @@ Le backend agent est enregistré dans `~/.sisyphe/config.yml` sous `agentBackend
 Deux pièges connus de cette étape :
 
 - Backend `sdk` : la question `ANTHROPIC_API_KEY` est affichée en clair par readline pendant la frappe. `export ANTHROPIC_API_KEY=...` avant `setup` fait apparaître un défaut `[valeur de l'environnement]` : appuyer sur Entrée pour l'accepter évite de retaper (et de réafficher) la clé.
-- Backend `cli` : le daemon lancé par launchd doit voir `claude` sur son PATH et le vrai `HOME` (la session vit dans `~/.claude`) ; `sisyphe setup` résout `claude` et met son dossier dans le PATH du plist.
+- Backend `cli` : le daemon lancé par launchd doit voir `claude` sur son PATH et le vrai `HOME` (la session vit dans `~/.claude`) ; `sisyphe setup` résout `claude` et met son dossier dans le PATH du plist (setup refuse d'installer si `claude` est introuvable).
+
+### Validation réelle du backend `cli` — 2026-09-09, claude 2.1.265
+
+Deux appels réels (≈ 0,08 $ au total sur l'abonnement Team), plus `node dist/cli/index.js doctor` contre une config `agentBackend: cli` : `✅ claude (CLI) : 2.1.265 (Claude Code)` et `✅ claude auth status : connecté (claude.ai)`. La forme acceptée est bien `claude auth status --json` (le JSON est le défaut, `--json` est explicite dans le code comme ici).
+
+Drapeaux validés tels que `buildCliArgs` les produit :
+
+```
+-p --output-format stream-json --verbose --permission-mode dontAsk --permission-prompts none
+--setting-sources "" --strict-mcp-config --tools "" --model sonnet --max-turns 1 --max-budget-usd 0.10
+--append-system-prompt-file <fichier> --json-schema <schéma>
+```
+
+`--append-system-prompt-file` et `--max-turns` n'apparaissent pas dans `claude --help` de cette version mais existent et sont acceptés.
+
+- **Result** : dernier message `type: result` avec `subtype: success`, `is_error: false`, `structured_output` conforme au schéma, `total_cost_usd` non nul (l'abonnement Team facture bien un coût dans le result), `session_id`, `num_turns`, `usage`, `permission_denials`. Le flux contient aussi des messages `rate_limit_event`, recopiés tels quels dans le transcript.
+- **Isolation** : lancé dans un dossier contenant un `CLAUDE.md` (« réponds toujours BANANA ») et un `.claude/settings.json` plantés, l'agent a répondu `OK` — ni l'un ni l'autre n'a été chargé ; `mcp_servers: []`, `plugins: []`, `apiKeySource: none`.
+- **Hook de garde** : second appel avec `--settings <cli-settings>.json`, `--tools Write --allowedTools Write` et `SISYPHE_GUARD_*`. La tentative d'écriture dans `secrets/leak.txt` a été refusée par le hook avec la raison exacte de `decidePath` (`Chemin protégé par sisyphe.yml : secrets/leak.txt`), refus enregistré dans `permission_denials`, aucun fichier créé.
+- **Non couvert** : `--resume` n'a été exercé que contre le faux binaire des tests.
 
 ## 4. Scénarios à dérouler (dans l'ordre)
 
