@@ -24,6 +24,10 @@ const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 500;
 /** Au-delà, `perDay` ne renvoie que les jours réellement peuplés : inutile de fabriquer des milliers de zéros. */
 const MAX_FILLED_DAYS = 400;
+/** Lignes de transcript relues pour un fil : largement de quoi produire 30 lignes résumées sans relire des mégaoctets à chaque snapshot. */
+const FEED_SOURCE_LINES = 400;
+/** L'état launchd change rarement ; le snapshot SSE, lui, tombe toutes les 2 s : sans ce cache, un `launchctl print` par tic. */
+const LAUNCHD_TTL_MS = 30_000;
 const TRANSCRIPT_RE = /^transcript-([a-z]+)-(\d+)\.jsonl$/;
 const VERIFY_RE = /^(setup\.log|verify-.+\.log)$/;
 
@@ -192,7 +196,14 @@ async function newestTranscript(dir: string, files: string[]): Promise<{ file: s
 export function createUiData(deps: UiDataDeps): UiData {
   const { store, phases, paths, machine } = deps;
   const now = deps.now ?? (() => new Date());
-  const launchd = deps.launchd ?? probeLaunchd;
+  const probe = deps.launchd ?? probeLaunchd;
+  let cachedLaunchd: { at: number; status: LaunchdStatus } | null = null;
+
+  async function launchd(): Promise<LaunchdStatus> {
+    const at = Date.now();
+    if (!cachedLaunchd || at - cachedLaunchd.at > LAUNCHD_TTL_MS) cachedLaunchd = { at, status: await probe() };
+    return cachedLaunchd.status;
+  }
 
   async function feedFor(jobId: string): Promise<string[]> {
     const dir = jobDir(paths, jobId);
@@ -200,7 +211,7 @@ export function createUiData(deps: UiDataDeps): UiData {
     if (!newest) return [];
     const text = await readTextOrNull(join(dir, newest.file));
     if (text === null) return [];
-    return summarizeTranscript(text.split('\n')).slice(-FEED_LINES);
+    return summarizeTranscript(text.split('\n').slice(-FEED_SOURCE_LINES)).slice(-FEED_LINES);
   }
 
   async function overview(): Promise<Overview> {
@@ -303,16 +314,18 @@ export function createUiData(deps: UiDataDeps): UiData {
     const sinceIso = resolveSince(since, at);
     const jobs = store.listSince(sinceIso);
     const perDay = new Map<string, DayStat>();
-    const firstDay = new Date(Math.min(new Date(sinceIso).getTime(), at.getTime()));
-    firstDay.setHours(0, 0, 0, 0);
-    const days = Math.floor((at.getTime() - firstDay.getTime()) / 86_400_000) + 1;
-    if (days <= MAX_FILLED_DAYS) {
-      for (let i = 0; i < days; i++) {
-        const d = new Date(firstDay.getTime());
-        d.setDate(d.getDate() + i);
-        const key = localDay(d.toISOString());
-        perDay.set(key, { day: key, jobs: 0, costUsd: 0, done: 0, failed: 0, blocked: 0 });
-      }
+    // Remplissage jour par jour avec `setDate` et comparaison sur la clé locale : un changement
+    // d'heure d'été fausserait un comptage par division de millisecondes.
+    const cursor = new Date(Math.min(new Date(sinceIso).getTime(), at.getTime()));
+    cursor.setHours(0, 0, 0, 0);
+    const lastKey = localDay(at.toISOString());
+    for (let i = 0; i < MAX_FILLED_DAYS; i++) {
+      const key = localDay(cursor.toISOString());
+      perDay.set(key, { day: key, jobs: 0, costUsd: 0, done: 0, failed: 0, blocked: 0 });
+      if (key >= lastKey) break;
+      cursor.setDate(cursor.getDate() + 1);
+      // Période plus longue que le plafond : on abandonne le remplissage, seuls les jours peuplés sortiront.
+      if (i === MAX_FILLED_DAYS - 1) perDay.clear();
     }
     for (const j of jobs) {
       const key = localDay(j.createdAt);

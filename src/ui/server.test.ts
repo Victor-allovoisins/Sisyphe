@@ -100,6 +100,11 @@ describe('startUiServer', () => {
     const bad = await getJson(`${base}/api/jobs?state=nawak`);
     expect(bad.res.status).toBe(400);
     expect(bad.body.error).toContain('nawak');
+
+    // Un filtre vide vaut « pas de filtre », comme un paramètre absent.
+    const empty = await getJson(`${base}/api/jobs?state=&repo=`);
+    expect(empty.res.status).toBe(200);
+    expect(empty.body.jobs).toHaveLength(2);
   });
 
   it('/api/jobs/:id : 200 sur un préfixe, 404 sur un id inconnu, 409 sur un préfixe ambigu', async () => {

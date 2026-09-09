@@ -40,6 +40,11 @@ function send(res: ServerResponse, status: number, type: string, body: string, e
 const sendJson = (res: ServerResponse, status: number, value: unknown, extra?: Record<string, string>) =>
   send(res, status, JSON_TYPE, JSON.stringify(value), extra);
 
+/** Un paramètre absent et un paramètre vide (`?state=`) veulent dire la même chose : pas de filtre. */
+function strParam(value: string | null): string | undefined {
+  return value === null || value.trim() === '' ? undefined : value;
+}
+
 /** Un entier positif ou rien : une limite illisible est refusée par la couche de données. */
 function intParam(value: string | null): number | undefined {
   if (value === null || value.trim() === '') return undefined;
@@ -57,8 +62,8 @@ export async function startUiServer(o: UiServerOptions): Promise<UiServer> {
     if (url.pathname === '/api/overview') return sendJson(res, 200, await data.overview());
     if (url.pathname === '/api/jobs') {
       const jobs = data.listJobs({
-        state: (url.searchParams.get('state') ?? undefined) as JobState | undefined,
-        repo: url.searchParams.get('repo') ?? undefined,
+        state: strParam(url.searchParams.get('state')) as JobState | undefined,
+        repo: strParam(url.searchParams.get('repo')),
         limit: intParam(url.searchParams.get('limit')),
       });
       return sendJson(res, 200, { jobs });
@@ -69,7 +74,7 @@ export async function startUiServer(o: UiServerOptions): Promise<UiServer> {
       if (!detail) return sendJson(res, 404, { error: `Job inconnu : ${id}` });
       return sendJson(res, 200, detail);
     }
-    if (url.pathname === '/api/report') return sendJson(res, 200, data.report(url.searchParams.get('since') ?? undefined));
+    if (url.pathname === '/api/report') return sendJson(res, 200, data.report(strParam(url.searchParams.get('since'))));
     if (url.pathname === '/api/events') return openStream(req, res);
     // Le navigateur demande toujours /favicon.ico : un 204 vaut mieux qu'un 404 JSON dans la console.
     if (url.pathname === '/favicon.ico') {
@@ -154,9 +159,15 @@ export async function startUiServer(o: UiServerOptions): Promise<UiServer> {
       clearInterval(timer);
       for (const res of clients) res.end();
       clients.clear();
+      const stopped = new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
       // Les connexions gardées en vie par le client (keep-alive) empêcheraient `close()` d'aboutir.
       server.closeIdleConnections();
-      await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+      // Filet : un EventSource qui se reconnecte (`retry: 2000`) peut se glisser juste avant l'arrêt et
+      // laisser une socket active — sans ce coup de grâce différé, Ctrl+C ne rendrait jamais la main.
+      const lastResort = setTimeout(() => server.closeAllConnections(), 500);
+      lastResort.unref();
+      await stopped;
+      clearTimeout(lastResort);
     },
   };
 }

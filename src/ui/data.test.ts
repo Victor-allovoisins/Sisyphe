@@ -149,6 +149,22 @@ describe('overview', () => {
     expect(o.active[0].phase).toBeNull();
   });
 
+  it('la sonde launchd est mise en cache : un snapshot toutes les 2 s ne lance pas un launchctl par tic', async () => {
+    let calls = 0;
+    const ui = await makeUi({
+      launchd: async () => {
+        calls++;
+        return { loaded: true, lastExitCode: 0, detail: 'state = running' };
+      },
+    });
+
+    await ui.data.overview();
+    await ui.data.overview();
+    await ui.data.overview();
+
+    expect(calls).toBe(1);
+  });
+
   it('launchd est injectable : la sonde par défaut n’est jamais appelée en test', async () => {
     const ui = await makeUi({ launchd: async () => ({ loaded: false, lastExitCode: null, detail: 'agent launchd non chargé' }) });
 
