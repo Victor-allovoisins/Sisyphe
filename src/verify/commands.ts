@@ -57,18 +57,18 @@ export async function runRepoCommand(command: string, opts: RunOptions): Promise
     }
   });
 
-  let exited = false;
+  // `settled` : la promesse du sous-processus a rendu la main (sorti ET flux fermés). Se fier à la
+  // seule sortie de la tête laisserait passer le cas « la tête sort, un petit-fils garde stdout » :
+  // le timeout ne tuerait rien et l'attente ne serait plus bornée.
+  let settled = false;
   let timedOut = false;
   let cancelled = false;
   let resolveKilled: () => void = () => undefined;
   const killed = new Promise<void>((resolve) => {
     resolveKilled = resolve;
   });
-  subprocess.nodeChildProcess.once('exit', () => {
-    exited = true;
-  });
   const killGroup = () => {
-    if (exited || !subprocess.pid) return;
+    if (settled || !subprocess.pid) return;
     try {
       process.kill(-subprocess.pid, 'SIGKILL');
     } catch {
@@ -77,12 +77,12 @@ export async function runRepoCommand(command: string, opts: RunOptions): Promise
     resolveKilled();
   };
   const timer = setTimeout(() => {
-    if (exited) return;
+    if (settled) return;
     timedOut = true;
     killGroup();
   }, opts.timeoutMs);
   const onAbort = () => {
-    if (exited) return;
+    if (settled) return;
     cancelled = true;
     killGroup();
   };
@@ -91,7 +91,10 @@ export async function runRepoCommand(command: string, opts: RunOptions): Promise
 
   const grace = opts.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
   const exitCode = await Promise.race([
-    subprocess.then((r) => r.exitCode ?? -1),
+    subprocess.then((r) => {
+      settled = true;
+      return r.exitCode ?? -1;
+    }),
     killed.then(() => new Promise<number>((resolve) => setTimeout(() => resolve(-1), grace).unref())),
   ]);
   clearTimeout(timer);

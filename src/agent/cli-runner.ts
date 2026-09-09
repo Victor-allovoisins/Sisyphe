@@ -1,7 +1,7 @@
 import type { SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
 import { execa } from 'execa';
-import { appendFile, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { appendFile, stat, writeFile } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { fileURLToPath } from 'node:url';
 import { zeroUsage } from '../store/types.js';
@@ -19,6 +19,11 @@ import { summarizeResult } from './sdk-runner.js';
  * - `--settings` : le seul hook PreToolUse autorisé est le garde-fou de chemins de Sisyphe.
  * Le sous-processus tourne dans son propre groupe (`detached`) : au timeout ou à l'annulation, tout le
  * groupe est tué, jamais seulement le `claude` de tête.
+ *
+ * La parité avec le backend SDK n'est pas totale : il n'y a pas d'équivalent en ligne de commande de
+ * `managedSettings.strictPluginOnlyCustomization`, et `--setting-sources ""` ne couvre que les réglages
+ * user/project/local — des managed settings (MDM) resteraient chargés et pourraient ajouter des hooks.
+ * Le garde-fou de chemins reste donc, ici, la seule barrière côté hooks que Sisyphe contrôle.
  */
 export interface CliRunnerConfig {
   /** Binaire à lancer. Défaut `claude`, résolu sur le PATH de `o.env` (pas celui du daemon). */
@@ -31,6 +36,16 @@ const HOOK_TIMEOUT_SECONDS = 15;
 /** Délai entre le SIGTERM du groupe et le SIGKILL, puis marge d'attente avant d'abandonner le processus. */
 const KILL_GRACE_MS = 5000;
 const STDERR_TAIL_LINES = 20;
+
+/**
+ * Suffixe des fichiers écrits par appel, dérivé du nom du transcript (`transcript-implement-2.jsonl`
+ * → `implement-2`) : deux phases d'un même job ne s'écrasent pas, et le nom reste stable d'un
+ * redémarrage du daemon à l'autre — ce qu'un compteur porté par l'instance du runner ne garantit pas.
+ */
+export function callSlug(transcriptPath: string): string {
+  const base = basename(transcriptPath).replace(/\.jsonl$/, '');
+  return base.replace(/^transcript-?/, '') || base || 'run';
+}
 
 /**
  * Contenu de `--settings`. La commande cite le chemin et utilise le node courant plutôt que `node` :
@@ -88,7 +103,6 @@ const delay = (ms: number) => new Promise<void>((resolve) => void setTimeout(res
 export class CliAgentRunner implements AgentRunner {
   private readonly claudeBin: string;
   private readonly hookScript: string;
-  private calls = 0;
 
   constructor(cfg: CliRunnerConfig = {}) {
     this.claudeBin = cfg.claudeBin ?? 'claude';
@@ -101,13 +115,23 @@ export class CliAgentRunner implements AgentRunner {
       return summarizeResult<T>({ result: null, sessionId: null, error: null, timedOut: false, aborted: true, floor: zeroUsage(), durationMs: 0, transcriptPath: o.transcriptPath });
     }
 
-    const n = ++this.calls;
+    // Un hook qui ne démarre pas sort en 1, ce que Claude Code traite comme une erreur NON bloquante :
+    // un dist incomplet donnerait un agent silencieusement non gardé. Mieux vaut ne pas lancer du tout.
+    if (o.pathGuard) {
+      try {
+        await stat(this.hookScript);
+      } catch {
+        throw new Error(`Garde-fou introuvable (${this.hookScript}) : run refusé plutôt que non gardé.`);
+      }
+    }
+
+    const slug = callSlug(o.transcriptPath);
     const dir = dirname(o.transcriptPath);
-    const appendPath = join(dir, `system-append-${n}.md`);
+    const appendPath = join(dir, `system-append-${slug}.md`);
     await writeFile(appendPath, o.systemPromptAppend);
     let settingsPath: string | undefined;
     if (o.pathGuard) {
-      settingsPath = join(dir, `cli-settings-${n}.json`);
+      settingsPath = join(dir, `cli-settings-${slug}.json`);
       await writeFile(settingsPath, `${JSON.stringify(buildCliSettings(this.hookScript), null, 2)}\n`);
     }
 
@@ -145,6 +169,12 @@ export class CliAgentRunner implements AgentRunner {
         append({ type: 'sisyphe_raw', data: line });
         return;
       }
+      // JSON valide mais pas un objet (`null`, `3`, `"x"`) : rien à extraire, et le déréférencer planterait
+      // le handler `data`, donc la lecture du flux entier.
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        append({ type: 'sisyphe_raw', data: line });
+        return;
+      }
       append(parsed);
       const m = parsed as { type?: string; subtype?: string; session_id?: string; parent_tool_use_id?: unknown; message?: { id?: string; usage?: Record<string, number> } };
       if (m.type === 'system' && m.subtype === 'init' && typeof m.session_id === 'string') sessionId = m.session_id;
@@ -175,27 +205,32 @@ export class CliAgentRunner implements AgentRunner {
     const outDecoder = new StringDecoder('utf8');
     let pending = '';
     subprocess.stdout?.on('data', (chunk: Buffer | string) => {
-      pending += typeof chunk === 'string' ? chunk : outDecoder.write(chunk);
-      let idx = pending.indexOf('\n');
-      while (idx >= 0) {
-        onLine(pending.slice(0, idx));
-        pending = pending.slice(idx + 1);
-        idx = pending.indexOf('\n');
-      }
+      const parts = (pending + (typeof chunk === 'string' ? chunk : outDecoder.write(chunk))).split('\n');
+      pending = parts.pop() ?? '';
+      for (const line of parts) onLine(line);
     });
+    // stderr : le transcript garde tout, la mémoire ne garde qu'un anneau des dernières lignes
+    // (une session qui bavarde pendant une heure ne doit pas grossir indéfiniment dans le daemon).
     const errDecoder = new StringDecoder('utf8');
-    const stderrChunks: string[] = [];
+    const stderrRing: string[] = [];
+    let stderrPending = '';
+    const pushStderr = (data: string): void => {
+      const parts = (stderrPending + data).split('\n');
+      stderrPending = parts.pop() ?? '';
+      for (const line of parts) if (line.trim() !== '') stderrRing.push(line);
+      if (stderrRing.length > STDERR_TAIL_LINES) stderrRing.splice(0, stderrRing.length - STDERR_TAIL_LINES);
+    };
     subprocess.stderr?.on('data', (chunk: Buffer | string) => {
       const data = typeof chunk === 'string' ? chunk : errDecoder.write(chunk);
       if (data === '') return;
-      stderrChunks.push(data);
+      pushStderr(data);
       append({ type: 'stderr', data });
     });
 
-    let exited = false;
-    subprocess.nodeChildProcess.once('exit', () => {
-      exited = true;
-    });
+    // `settled` = la promesse execa a rendu la main (processus sorti ET stdio fermés). On ne regarde
+    // JAMAIS la seule sortie de la tête : `claude` peut sortir en laissant un descendant qui garde
+    // stdout ouvert, auquel cas il reste bel et bien un groupe à tuer et une attente à borner.
+    let settled = false;
     let timedOut = false;
     let killTimer: NodeJS.Timeout | undefined;
     let resolveKilled: () => void = () => undefined;
@@ -203,14 +238,14 @@ export class CliAgentRunner implements AgentRunner {
       resolveKilled = resolve;
     });
     const killGroup = (): void => {
-      if (exited || !subprocess.pid) return;
+      if (settled || !subprocess.pid) return;
       try {
         process.kill(-subprocess.pid, 'SIGTERM');
       } catch {
         /* groupe déjà terminé */
       }
       killTimer = setTimeout(() => {
-        if (exited || !subprocess.pid) return;
+        if (settled || !subprocess.pid) return;
         try {
           process.kill(-subprocess.pid, 'SIGKILL');
         } catch {
@@ -221,7 +256,7 @@ export class CliAgentRunner implements AgentRunner {
       resolveKilled();
     };
     const timer = setTimeout(() => {
-      if (exited) return;
+      if (settled) return;
       timedOut = true;
       killGroup();
     }, o.timeoutMs);
@@ -233,19 +268,25 @@ export class CliAgentRunner implements AgentRunner {
     try {
       // Après un kill on n'attend pas indéfiniment : SIGKILL au bout de KILL_GRACE_MS, puis abandon.
       const outcome = await Promise.race([
-        subprocess.then((r) => r),
+        subprocess.then((r) => {
+          settled = true;
+          return r;
+        }),
         killed.then(() => delay(KILL_GRACE_MS * 2)).then(() => null),
       ]);
       if (outcome) {
         exitCode = outcome.exitCode ?? -1;
-        if (outcome.failed && outcome.exitCode === undefined) failure = outcome.message ?? '';
+        // Échec de lancement (binaire absent, permissions) : garder le binaire et le code, pas l'argv complet.
+        if (outcome.failed && outcome.exitCode === undefined) {
+          failure = `${this.claudeBin} : ${(outcome as { code?: string }).code ?? 'échec du lancement'}`;
+        }
       }
     } finally {
       clearTimeout(timer);
       if (killTimer) clearTimeout(killTimer);
       o.signal.removeEventListener('abort', onAbort);
       // Jamais de `claude` orphelin, même si la course ci-dessus a expiré.
-      if (!exited && subprocess.pid) {
+      if (!settled && subprocess.pid) {
         try {
           process.kill(-subprocess.pid, 'SIGKILL');
         } catch {
@@ -256,9 +297,10 @@ export class CliAgentRunner implements AgentRunner {
       subprocess.stderr?.destroy();
     }
     if (pending !== '') onLine(pending);
+    if (stderrPending !== '') pushStderr('\n');
     await writes;
 
-    const tail = stderrChunks.join('').split('\n').filter((l) => l.trim() !== '').slice(-STDERR_TAIL_LINES).join('\n');
+    const tail = stderrRing.join('\n');
     const aborted = o.signal.aborted;
     const error =
       result || timedOut || aborted

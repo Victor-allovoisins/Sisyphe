@@ -114,4 +114,14 @@ describe('runRepoCommand', () => {
     expect(r.timedOut).toBe(true);
     expect(Date.now() - started).toBeLessThan(3000);
   });
+
+  // La tête sort tout de suite : le timeout doit quand même agir, sinon on attendrait la fin du
+  // petit-fils (la promesse du sous-processus n'est réglée qu'une fois tous les flux fermés).
+  it.skipIf(!hasPerl)('ne reste pas bloqué quand la tête sort avant un petit-fils qui garde stdout ouvert', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sisyphe-cmd-'));
+    const started = Date.now();
+    const r = await runRepoCommand("perl -e 'setpgrp(0,0); sleep 30' & exit 0", { cwd: dir, env, timeoutMs: 300, killGraceMs: 500 });
+    expect(r.timedOut).toBe(true);
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
 });

@@ -1,13 +1,15 @@
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { CliAgentRunner } from './cli-runner.js';
 import type { AgentRunOptions } from './runner.js';
 
 const FAKE_CLAUDE = fileURLToPath(new URL('../../test/fakes/fake-claude.sh', import.meta.url));
-const HOOK_SCRIPT = '/opt/sisyphe/dist/agent/path-guard-cli.js';
+// Le runner refuse de démarrer si le script du hook n'existe pas : on pointe sur un fichier réel
+// (la source du hook), jamais exécuté ici puisque le faux `claude` n'appelle aucun hook.
+const HOOK_SCRIPT = fileURLToPath(new URL('./path-guard-cli.ts', import.meta.url));
 
 const initLine = JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sess-1', cwd: '/wt' });
 const assistantLine = JSON.stringify({
@@ -31,14 +33,16 @@ interface Ctx {
 }
 
 /** Prépare un dossier de travail, un script JSONL pour le faux `claude` et des options complètes. */
-async function ctx(o: { lines?: string[]; fake?: Record<string, string>; opts?: Partial<AgentRunOptions> } = {}): Promise<Ctx> {
+async function ctx(o: { lines?: string[]; rawScript?: string; lateLines?: string[]; fake?: Record<string, string>; opts?: Partial<AgentRunOptions> } = {}): Promise<Ctx> {
   const dir = await mkdtemp(join(tmpdir(), 'sisyphe-cli-'));
   const argsFile = join(dir, 'args.txt');
   const promptFile = join(dir, 'prompt.txt');
   const envFile = join(dir, 'env.txt');
   const childPidFile = join(dir, 'child.pid');
   const scriptFile = join(dir, 'script.jsonl');
-  await writeFile(scriptFile, o.lines === undefined ? '' : o.lines.map((l) => `${l}\n`).join(''));
+  await writeFile(scriptFile, o.rawScript ?? (o.lines === undefined ? '' : o.lines.map((l) => `${l}\n`).join('')));
+  const lateFile = join(dir, 'late.jsonl');
+  if (o.lateLines) await writeFile(lateFile, o.lateLines.map((l) => `${l}\n`).join(''));
   const env: Record<string, string> = {
     PATH: process.env.PATH ?? '',
     FAKE_CLAUDE_ARGS_FILE: argsFile,
@@ -46,6 +50,7 @@ async function ctx(o: { lines?: string[]; fake?: Record<string, string>; opts?: 
     FAKE_CLAUDE_ENV_FILE: envFile,
     FAKE_CLAUDE_CHILD_PID_FILE: childPidFile,
     FAKE_CLAUDE_SCRIPT: scriptFile,
+    ...(o.lateLines ? { FAKE_CLAUDE_LATE_SCRIPT: lateFile } : {}),
     ...(o.fake ?? {}),
   };
   return {
@@ -155,6 +160,36 @@ describe('CliAgentRunner : résultat', () => {
     expect(first).toEqual({ type: 'sisyphe_raw', data: 'pas du json' });
   });
 
+  it('une ligne JSON qui n’est pas un objet ne fait pas planter le flux', async () => {
+    const c = await ctx({ lines: ['null', '3', '"une chaîne"', resultLine()] });
+    const r = await runner().run(c.opts);
+    expect(r.stopReason).toBe('completed');
+    const lines = (await readFile(c.opts.transcriptPath, 'utf8')).trim().split('\n').map((l) => JSON.parse(l));
+    expect(lines.slice(0, 3)).toEqual([
+      { type: 'sisyphe_raw', data: 'null' },
+      { type: 'sisyphe_raw', data: '3' },
+      { type: 'sisyphe_raw', data: '"une chaîne"' },
+    ]);
+  });
+
+  it('une ligne coupée entre deux écritures est recollée', async () => {
+    const whole = resultLine();
+    const cut = Math.floor(whole.length / 2);
+    const c = await ctx({ rawScript: whole.slice(0, cut), lateLines: [whole.slice(cut)], fake: { FAKE_CLAUDE_SLEEP: '0.3' } });
+    const r = await runner().run<{ answer: string }>(c.opts);
+    expect(r.stopReason).toBe('completed');
+    expect(r.output).toEqual({ answer: 'ok' });
+  });
+
+  it('les fichiers par appel sont nommés d’après le transcript, pas d’après un compteur d’instance', async () => {
+    const c = await ctx({ lines: [resultLine()], opts: { pathGuard: { worktreePath: '/wt', protectedPatterns: [] } } });
+    const transcriptPath = join(c.dir, 'transcript-implement-2.jsonl');
+    await runner().run({ ...c.opts, transcriptPath });
+    const args = await readArgs(c.argsFile);
+    expect(basename(valueOf(args, '--append-system-prompt-file')!)).toBe('system-append-implement-2.md');
+    expect(basename(valueOf(args, '--settings')!)).toBe('cli-settings-implement-2.json');
+  });
+
   it('result error_max_turns : stopReason max_turns', async () => {
     const c = await ctx({ lines: [initLine, resultLine({ subtype: 'error_max_turns', is_error: true, errors: ['trop de tours'], structured_output: undefined })] });
     const r = await runner().run(c.opts);
@@ -205,6 +240,15 @@ describe('CliAgentRunner : arrêts', () => {
     await expectGroupKilled(c.childPidFile);
   });
 
+  it('la tête sort mais un descendant garde stdout : le timeout tue quand même le groupe', async () => {
+    const c = await ctx({ lines: [initLine, resultLine()], fake: { FAKE_CLAUDE_ORPHAN_SLEEP: '25' }, opts: { timeoutMs: 1000 } });
+    const started = Date.now();
+    const r = await runner().run<{ answer: string }>(c.opts);
+    expect(Date.now() - started).toBeLessThan(4000);
+    expect(r.output).toEqual({ answer: 'ok' }); // le result est arrivé : seul le traînard a été tué
+    await expectGroupKilled(c.childPidFile);
+  });
+
   it('signal déjà annulé : la CLI n’est jamais lancée', async () => {
     const controller = new AbortController();
     controller.abort('cancelled');
@@ -212,6 +256,25 @@ describe('CliAgentRunner : arrêts', () => {
     const r = await runner().run(c.opts);
     expect(r.stopReason).toBe('aborted');
     await expect(readFile(c.argsFile, 'utf8')).rejects.toThrow();
+  });
+});
+
+describe('CliAgentRunner : refus de démarrer', () => {
+  it('hookScript absent avec pathGuard : run() rejette et ne lance rien', async () => {
+    const c = await ctx({ lines: [resultLine()], opts: { pathGuard: { worktreePath: '/wt', protectedPatterns: [] } } });
+    const broken = new CliAgentRunner({ claudeBin: FAKE_CLAUDE, hookScript: '/introuvable/path-guard-cli.js' });
+    await expect(broken.run(c.opts)).rejects.toThrow(/Garde-fou introuvable/);
+    await expect(readFile(c.argsFile, 'utf8')).rejects.toThrow();
+  });
+
+  it('binaire introuvable : erreur nommant le binaire et le code, sans recopier la ligne de commande', async () => {
+    const c = await ctx({ lines: [resultLine()] });
+    const missing = new CliAgentRunner({ claudeBin: '/introuvable/claude-xyz', hookScript: HOOK_SCRIPT });
+    const r = await missing.run(c.opts);
+    expect(r.stopReason).toBe('error');
+    expect(r.errorMessage).toContain('claude-xyz');
+    expect(r.errorMessage).toContain('ENOENT');
+    expect(r.errorMessage).not.toContain('--output-format');
   });
 });
 

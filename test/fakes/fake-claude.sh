@@ -9,6 +9,8 @@
 #   FAKE_CLAUDE_SLEEP           : secondes de pause, dans un `sleep` enfant du même groupe de processus
 #   FAKE_CLAUDE_CHILD_PID_FILE  : y écrit le pid de ce `sleep` (le test vérifie qu'il a bien été tué)
 #   FAKE_CLAUDE_LATE_SCRIPT     : fichier JSONL émis sur stdout après la pause
+#   FAKE_CLAUDE_ORPHAN_SLEEP    : lance un `sleep` en arrière-plan qui HÉRITE de stdout, puis sort tout de
+#                                 suite : la tête est morte mais le flux reste ouvert (cas du `npm run dev &`)
 #   FAKE_CLAUDE_EXIT            : code de sortie (défaut 0)
 set -u
 
@@ -49,6 +51,14 @@ fi
 
 if [ -n "${FAKE_CLAUDE_LATE_SCRIPT:-}" ]; then
   cat "$FAKE_CLAUDE_LATE_SCRIPT"
+fi
+
+if [ -n "${FAKE_CLAUDE_ORPHAN_SLEEP:-}" ]; then
+  sleep "$FAKE_CLAUDE_ORPHAN_SLEEP" &
+  orphan=$!
+  if [ -n "${FAKE_CLAUDE_CHILD_PID_FILE:-}" ]; then
+    printf '%s\n' "$orphan" > "$FAKE_CLAUDE_CHILD_PID_FILE"
+  fi
 fi
 
 exit "${FAKE_CLAUDE_EXIT:-0}"
