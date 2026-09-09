@@ -48,6 +48,7 @@ Sans socket par définition. Séquence : `readLock` → si un daemon vit déjà,
 - `GET /api/overview` gagne `daemon.paused: boolean | null` (null si injoignable), `control: { reachable: boolean }`, `readOnly: boolean` et `recentActions: Action[]` (20 dernières). `GET /api/jobs/:id` gagne `actions: Action[]`.
 - Les autres GET et le SSE sont inchangés ; le `ping` de l'overview est mémorisé 1 s pour ne pas ouvrir une connexion par requête SSE.
 - `sisyphe ui --read-only` : `readOnly: true` dans l'overview, tout POST → 403, aucun bouton affiché.
+- Base non migrée : `uiCommand` lit `PRAGMA user_version` à l'ouverture et refuse de démarrer si la base est antérieure au schéma attendu (message : lancer `sisyphe start` une fois pour migrer), puisque la connexion `readOnly` ne migre jamais.
 
 ### 2.6 Page (`src/ui/page.ts`)
 
