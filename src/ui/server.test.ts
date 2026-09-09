@@ -195,6 +195,12 @@ describe('startUiServer', () => {
     expect(post.headers.get('allow')).toBe('GET');
   });
 
+  it('/favicon.ico répond 204 : le navigateur le demande à chaque chargement', async () => {
+    const { base } = await startTestServer();
+
+    expect((await fetch(`${base}/favicon.ico`)).status).toBe(204);
+  });
+
   it('un port déjà pris est refusé avec un message clair', async () => {
     const { server } = await startTestServer();
 

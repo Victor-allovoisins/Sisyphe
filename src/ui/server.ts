@@ -71,6 +71,12 @@ export async function startUiServer(o: UiServerOptions): Promise<UiServer> {
     }
     if (url.pathname === '/api/report') return sendJson(res, 200, data.report(url.searchParams.get('since') ?? undefined));
     if (url.pathname === '/api/events') return openStream(req, res);
+    // Le navigateur demande toujours /favicon.ico : un 204 vaut mieux qu'un 404 JSON dans la console.
+    if (url.pathname === '/favicon.ico') {
+      res.writeHead(204, SECURITY_HEADERS);
+      res.end();
+      return;
+    }
     return sendJson(res, 404, { error: `Route inconnue : ${url.pathname}` });
   }
 
