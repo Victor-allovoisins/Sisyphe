@@ -190,6 +190,10 @@ export class Daemon {
     for (const job of this.d.store.listByStates(['queued'])) {
       try {
         if (!(await this.d.source.isStillActive(issueRefOf(job)))) {
+          // Le timer de poll a pu démarrer ce job pendant l'await ci-dessus : on relit l'état en base
+          // avant d'annuler, pour ne pas annuler un job qui n'est déjà plus `queued`.
+          const fresh = this.d.store.get(job.id);
+          if (fresh?.state !== 'queued') continue;
           this.d.store.transition(job.id, 'cancelled');
           this.log.info({ jobId: job.id }, 'job annulé avant démarrage');
         }

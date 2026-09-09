@@ -197,4 +197,68 @@ describe('Daemon', () => {
     expect(h.source.pulls).toHaveLength(0);
     expect(h.source.labelsOf(ref).some((l) => l.startsWith('sisyphe:'))).toBe(false);
   });
+
+  it('watchCancellations ne annule pas un job passé triaging pendant l’attente réseau (course avec le poll)', async () => {
+    const h = await makeHarness({ steps: [] });
+    await pollOnce(h.deps);
+    const queued = h.store.listByStates(['queued'])[0];
+    expect(queued).toBeTruthy();
+
+    let resolveActive: (v: boolean) => void = () => undefined;
+    const pending = new Promise<boolean>((resolve) => {
+      resolveActive = resolve;
+    });
+    h.source.isStillActive = async () => pending;
+
+    const daemon = new Daemon(h.deps);
+    const swept = daemon.watchCancellations();
+    // Pendant que la vérification réseau (isStillActive) est encore en vol, le timer de poll a démarré le job.
+    h.store.transition(queued.id, 'triaging');
+    resolveActive(false);
+    await expect(swept).resolves.toBeUndefined();
+
+    const job = h.store.get(queued.id)!;
+    expect(job.state).toBe('triaging');
+  });
+
+  it('start() balaie les annulations avant le premier tick : un job queued sans label n’est jamais démarré', async () => {
+    const h = await makeHarness({ steps: [] });
+    const ref = { repo: repoRef, number: 7 };
+    await pollOnce(h.deps);
+    await h.source.removeTriggerLabel(ref);
+    const daemon = new Daemon(h.deps, {
+      intervals: { pollMs: 3_600_000, cancelMs: 3_600_000, prTrackMs: 3_600_000, purgeMs: 3_600_000 },
+    });
+    const started = daemon.start();
+    const deadline = Date.now() + 2000;
+    let job = h.store.listRecent(1)[0];
+    while (!isTerminal(job.state) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      job = h.store.listRecent(1)[0];
+    }
+    await daemon.stop();
+    await started;
+
+    expect(job.state).toBe('cancelled');
+    expect(h.source.pulls).toHaveLength(0);
+  });
+
+  it('startNext() ne démarre aucun job pendant qu’une purge est en cours', async () => {
+    const h = await makeHarness({
+      steps: [{ output: readyVerdict }, { output: report('a'), sideEffect: writeFeature('hello\n') }],
+    });
+    await pollOnce(h.deps);
+    expect(h.store.listByStates(['queued'])).toHaveLength(1);
+
+    const daemon = new Daemon(h.deps) as unknown as { purging: boolean; startNext(): Promise<unknown> | null };
+    daemon.purging = true;
+    expect(daemon.startNext()).toBeNull();
+    expect(h.store.listByStates(['queued'])).toHaveLength(1); // toujours en file, rien n'a démarré
+
+    daemon.purging = false;
+    const p = daemon.startNext();
+    expect(p).not.toBeNull();
+    await p;
+    expect(h.store.listByStates(['queued'])).toHaveLength(0);
+  });
 });
