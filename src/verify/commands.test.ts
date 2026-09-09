@@ -1,5 +1,5 @@
 import { execa } from 'execa';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -40,6 +40,40 @@ describe('runRepoCommand', () => {
     expect(r.output.trim()).toBe('42:feature/x:/c:true:none:none:none');
     expect(agentEnv({ ...base, ANTHROPIC_API_KEY: 'sk-x', SSH_AUTH_SOCK: '/s' }, { cacheDir: '/c', issueNumber: 1, branch: 'b' })).toMatchObject({ ANTHROPIC_API_KEY: 'sk-x' });
     expect(agentEnv({ ...base, SSH_AUTH_SOCK: '/s' }, { cacheDir: '/c', issueNumber: 1, branch: 'b' })).not.toHaveProperty('SSH_AUTH_SOCK');
+  });
+
+  it('repoEnv et agentEnv neutralisent credential helper et prompts git', () => {
+    const expected = {
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'credential.helper',
+      GIT_CONFIG_VALUE_0: '',
+      GIT_TERMINAL_PROMPT: '0',
+      GIT_AUTHOR_NAME: 'Sisyphe',
+      GIT_AUTHOR_EMAIL: 'sisyphe[bot]@users.noreply.github.com',
+      GIT_COMMITTER_NAME: 'Sisyphe',
+      GIT_COMMITTER_EMAIL: 'sisyphe[bot]@users.noreply.github.com',
+    };
+    expect(repoEnv(base, { cacheDir: '/c', issueNumber: 1, branch: 'b' })).toMatchObject(expected);
+    expect(agentEnv(base, { cacheDir: '/c', issueNumber: 1, branch: 'b' })).toMatchObject(expected);
+  });
+
+  it('empêche effectivement git d’utiliser le credential.helper global (store)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sisyphe-cred-'));
+    await execa('git', ['init', '-q', 'repo'], { cwd: dir });
+    const repoPath = join(dir, 'repo');
+    const fakeGlobal = join(dir, 'fake-global.gitconfig');
+    await writeFile(fakeGlobal, '[credential]\n\thelper = store\n');
+    const hermeticBase = { PATH: base.PATH, GIT_CONFIG_GLOBAL: fakeGlobal, GIT_CONFIG_SYSTEM: '/dev/null' };
+
+    // Contrôle : sans repoEnv, le helper global est bien vu — sinon l'assertion suivante ne prouverait rien.
+    const control = await execa('git', ['config', '--get-all', 'credential.helper'], { cwd: repoPath, env: hermeticBase, reject: false });
+    expect(control.stdout.trim()).toBe('store');
+
+    // Avec repoEnv : GIT_CONFIG_COUNT/KEY_0/VALUE_0 vide réinitialise la liste des helpers (le dernier gagne),
+    // donc la valeur *effective* (--get, singulier) est vide — --get-all continuerait, lui, à lister l'historique.
+    const withOverride = repoEnv(hermeticBase, { cacheDir: '/c', issueNumber: 1, branch: 'b' });
+    const r = await execa('git', ['config', '--get', 'credential.helper'], { cwd: repoPath, env: withOverride, reject: false });
+    expect(r.stdout.trim()).toBe('');
   });
 
   it('tue tout le groupe au timeout, sans survivant', async () => {

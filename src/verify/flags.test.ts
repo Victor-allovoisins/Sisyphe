@@ -8,6 +8,7 @@ describe('flags', () => {
     expect(matchProtectedPaths(files, [])).toEqual(['.github/workflows/ci.yml']);
     expect(matchProtectedPaths(['App/Config.XCCONFIG'], ['**/*.xcconfig'])).toEqual(['App/Config.XCCONFIG']);
     expect(matchProtectedPaths(['.claude/settings.json', '.mcp.json', 'sisyphe.yml', 'src/a.ts'], [])).toEqual(['.claude/settings.json', '.mcp.json', 'sisyphe.yml']);
+    expect(matchProtectedPaths(['packages/x/.claude/settings.json', 'packages/x/src/a.ts'], [])).toEqual(['packages/x/.claude/settings.json']);
   });
   it('détecte un gros diff strictement au-dessus du seuil', () => {
     expect(isLargeDiff(800, 800)).toBe(false);

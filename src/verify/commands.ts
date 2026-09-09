@@ -122,6 +122,16 @@ export function repoEnv(base: NodeJS.ProcessEnv, extra: { cacheDir: string; issu
   env.SISYPHE_ISSUE_NUMBER = String(extra.issueNumber);
   env.SISYPHE_BRANCH = extra.branch;
   env.CI = 'true';
+  // Aucun credential helper (store, osxkeychain…) ni prompt : un `git push` depuis le worktree,
+  // par l'agent ou par une commande du repo, échoue au lieu d'utiliser les identifiants du développeur.
+  env.GIT_CONFIG_COUNT = '1';
+  env.GIT_CONFIG_KEY_0 = 'credential.helper';
+  env.GIT_CONFIG_VALUE_0 = '';
+  env.GIT_TERMINAL_PROMPT = '0';
+  env.GIT_AUTHOR_NAME = 'Sisyphe';
+  env.GIT_AUTHOR_EMAIL = 'sisyphe[bot]@users.noreply.github.com';
+  env.GIT_COMMITTER_NAME = 'Sisyphe';
+  env.GIT_COMMITTER_EMAIL = 'sisyphe[bot]@users.noreply.github.com';
   return env;
 }
 
