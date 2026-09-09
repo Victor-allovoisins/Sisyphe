@@ -43,6 +43,13 @@ describe('runRepoCommand', () => {
     // Backend cli : une clé API présente dans l'environnement du daemon ne doit pas basculer la CLI
     // (abonnement claude.ai) sur une facturation API à l'insu de l'utilisateur.
     expect(agentEnv({ ...base, ANTHROPIC_API_KEY: 'sk-x' }, { cacheDir: '/c', issueNumber: 1, branch: 'b' }, 'cli')).not.toHaveProperty('ANTHROPIC_API_KEY');
+    // Redirections d'auth ou d'endpoint de la CLI : retirées des deux environnements.
+    const redirected = { ...base, ANTHROPIC_AUTH_TOKEN: 't', ANTHROPIC_BASE_URL: 'http://x', CLAUDE_CONFIG_DIR: '/tmp/c', CLAUDE_CODE_USE_BEDROCK: '1', CLAUDE_CODE_USE_VERTEX: '1' };
+    for (const built of [repoEnv(redirected, { cacheDir: '/c', issueNumber: 1, branch: 'b' }), agentEnv(redirected, { cacheDir: '/c', issueNumber: 1, branch: 'b' }, 'cli')]) {
+      for (const k of ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX']) {
+        expect(built).not.toHaveProperty(k);
+      }
+    }
   });
 
   it('repoEnv et agentEnv neutralisent credential helper et prompts git', () => {

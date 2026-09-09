@@ -115,8 +115,17 @@ export async function runRepoCommand(command: string, opts: RunOptions): Promise
   return { exitCode, output, timedOut, cancelled, truncated, durationMs: Date.now() - started };
 }
 
-/** Variables du daemon jamais transmises aux commandes du repo : elles donneraient un accès que le spec interdit. */
-const STRIPPED_ENV = new Set(['SSH_AUTH_SOCK', 'GITHUB_TOKEN', 'GH_TOKEN', 'NPM_TOKEN', 'ANTHROPIC_API_KEY']);
+/**
+ * Variables du daemon jamais transmises aux commandes du repo : elles donneraient un accès que le spec
+ * interdit. Les `ANTHROPIC_*` / `CLAUDE_*` s'y ajoutent parce qu'elles redirigent l'authentification ou
+ * l'endpoint de la CLI (jeton, base URL, dossier de config, Bedrock/Vertex) : avec le backend `cli`, elles
+ * feraient sortir l'agent de la session claude.ai attendue.
+ */
+const STRIPPED_ENV = new Set([
+  'SSH_AUTH_SOCK', 'GITHUB_TOKEN', 'GH_TOKEN', 'NPM_TOKEN',
+  'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL',
+  'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX',
+]);
 
 /** Environnement des commandes du repo (setup, build, test, lint) : celui du daemon épuré, plus les variables SISYPHE_*. */
 export function repoEnv(base: NodeJS.ProcessEnv, extra: { cacheDir: string; issueNumber: number; branch: string }): Record<string, string> {

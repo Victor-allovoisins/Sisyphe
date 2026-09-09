@@ -138,6 +138,15 @@ describe('buildRawConfig', () => {
     expect(merged.pollIntervalSeconds).toBe(42);
   });
 
+  it('backend cli : sandbox forcé à false (sinon createApp refuse la config et setup ne la corrigerait jamais)', () => {
+    const existing = parseMachineConfig(
+      stringify({ github: { appId: 1, installationId: 2, privateKeyPath: '/old.pem' }, repos: ['old/repo'], sandbox: true }),
+    );
+    const answers = { appId: 1, installationId: 2, privateKeyPath: '/k.pem', repos: ['a/b'], dataDir: '/d' };
+    expect(parseMachineConfig(stringify(buildRawConfig({ ...answers, agentBackend: 'cli' }, existing))).sandbox).toBe(false);
+    expect(parseMachineConfig(stringify(buildRawConfig({ ...answers, agentBackend: 'sdk' }, existing))).sandbox).toBe(true);
+  });
+
   it('dataDir existant conservé : un dataDir personnalisé ne doit jamais être écrasé par la relance de setup', () => {
     const existing = parseMachineConfig(
       stringify({

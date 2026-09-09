@@ -94,7 +94,9 @@ export interface SetupAnswers {
  * Fusionne les réponses de setup avec une config existante : github, repos et agentBackend sont écrasés.
  * dataDir n'est redemandé nulle part ici — un dataDir personnalisé déjà présent dans la config existante
  * est conservé (setup ne doit pas silencieusement ramener les données vers la racine par défaut). Tout le
- * reste (triggerLabel, pollIntervalSeconds, maxConcurrentJobs, dailyBudgetUsd, sandbox…) est conservé aussi.
+ * reste (triggerLabel, pollIntervalSeconds, maxConcurrentJobs, dailyBudgetUsd…) est conservé aussi. Seul
+ * `sandbox` est forcé à false pour le backend `cli`, qui ne le supporte pas : un `sandbox: true` hérité
+ * rendrait la config inutilisable (createApp la refuse) sans que setup puisse jamais la réparer.
  */
 export function buildRawConfig(answers: SetupAnswers, existing?: MachineConfig): Record<string, unknown> {
   return {
@@ -102,6 +104,7 @@ export function buildRawConfig(answers: SetupAnswers, existing?: MachineConfig):
     github: { appId: answers.appId, installationId: answers.installationId, privateKeyPath: answers.privateKeyPath },
     repos: answers.repos,
     agentBackend: answers.agentBackend,
+    ...(answers.agentBackend === 'cli' ? { sandbox: false } : {}),
     dataDir: existing?.dataDir ?? answers.dataDir,
   };
 }
@@ -204,7 +207,9 @@ export async function setupCommand(): Promise<void> {
     const checkEnv = agentBackend === 'sdk' ? { ...process.env, ANTHROPIC_API_KEY: apiKey } : process.env;
     // « agent launchd » est forcément non chargé à ce stade (on ne l'a pas encore installé) : ce check
     // n'a de sens que pour `sisyphe doctor` une fois le daemon en place, pas pour le pré-vol de setup.
-    const checks = buildChecks({ machine: app?.machine, github: app?.github, env: checkEnv, paths: app?.paths }).filter(
+    // `machine` (fraîchement parsée) plutôt que seulement `app?.machine` : si createApp a échoué après la
+    // config (client GitHub…), le pré-vol doit quand même vérifier le bon backend, pas retomber sur `sdk`.
+    const checks = buildChecks({ machine: app?.machine ?? machine, github: app?.github, env: checkEnv, paths: app?.paths }).filter(
       (c) => c.name !== 'agent launchd',
     );
     if (initError && !(initError instanceof MachineConfigError)) {
@@ -225,8 +230,16 @@ export async function setupCommand(): Promise<void> {
         return;
       }
       // Backend `cli` : pas de clé dans le plist, mais `claude` doit être sur le PATH du daemon et HOME
-      // doit pointer sur le vrai home (la session claude.ai vit dans ~/.claude).
-      const claudeBin = agentBackend === 'cli' ? await which('claude').catch(() => undefined) : undefined;
+      // doit pointer sur le vrai home (la session claude.ai vit dans ~/.claude). Un `claude` introuvable
+      // est une erreur : un plist sans son dossier donnerait un daemon qui échoue à chaque job.
+      let claudeBin: string | undefined;
+      if (agentBackend === 'cli') {
+        try {
+          claudeBin = await which('claude');
+        } catch {
+          throw new Error('claude introuvable sur le PATH : installer Claude Code puis relancer setup.');
+        }
+      }
       const plist = renderPlist({
         label: LAUNCHD_LABEL,
         nodePath: process.execPath,
