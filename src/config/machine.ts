@@ -24,9 +24,12 @@ export const MachineConfigSchema = z.strictObject({
   maxConcurrentJobs: z.number().int().min(1).max(8).default(1),
   dailyBudgetUsd: z.number().positive().max(1000).default(60),
   sandbox: z.boolean().default(false),
+  /** `sdk` : Agent SDK, exige ANTHROPIC_API_KEY. `cli` : la CLI Claude Code locale (`claude -p`), donc l'abonnement claude.ai. */
+  agentBackend: z.enum(['sdk', 'cli']).default('sdk'),
   dataDir: homeOrAbsolute.default('~/.sisyphe'),
 });
 export type MachineConfig = z.infer<typeof MachineConfigSchema>;
+export type AgentBackend = MachineConfig['agentBackend'];
 
 export type MachineConfigErrorKind = 'missing' | 'invalid';
 

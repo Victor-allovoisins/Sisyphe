@@ -1,15 +1,15 @@
 import { realpathSync } from 'node:fs';
 import { chmod, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { stringify } from 'yaml';
 import { createApp, type App } from '../../app.js';
-import { MachineConfigError, parseMachineConfig, type MachineConfig } from '../../config/machine.js';
+import { MachineConfigError, parseMachineConfig, type AgentBackend, type MachineConfig } from '../../config/machine.js';
 import { dataPaths, defaultDataDir, ensureDataDirs, expandHome, machineConfigPath } from '../../config/paths.js';
 import { parseRepo } from '../../github/source.js';
 import { buildChecks } from './doctor.js';
-import { runChecks } from '../checks.js';
+import { runChecks, which } from '../checks.js';
 import { LAUNCHD_LABEL, installLaunchAgent, plistPath, renderPlist } from '../launchd.js';
 
 /** Réponse affichée par défaut quand ANTHROPIC_API_KEY est déjà dans l'environnement : la clé elle-même n'est jamais affichée à l'écran. */
@@ -58,6 +58,20 @@ export function validateApiKey(s: string): string | null {
   return s.trim() ? null : 'Clé requise.';
 }
 
+export function validateBackend(s: string): string | null {
+  return s === 'cli' || s === 'sdk' ? null : 'Répondre cli ou sdk.';
+}
+
+/**
+ * PATH du plist launchd : launchd n'hérite d'aucun shell (nvm/mise, homebrew...). Le node courant en
+ * tête, puis le dossier du `claude` résolu s'il est connu (il vit souvent dans ~/.local/bin, absent
+ * des chemins système), puis le socle habituel. Dédoublonné pour rester lisible.
+ */
+export function buildPlistPath(nodeExecPath: string, claudeBin?: string): string {
+  const dirs = [dirname(nodeExecPath), ...(claudeBin ? [dirname(claudeBin)] : []), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin'];
+  return [...new Set(dirs)].join(':');
+}
+
 export async function validatePrivateKeyPath(p: string): Promise<string | null> {
   try {
     await readFile(expandHome(p), 'utf8');
@@ -73,19 +87,21 @@ export interface SetupAnswers {
   privateKeyPath: string;
   repos: string[];
   dataDir: string;
+  agentBackend: AgentBackend;
 }
 
 /**
- * Fusionne les réponses de setup avec une config existante : github et repos sont écrasés. dataDir n'est
- * redemandé nulle part ici — un dataDir personnalisé déjà présent dans la config existante est conservé
- * (setup ne doit pas silencieusement ramener les données vers la racine par défaut). Tout le reste
- * (triggerLabel, pollIntervalSeconds, maxConcurrentJobs, dailyBudgetUsd, sandbox…) est conservé aussi.
+ * Fusionne les réponses de setup avec une config existante : github, repos et agentBackend sont écrasés.
+ * dataDir n'est redemandé nulle part ici — un dataDir personnalisé déjà présent dans la config existante
+ * est conservé (setup ne doit pas silencieusement ramener les données vers la racine par défaut). Tout le
+ * reste (triggerLabel, pollIntervalSeconds, maxConcurrentJobs, dailyBudgetUsd, sandbox…) est conservé aussi.
  */
 export function buildRawConfig(answers: SetupAnswers, existing?: MachineConfig): Record<string, unknown> {
   return {
     ...(existing ?? {}),
     github: { appId: answers.appId, installationId: answers.installationId, privateKeyPath: answers.privateKeyPath },
     repos: answers.repos,
+    agentBackend: answers.agentBackend,
     dataDir: existing?.dataDir ?? answers.dataDir,
   };
 }
@@ -140,15 +156,26 @@ export async function setupCommand(): Promise<void> {
     const reposAnswer = await askValidated('Repos à surveiller (owner/repo, séparés par des virgules)', validateRepos);
     const repos = parseReposAnswer(reposAnswer);
 
-    const envKey = process.env.ANTHROPIC_API_KEY;
-    const apiKeyAnswer = await askValidated(
-      'ANTHROPIC_API_KEY (stockée uniquement dans le plist launchd)',
-      validateApiKey,
-      envKey ? ENV_KEY_PLACEHOLDER : undefined,
-    );
-    const apiKey = envKey && apiKeyAnswer === ENV_KEY_PLACEHOLDER ? envKey : apiKeyAnswer;
+    // Le backend décide de la suite : la clé API n'existe que pour le SDK, la CLI utilise la session
+    // claude.ai déjà ouverte sur la machine (`claude auth status`).
+    const agentBackend = (await askValidated(
+      'Backend agent (cli = abonnement Claude Code, sdk = clé API)',
+      validateBackend,
+      existing?.agentBackend ?? 'cli',
+    )) as AgentBackend;
 
-    const raw = buildRawConfig({ appId, installationId, privateKeyPath, repos, dataDir }, existing);
+    let apiKey = '';
+    if (agentBackend === 'sdk') {
+      const envKey = process.env.ANTHROPIC_API_KEY;
+      const apiKeyAnswer = await askValidated(
+        'ANTHROPIC_API_KEY (stockée uniquement dans le plist launchd)',
+        validateApiKey,
+        envKey ? ENV_KEY_PLACEHOLDER : undefined,
+      );
+      apiKey = envKey && apiKeyAnswer === ENV_KEY_PLACEHOLDER ? envKey : apiKeyAnswer;
+    }
+
+    const raw = buildRawConfig({ appId, installationId, privateKeyPath, repos, dataDir, agentBackend }, existing);
     const machine = parseMachineConfig(stringify(raw)); // valide avant d'écrire
     const paths = dataPaths(machine.dataDir);
     await ensureDataDirs(paths);
@@ -172,8 +199,9 @@ export async function setupCommand(): Promise<void> {
       initError = err;
     }
     // La clé n'est pas forcément exportée dans l'environnement de cette session (c'est justement ce que
-    // setup vient de recueillir) : on l'injecte pour que le check et la sonde API portent sur la bonne valeur.
-    const checkEnv = { ...process.env, ANTHROPIC_API_KEY: apiKey };
+    // setup vient de recueillir) : on l'injecte pour que le check et la sonde API portent sur la bonne
+    // valeur. Backend `cli` : aucune clé, ce sont les checks `claude` qui s'appliquent.
+    const checkEnv = agentBackend === 'sdk' ? { ...process.env, ANTHROPIC_API_KEY: apiKey } : process.env;
     // « agent launchd » est forcément non chargé à ce stade (on ne l'a pas encore installé) : ce check
     // n'a de sens que pour `sisyphe doctor` une fois le daemon en place, pas pour le pré-vol de setup.
     const checks = buildChecks({ machine: app?.machine, github: app?.github, env: checkEnv, paths: app?.paths }).filter(
@@ -196,18 +224,30 @@ export async function setupCommand(): Promise<void> {
         console.log(`Lancer setup depuis le build : node dist/cli/index.js setup (argv[1] = ${argv1})`);
         return;
       }
+      // Backend `cli` : pas de clé dans le plist, mais `claude` doit être sur le PATH du daemon et HOME
+      // doit pointer sur le vrai home (la session claude.ai vit dans ~/.claude).
+      const claudeBin = agentBackend === 'cli' ? await which('claude').catch(() => undefined) : undefined;
       const plist = renderPlist({
         label: LAUNCHD_LABEL,
         nodePath: process.execPath,
         scriptPath: argv1,
         dataDir: paths.root,
         logsDir: paths.logsDir,
-        env: { ANTHROPIC_API_KEY: apiKey, PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: homedir(), SISYPHE_HOME: paths.root },
+        env: {
+          ...(agentBackend === 'sdk' ? { ANTHROPIC_API_KEY: apiKey } : {}),
+          PATH: buildPlistPath(process.execPath, claudeBin),
+          HOME: homedir(),
+          SISYPHE_HOME: paths.root,
+        },
       });
       await installLaunchAgent(plist);
       console.log(`Daemon installé et démarré : ${plistPath()}\nLogs : ${paths.logsDir}`);
     } else {
-      console.log("Pas macOS : lancez `sisyphe start` sous le superviseur de votre choix, avec ANTHROPIC_API_KEY dans l'environnement.");
+      console.log(
+        agentBackend === 'sdk'
+          ? "Pas macOS : lancez `sisyphe start` sous le superviseur de votre choix, avec ANTHROPIC_API_KEY dans l'environnement."
+          : 'Pas macOS : lancez `sisyphe start` sous le superviseur de votre choix, avec `claude` sur le PATH et HOME pointant sur la session claude.ai.',
+      );
     }
     console.log('Vérifiez maintenant avec `sisyphe doctor`.');
   } finally {

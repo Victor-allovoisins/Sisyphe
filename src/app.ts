@@ -1,3 +1,4 @@
+import { CliAgentRunner } from './agent/cli-runner.js';
 import { SdkAgentRunner } from './agent/sdk-runner.js';
 import { loadMachineConfig, type MachineConfig } from './config/machine.js';
 import { dataPaths, ensureDataDirs, machineConfigPath, type DataPaths } from './config/paths.js';
@@ -20,13 +21,19 @@ export { machineConfigPath };
 
 /** Câble les implémentations réelles. `needsAgent: false` n'exige pas la clé API (status, report, cancel, doctor). */
 export async function createApp(opts: { logToFile?: boolean; needsAgent?: boolean } = {}): Promise<App> {
-  // Vérifié en tête, avant tout accès disque (ensureDataDirs) ou base (openDatabase) : un premier
-  // lancement mal configuré doit échouer vite et sans effet de bord (répertoires créés pour rien).
-  if (opts.needsAgent !== false && !process.env.ANTHROPIC_API_KEY) {
-    throw new Error("ANTHROPIC_API_KEY absente de l'environnement. Le Agent SDK exige une clé API, l'abonnement claude.ai n'est pas accepté.");
-  }
   const configPath = machineConfigPath();
+  // La config décide du backend agent, donc de ce qu'il faut exiger : elle est lue en premier, mais
+  // les vérifications restent avant tout effet de bord (ensureDataDirs, openDatabase), pour qu'un
+  // premier lancement mal configuré échoue vite et sans laisser de répertoires créés pour rien.
   const machine = await loadMachineConfig(configPath);
+  if (opts.needsAgent !== false && machine.agentBackend === 'sdk' && !process.env.ANTHROPIC_API_KEY) {
+    throw new Error(
+      "ANTHROPIC_API_KEY absente de l'environnement. Le Agent SDK exige une clé API ; pour utiliser l'abonnement Claude Code, mettre `agentBackend: cli` dans la config machine.",
+    );
+  }
+  if (machine.sandbox && machine.agentBackend === 'cli') {
+    throw new Error("`sandbox: true` n'est pas supporté par le backend agent `cli` : passer à `agentBackend: sdk` ou mettre `sandbox: false`.");
+  }
   const paths = dataPaths(machine.dataDir);
   await ensureDataDirs(paths);
   const log = createLogger({ logsDir: opts.logToFile ? paths.logsDir : undefined });
@@ -38,7 +45,7 @@ export async function createApp(opts: { logToFile?: boolean; needsAgent?: boolea
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(`Impossible d'initialiser le client GitHub : ${message}. Vérifier github.privateKeyPath dans ${configPath}.`);
   }
-  const agent = new SdkAgentRunner({ sandbox: machine.sandbox });
+  const agent = machine.agentBackend === 'cli' ? new CliAgentRunner({}) : new SdkAgentRunner({ sandbox: machine.sandbox });
   const deps: PipelineDeps = {
     store: new JobStore(db), phases: new PhaseStore(db), source: github, agent, git: new Git(paths), paths, machine, log, env: process.env,
   };

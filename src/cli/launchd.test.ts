@@ -19,9 +19,9 @@ describe('renderPlist', () => {
   it('préfixe le PATH avec le répertoire du node exécutant et redirige stdout vers /dev/null', () => {
     const p = renderPlist({
       label: 'com.sisyphe.daemon', nodePath: '/opt/homebrew/bin/node', scriptPath: '/x/dist/cli/index.js',
-      dataDir: '/Users/v/.sisyphe', logsDir: '/Users/v/.sisyphe/logs', env: { PATH: '/usr/bin:/bin' },
+      dataDir: '/Users/v/.sisyphe', logsDir: '/Users/v/.sisyphe/logs', env: { PATH: '/usr/bin:/opt/homebrew/bin:/bin' },
     });
-    expect(p).toContain('<string>/opt/homebrew/bin:/usr/bin:/bin</string>');
+    expect(p).toContain('<string>/opt/homebrew/bin:/usr/bin:/bin</string>'); // sans doublon du répertoire du node
     expect(p).toContain('<key>StandardOutPath</key><string>/dev/null</string>');
   });
 });

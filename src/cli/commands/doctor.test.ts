@@ -2,11 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { stringify } from 'yaml';
 import { parseMachineConfig, type MachineConfig } from '../../config/machine.js';
 import { REPO_CONFIG_FILENAME } from '../../config/repo.js';
-import { buildChecks, type DoctorGitHub } from './doctor.js';
+import { buildChecks, parseAuthStatus, type DoctorGitHub } from './doctor.js';
 
-function machineWith(repos: string[]): MachineConfig {
+function machineWith(repos: string[], extra: Record<string, unknown> = {}): MachineConfig {
   return parseMachineConfig(
-    stringify({ github: { appId: 1, installationId: 2, privateKeyPath: '/does/not/need/to/exist.pem' }, repos }),
+    stringify({ github: { appId: 1, installationId: 2, privateKeyPath: '/does/not/need/to/exist.pem' }, repos, ...extra }),
   );
 }
 
@@ -43,6 +43,22 @@ describe('buildChecks — composition de la liste', () => {
   it('ajoute la sonde de clé API seulement si ANTHROPIC_API_KEY est présente', () => {
     expect(buildChecks({ env: {} }).map((c) => c.name)).not.toContain('clé API (appel minimal)');
     expect(buildChecks({ env: { ANTHROPIC_API_KEY: 'sk-x' } }).map((c) => c.name)).toContain('clé API (appel minimal)');
+  });
+
+  it('backend cli : les checks de clé API cèdent la place aux checks de la CLI claude', () => {
+    const machine = machineWith(['acme/one'], { agentBackend: 'cli' });
+    const names = buildChecks({ env: { ANTHROPIC_API_KEY: 'sk-x' }, machine, github: fakeGithub(async () => null) }).map((c) => c.name);
+    expect(names).toContain('claude (CLI)');
+    expect(names).toContain('claude auth status');
+    expect(names).not.toContain('ANTHROPIC_API_KEY');
+    expect(names).not.toContain('clé API (appel minimal)');
+  });
+
+  it('backend sdk (défaut) : pas de check de la CLI claude', () => {
+    const machine = machineWith(['acme/one']);
+    const names = buildChecks({ env: {}, machine, github: fakeGithub(async () => null) }).map((c) => c.name);
+    expect(names).toContain('ANTHROPIC_API_KEY');
+    expect(names).not.toContain('claude (CLI)');
   });
 
   it('ajoute le check espace disque seulement si des paths sont fournis', () => {
@@ -127,6 +143,20 @@ describe('buildChecks — GitHub App', () => {
     const github = fakeGithub(async () => null, { appSlug: 'my-app', repos: ['acme/one'] });
     const r = await run(buildChecks({ env: {}, machine, github }), 'GitHub App');
     expect(r).toEqual({ ok: true, detail: 'my-app, accès à 1 repo(s)' });
+  });
+});
+
+// Le vrai binaire `claude` n'est jamais lancé par les tests : seule la lecture de sa sortie est exercée.
+describe('parseAuthStatus', () => {
+  it('accepte loggedIn true et rapporte la méthode', () => {
+    expect(parseAuthStatus(JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', email: 'x@y.z' }))).toBe('connecté (claude.ai)');
+    expect(parseAuthStatus(JSON.stringify({ loggedIn: true }))).toBe('connecté');
+  });
+
+  it('refuse loggedIn false, un JSON illisible et une forme inattendue', () => {
+    expect(() => parseAuthStatus(JSON.stringify({ loggedIn: false }))).toThrow(/claude login/);
+    expect(() => parseAuthStatus('pas du json')).toThrow(/illisible/);
+    expect(() => parseAuthStatus('null')).toThrow();
   });
 });
 

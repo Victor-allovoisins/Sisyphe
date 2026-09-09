@@ -21,7 +21,8 @@ export function renderPlist(i: PlistInput): string {
   // Le PATH transmis à launchd n'hérite d'aucun shell (nvm/mise, homebrew...) : on préfixe avec le
   // répertoire du node qui exécute sisyphe lui-même, sinon le script planté au premier lancement.
   const nodeDir = dirname(i.nodePath);
-  const env = { ...i.env, PATH: i.env.PATH ? `${nodeDir}:${i.env.PATH}` : nodeDir };
+  const dirs = [nodeDir, ...(i.env.PATH ? i.env.PATH.split(':') : [])].filter(Boolean);
+  const env = { ...i.env, PATH: [...new Set(dirs)].join(':') };
   const envXml = Object.entries(env)
     .map(([k, v]) => `      <key>${esc(k)}</key>\n      <string>${esc(v)}</string>`)
     .join('\n');

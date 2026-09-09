@@ -43,6 +43,36 @@ async function checkApiKeyLive(key: string): Promise<string | { warn: true; mess
   throw new Error(`réponse HTTP ${res.status}`);
 }
 
+/**
+ * Lecture de `claude auth status --json`. Seuls `loggedIn` et `authMethod` sont regardés : rien d'autre
+ * du profil (email, organisation, abonnement) ne doit remonter dans la sortie de doctor.
+ */
+export function parseAuthStatus(stdout: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout) as unknown;
+  } catch {
+    throw new Error('sortie de `claude auth status --json` illisible');
+  }
+  if (typeof parsed !== 'object' || parsed === null) throw new Error('sortie de `claude auth status --json` inattendue');
+  const status = parsed as { loggedIn?: unknown; authMethod?: unknown };
+  if (status.loggedIn !== true) throw new Error('non connecté : lancer `claude login`');
+  return typeof status.authMethod === 'string' ? `connecté (${status.authMethod})` : 'connecté';
+}
+
+async function checkClaudeCli(): Promise<string> {
+  await which('claude');
+  const r = await execa('claude', ['--version'], { reject: false });
+  if (r.exitCode !== 0) throw new Error(`\`claude --version\` a échoué (code ${r.exitCode})`);
+  return r.stdout.trim();
+}
+
+async function checkClaudeAuth(): Promise<string> {
+  const r = await execa('claude', ['auth', 'status', '--json'], { reject: false });
+  if (r.exitCode !== 0) throw new Error('`claude auth status` a échoué : lancer `claude login`');
+  return parseAuthStatus(r.stdout);
+}
+
 async function checkDiskSpace(root: string): Promise<string> {
   const s = await statfs(root);
   const freeGb = (s.bavail * s.bsize) / BYTES_PER_GB;
@@ -79,13 +109,6 @@ export function buildChecks(input: BuildChecksInput): Check[] {
     { name: 'gitleaks', run: () => which('gitleaks') },
     { name: 'caffeinate', warn: true, run: () => which('caffeinate') },
     {
-      name: 'ANTHROPIC_API_KEY',
-      run: async () => {
-        if (!input.env.ANTHROPIC_API_KEY) throw new Error("absente de l'environnement");
-        return 'présente';
-      },
-    },
-    {
       name: 'config machine',
       run: async () => {
         const c = await loadMachineConfig(machineConfigPath());
@@ -94,10 +117,22 @@ export function buildChecks(input: BuildChecksInput): Check[] {
     },
   ];
 
-  // Absente : le check de présence ci-dessus suffit, inutile d'appeler le réseau pour rien.
-  const apiKey = input.env.ANTHROPIC_API_KEY;
-  if (apiKey) {
-    checks.push({ name: 'clé API (appel minimal)', run: () => checkApiKeyLive(apiKey) });
+  // Backend `cli` : c'est la CLI locale et sa session claude.ai qui remplacent la clé API.
+  // Config absente ou illisible (machine indéfinie) : on reste sur le défaut du schéma, `sdk`.
+  if (input.machine?.agentBackend === 'cli') {
+    checks.push({ name: 'claude (CLI)', run: checkClaudeCli });
+    checks.push({ name: 'claude auth status', run: checkClaudeAuth });
+  } else {
+    checks.push({
+      name: 'ANTHROPIC_API_KEY',
+      run: async () => {
+        if (!input.env.ANTHROPIC_API_KEY) throw new Error("absente de l'environnement");
+        return 'présente';
+      },
+    });
+    // Absente : le check de présence ci-dessus suffit, inutile d'appeler le réseau pour rien.
+    const apiKey = input.env.ANTHROPIC_API_KEY;
+    if (apiKey) checks.push({ name: 'clé API (appel minimal)', run: () => checkApiKeyLive(apiKey) });
   }
 
   const { paths } = input;

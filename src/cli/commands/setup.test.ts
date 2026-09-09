@@ -5,8 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { stringify } from 'yaml';
 import { parseMachineConfig } from '../../config/machine.js';
 import {
-  buildRawConfig, isBuiltEntry, parseReposAnswer, resolveEntryPath, validateApiKey, validateId, validatePrivateKeyPath,
-  validateRepos,
+  buildPlistPath, buildRawConfig, isBuiltEntry, parseReposAnswer, resolveEntryPath, validateApiKey, validateBackend,
+  validateId, validatePrivateKeyPath, validateRepos,
 } from './setup.js';
 
 describe('isBuiltEntry', () => {
@@ -60,6 +60,27 @@ describe('validateApiKey', () => {
   });
 });
 
+describe('validateBackend', () => {
+  it('accepte cli et sdk, rejette le reste', () => {
+    expect(validateBackend('cli')).toBeNull();
+    expect(validateBackend('sdk')).toBeNull();
+    expect(validateBackend('')).not.toBeNull();
+    expect(validateBackend('bedrock')).not.toBeNull();
+  });
+});
+
+describe('buildPlistPath', () => {
+  it('met le node courant en tête, puis le dossier de claude, sans doublon', () => {
+    const p = buildPlistPath('/usr/local/n/bin/node', '/Users/x/.local/bin/claude');
+    expect(p.split(':')[0]).toBe('/usr/local/n/bin');
+    expect(p.split(':')[1]).toBe('/Users/x/.local/bin');
+    expect(p).toContain('/opt/homebrew/bin');
+    expect(p.split(':').filter((d) => d === '/opt/homebrew/bin')).toHaveLength(1);
+    expect(buildPlistPath('/opt/homebrew/bin/node').split(':').filter((d) => d === '/opt/homebrew/bin')).toHaveLength(1);
+    expect(buildPlistPath('/usr/local/n/bin/node')).not.toContain('undefined');
+  });
+});
+
 describe('parseReposAnswer', () => {
   it('découpe et trim', () => {
     expect(parseReposAnswer(' a/b , c/d ,, ')).toEqual(['a/b', 'c/d']);
@@ -105,10 +126,11 @@ describe('buildRawConfig', () => {
       }),
     );
     const raw = buildRawConfig(
-      { appId: 9, installationId: 10, privateKeyPath: '/new.pem', repos: ['new/repo'], dataDir: '/new-data' },
+      { appId: 9, installationId: 10, privateKeyPath: '/new.pem', repos: ['new/repo'], dataDir: '/new-data', agentBackend: 'cli' },
       existing,
     );
     const merged = parseMachineConfig(stringify(raw));
+    expect(merged.agentBackend).toBe('cli');
     expect(merged.github.appId).toBe(9);
     expect(merged.repos).toEqual(['new/repo']);
     expect(merged.dataDir).toBe('/old-data');
@@ -125,7 +147,7 @@ describe('buildRawConfig', () => {
       }),
     );
     const raw = buildRawConfig(
-      { appId: 1, installationId: 2, privateKeyPath: '/old.pem', repos: ['old/repo'], dataDir: '/Users/x/.sisyphe' },
+      { appId: 1, installationId: 2, privateKeyPath: '/old.pem', repos: ['old/repo'], dataDir: '/Users/x/.sisyphe', agentBackend: 'sdk' },
       existing,
     );
     const merged = parseMachineConfig(stringify(raw));
@@ -134,9 +156,10 @@ describe('buildRawConfig', () => {
   });
 
   it('sans config existante, ne pose que les champs fournis (les défauts du schéma s’appliquent, dataDir vient des réponses)', () => {
-    const raw = buildRawConfig({ appId: 1, installationId: 2, privateKeyPath: '/k.pem', repos: ['a/b'], dataDir: '/d' });
+    const raw = buildRawConfig({ appId: 1, installationId: 2, privateKeyPath: '/k.pem', repos: ['a/b'], dataDir: '/d', agentBackend: 'cli' });
     const merged = parseMachineConfig(stringify(raw));
     expect(merged.triggerLabel).toBe('sisyphe');
     expect(merged.dataDir).toBe('/d');
+    expect(merged.agentBackend).toBe('cli');
   });
 });

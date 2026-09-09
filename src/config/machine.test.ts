@@ -21,8 +21,14 @@ describe('parseMachineConfig', () => {
     expect(c.maxConcurrentJobs).toBe(1);
     expect(c.dailyBudgetUsd).toBe(60);
     expect(c.sandbox).toBe(false);
+    expect(c.agentBackend).toBe('sdk');
     expect(c.dataDir).toBe(join(homedir(), '.sisyphe'));
     expect(c.github.privateKeyPath).toBe(join(homedir(), '.sisyphe/app.pem'));
+  });
+
+  it('accepte agentBackend cli, refuse une valeur inconnue', () => {
+    expect(parseMachineConfig(`${minimal}agentBackend: cli\n`).agentBackend).toBe('cli');
+    expect(() => parseMachineConfig(`${minimal}agentBackend: bedrock\n`)).toThrow(/agentBackend/);
   });
 
   it('refuse un repo mal formé', () => {
