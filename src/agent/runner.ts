@@ -1,4 +1,3 @@
-import type { Options } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentUsage } from '../store/types.js';
 
 export type AgentStopReason = 'completed' | 'max_turns' | 'max_budget' | 'timeout' | 'aborted' | 'error';
@@ -15,7 +14,8 @@ export interface AgentRunOptions {
   /** Liste blanche : seuls ces outils existent pour l'agent (option SDK `tools`) et ils sont auto-approuvés (option `allowedTools`). */
   allowedTools: string[];
   disallowedTools: string[];
-  hooks?: Options['hooks'];
+  /** Garde-fou d'écriture : chaque backend le traduit dans son propre mécanisme de hook PreToolUse. */
+  pathGuard?: { worktreePath: string; protectedPatterns: string[] };
   /** Environnement du processus agent (agentEnv : daemon épuré + SISYPHE_* + clé API). */
   env: Record<string, string>;
   timeoutMs: number;

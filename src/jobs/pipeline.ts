@@ -1,7 +1,6 @@
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Logger } from 'pino';
-import { pathGuardHook } from '../agent/hooks.js';
 import { implementPrompt, retryPrompt, systemAppend, triagePrompt } from '../agent/prompts.js';
 import { readRepoContext } from '../agent/repo-context.js';
 import type { AgentResult, AgentRunner } from '../agent/runner.js';
@@ -217,7 +216,7 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
             prompt, outputSchema: reportJsonSchema,
             maxTurns: IMPLEMENT_MAX_TURNS, maxBudgetUsd: config.budget.implementUsd, resumeSessionId: resume,
             allowedTools: IMPLEMENT_TOOLS, disallowedTools: IMPLEMENT_DENY,
-            hooks: { PreToolUse: [{ matcher: 'Edit|Write', hooks: [pathGuardHook(wtPath, config.protectedPaths)] }] },
+            pathGuard: { worktreePath: wtPath, protectedPatterns: config.protectedPaths },
             env: agentEnvVars,
             timeoutMs: minutes(config.timeouts.implementMinutes), signal, transcriptPath: join(dir, `transcript-implement-${attempt}.jsonl`),
           }),

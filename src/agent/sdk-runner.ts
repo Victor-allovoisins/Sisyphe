@@ -1,6 +1,7 @@
 import { query as sdkQuery, type Options, type SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
 import { appendFile } from 'node:fs/promises';
 import { zeroUsage, type AgentUsage } from '../store/types.js';
+import { pathGuardHook } from './hooks.js';
 import type { AgentResult, AgentRunOptions, AgentRunner, AgentStopReason } from './runner.js';
 
 /**
@@ -39,7 +40,7 @@ export function buildOptions(o: AgentRunOptions, cfg: SdkRunnerConfig, controlle
     maxBudgetUsd: o.maxBudgetUsd,
     outputFormat: o.outputSchema ? { type: 'json_schema', schema: o.outputSchema } : undefined,
     resume: o.resumeSessionId,
-    hooks: o.hooks,
+    hooks: o.pathGuard ? { PreToolUse: [{ matcher: 'Edit|Write', hooks: [pathGuardHook(o.pathGuard.worktreePath, o.pathGuard.protectedPatterns)] }] } : undefined,
     abortController: controller,
     env: o.env,
     // `enabled: true` implique failIfUnavailable : sur une plateforme sans sandbox, échec explicite plutôt que dégradation silencieuse.

@@ -74,6 +74,26 @@ describe('buildOptions', () => {
     expect(plain.outputFormat).toBeUndefined();
     expect(plain.sandbox).toBeUndefined();
   });
+
+  it('monte le hook de garde des chemins depuis pathGuard, et rien sans pathGuard', async () => {
+    const guarded = buildOptions(
+      runOptions({ pathGuard: { worktreePath: '/wt', protectedPatterns: ['secrets/**'] } }),
+      { sandbox: false },
+      new AbortController(),
+      () => undefined,
+    );
+    const matchers = guarded.hooks?.PreToolUse ?? [];
+    expect(matchers).toHaveLength(1);
+    expect(matchers[0].matcher).toBe('Edit|Write');
+    expect(matchers[0].hooks).toHaveLength(1);
+    const deny = await matchers[0].hooks[0](
+      { hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: '/wt/secrets/key.pem' } } as never,
+      undefined,
+      { signal: new AbortController().signal },
+    );
+    expect(deny).toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny' } });
+    expect(buildOptions(runOptions(), { sandbox: false }, new AbortController(), () => undefined).hooks).toBeUndefined();
+  });
 });
 
 function fakeQuery(messages: SDKMessage[], opts: { hangUntilAbort?: boolean } = {}): QueryFn {

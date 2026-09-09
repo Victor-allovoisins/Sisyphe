@@ -40,7 +40,7 @@ describe('runJob', () => {
     expect(h.agent.calls[0].allowedTools).toEqual(['Read', 'Glob', 'Grep']);
     expect(h.agent.calls[0].prompt).toContain('On veut hello.');
     expect(h.agent.calls[1].disallowedTools).toContain('Bash(git push:*)');
-    expect(h.agent.calls[1].hooks?.PreToolUse).toHaveLength(1);
+    expect(h.agent.calls[1].pathGuard).toEqual({ worktreePath: h.agent.calls[1].cwd, protectedPatterns: ['secrets/**'] });
     expect(h.agent.calls[1].prompt).toContain('1. créer src/feature.txt');
   });
 
