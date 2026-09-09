@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { InvalidTransitionError } from '../jobs/state.js';
+import { ACTION_OUTCOMES, ACTION_SOURCES } from './actions.js';
 import { openDatabase, sqlList } from './db.js';
 import { JobStore } from './jobs.js';
 import { PhaseStore } from './phases.js';
@@ -165,8 +166,27 @@ describe('openDatabase', () => {
     a.close();
     const b = openDatabase(file);
     expect(new JobStore(b).listActive()).toHaveLength(1);
-    expect((b.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(1);
+    expect((b.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(2);
     expect((b.prepare('PRAGMA journal_mode').get() as { journal_mode: string }).journal_mode).toBe('wal');
+    b.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('migre une base existante en version 1 vers la version 2 sans toucher aux jobs/phases', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sisyphe-db-'));
+    const file = join(dir, 'sisyphe.db');
+    // Fabrique une base v1 authentique : ouvre en v2, puis redescend artificiellement à v1
+    // en supprimant ce que la migration 2 a ajouté.
+    const a = openDatabase(file);
+    const job = new JobStore(a).create({ repo: 'a/b', issueNumber: 1, issueTitle: 't' });
+    a.exec('DROP TABLE actions');
+    a.exec('PRAGMA user_version = 1');
+    a.close();
+
+    const b = openDatabase(file);
+    expect((b.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(2);
+    expect(new JobStore(b).get(job.id)?.issueTitle).toBe('t');
+    expect(b.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'actions'").get()).toBeTruthy();
     b.close();
     await rm(dir, { recursive: true, force: true });
   });
@@ -174,6 +194,8 @@ describe('openDatabase', () => {
   it('fige le littéral des énumérations SQL : le changer exige une nouvelle migration', () => {
     expect(sqlList(JOB_STATES)).toBe("'queued','triaging','implementing','verifying','delivering','done','blocked','failed','cancelled'");
     expect(sqlList(TERMINAL_STATES)).toBe("'done','blocked','failed','cancelled'");
+    expect(sqlList(ACTION_SOURCES)).toBe("'ui','cli'");
+    expect(sqlList(ACTION_OUTCOMES)).toBe("'ok','error'");
   });
 });
 

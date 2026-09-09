@@ -106,6 +106,14 @@ export class FakeIssueSource implements IssueSource {
     i.labels = i.labels.filter((l) => l !== this.triggerLabel);
   }
 
+  /** `sisyphe[bot]` : reflète ce que verrait `canTrigger` si le label était réellement reposé par l'App. */
+  async addTriggerLabel(ref: IssueRef): Promise<void> {
+    this.calls.push('addTriggerLabel');
+    const i = this.stored(ref);
+    if (!i.labels.includes(this.triggerLabel)) i.labels.push(this.triggerLabel);
+    i.labeledBy = 'sisyphe[bot]';
+  }
+
   async setStatus(ref: IssueRef, status: StatusLabel | null): Promise<void> {
     this.calls.push(`setStatus:${status}`);
     const i = this.stored(ref);

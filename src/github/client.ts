@@ -150,6 +150,11 @@ export class GitHubIssueSource implements IssueSource {
     await this.removeLabel(ref, this.cfg.triggerLabel);
   }
 
+  /** addLabels est déjà idempotent côté GitHub (label déjà présent → 200 sans effet) : pas de gestion d'erreur particulière. */
+  async addTriggerLabel(ref: IssueRef): Promise<void> {
+    await this.call((o) => o.rest.issues.addLabels({ owner: ref.repo.owner, repo: ref.repo.name, issue_number: ref.number, labels: [this.cfg.triggerLabel] }));
+  }
+
   async setStatus(ref: IssueRef, st: StatusLabel | null): Promise<void> {
     const issue = await this.call((o) => o.rest.issues.get({ owner: ref.repo.owner, repo: ref.repo.name, issue_number: ref.number }));
     const current = labelNames(issue.data.labels);

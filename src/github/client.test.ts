@@ -254,4 +254,16 @@ describe('GitHubIssueSource (Octokit factice)', () => {
     });
     await expect(src.ensureLabels(repo)).resolves.toBeUndefined();
   });
+
+  it('addTriggerLabel : envoie le label trigger via addLabels', async () => {
+    const src = makeClient();
+    let captured: unknown;
+    inject(src, {
+      rest: { issues: { addLabels: async (params: unknown) => { captured = params; return { data: [] }; } } },
+      paginate: async () => [],
+      graphql: async () => ({}),
+    });
+    await src.addTriggerLabel({ repo, number: 1 });
+    expect(captured).toEqual({ owner: 'acme', repo: 'demo', issue_number: 1, labels: ['sisyphe'] });
+  });
 });

@@ -80,6 +80,8 @@ export interface IssueSource {
   /** Le dernier poseur du label trigger a-t-il write/maintain/admin ? */
   canTrigger(ref: IssueRef): Promise<TriggerCheck>;
   removeTriggerLabel(ref: IssueRef): Promise<void>;
+  /** Repose le label trigger (idempotent) : utilisé après création/retry d'un job pour que la ligne de balayage l'ignore. */
+  addTriggerLabel(ref: IssueRef): Promise<void>;
   /** Pose ce label de statut et retire les autres ; null retire tout statut. */
   setStatus(ref: IssueRef, status: StatusLabel | null): Promise<void>;
   comment(ref: IssueRef, markdown: string): Promise<void>;

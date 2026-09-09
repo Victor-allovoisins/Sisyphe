@@ -39,4 +39,15 @@ describe('FakeIssueSource', () => {
     expect((await s.canTrigger({ repo, number: 3 })).ok).toBe(true);
     expect(await s.canTrigger({ repo, number: 4 })).toEqual({ ok: false, login: null });
   });
+
+  it('addTriggerLabel repose le label trigger et attribue sisyphe[bot], idempotent', async () => {
+    const s = new FakeIssueSource('sisyphe');
+    s.addIssue(repo, { number: 1, title: 'a', labels: [] });
+    await s.addTriggerLabel({ repo, number: 1 });
+    expect(s.labelsOf({ repo, number: 1 })).toEqual(['sisyphe']);
+    expect(s.calls).toEqual(['addTriggerLabel']);
+    expect(await s.canTrigger({ repo, number: 1 })).toEqual({ ok: false, login: 'sisyphe[bot]' });
+    await s.addTriggerLabel({ repo, number: 1 });
+    expect(s.labelsOf({ repo, number: 1 })).toEqual(['sisyphe']);
+  });
 });

@@ -1,13 +1,16 @@
 import { existsSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
+import { ACTION_OUTCOMES, ACTION_SOURCES } from './actions.js';
 import { JOB_STATES, TERMINAL_STATES } from './types.js';
 
 export const sqlList = (values: Iterable<string>) => [...values].map((s) => `'${s}'`).join(',');
 const STATES = sqlList(JOB_STATES);
 const TERMINALS = sqlList(TERMINAL_STATES);
+const ACTION_SOURCES_SQL = sqlList(ACTION_SOURCES);
+const ACTION_OUTCOMES_SQL = sqlList(ACTION_OUTCOMES);
 
 // Append-only : une migration livrée ne se modifie jamais. Ajouter un état à JOB_STATES exige
-// une MIGRATIONS[1] qui reconstruit la table (SQLite ne modifie pas un CHECK en place) ; le test
+// une nouvelle migration qui reconstruit la table (SQLite ne modifie pas un CHECK en place) ; le test
 // « littéral figé » de store.test.ts force cette décision.
 const MIGRATIONS: readonly string[] = [
   `
@@ -63,6 +66,21 @@ const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX phases_job ON phases(job_id);
   CREATE INDEX phases_finished ON phases(finished_at);
+  `,
+  `
+  CREATE TABLE actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL,
+    action TEXT NOT NULL,
+    source TEXT NOT NULL CHECK (source IN (${ACTION_SOURCES_SQL})),
+    job_id TEXT,
+    repo TEXT,
+    issue_number INTEGER,
+    outcome TEXT NOT NULL CHECK (outcome IN (${ACTION_OUTCOMES_SQL})),
+    error TEXT
+  );
+  CREATE INDEX actions_at ON actions(at);
+  CREATE INDEX actions_job ON actions(job_id);
   `,
 ];
 
