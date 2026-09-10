@@ -17,7 +17,7 @@ Le daemon ouvre une **socket UNIX de contrôle** et exécute lui-même toutes le
 - Commandes :
   - `ping` → `{ pid, paused, running: number, queued: number, startedAt }`.
   - `poll` → déclenche un tick immédiatement ; si un tick est en cours, un second s'enchaîne dès la fin du premier (drapeau `tickRequested`). Répond dès que le tick a démarré.
-  - `pause` / `resume` → bascule `paused` ; renvoie l'état résultant. Idempotent.
+  - `pause` / `resume` → bascule `paused` ; renvoie l'état résultant. Idempotent. `resume` déclenche aussitôt un tick (`requestTick`) pour que les jobs en file partent sans attendre le timer.
   - `stop` → répond `{ ok: true }` puis appelle `daemon.stop()` (grâce de 30 s existante) et le process sort.
   - `cancel { jobId }` → le job doit exister et ne pas être terminal (sinon `ok: false`). Retire le label trigger via `source.removeTriggerLabel`, puis : job en cours → `controller.abort(CANCELLED)` ; job `queued` → `store.transition(id, 'cancelled')`. Renvoie le job mis à jour.
   - `retry { jobId }` → le job doit être `failed`, `blocked` ou `cancelled` et l'issue ne doit avoir aucun job actif (sinon `ok: false`). Crée un nouveau job `queued` (`store.create`) **avant** de remettre le label (`source.addTriggerLabel`), pour que le poll ne voie jamais un label sans job. Si la pose du label échoue, le nouveau job passe `cancelled` avec `flags.earlyStop = 'label impossible : <message>'` et la commande renvoie `ok: false`. Renvoie le nouveau job.
