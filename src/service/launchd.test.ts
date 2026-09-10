@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -68,6 +68,8 @@ describe('LaunchdServiceManager', () => {
   let replies: Record<string, ExecResult[]>;
   let sent: string[];
   let reachable: boolean;
+  /** `send('stop')` rejette : daemon qui répond au ping mais reste coincé derrière sa porte. */
+  let sendRejects: boolean;
   let slept: number[];
 
   const ok: ExecResult = { exitCode: 0, stdout: '', stderr: '' };
@@ -83,7 +85,11 @@ describe('LaunchdServiceManager', () => {
     const ctx: ServiceContext = {
       paths, nodePath: '/opt/homebrew/bin/node', scriptPath: '/x/dist/cli/index.js', env: { PATH: '/bin', HOME: root },
       client: {
-        send: async (cmd) => { sent.push(cmd); return { ok: true, result: null }; },
+        send: async (cmd) => {
+          sent.push(cmd);
+          if (sendRejects) throw new Error('le daemon ne répond pas (30000 ms)');
+          return { ok: true, result: null };
+        },
         isReachable: async () => reachable,
       },
       exec, homeDir: join(root, 'home'), uid: 501,
@@ -100,6 +106,7 @@ describe('LaunchdServiceManager', () => {
     replies = {};
     sent = [];
     reachable = true;
+    sendRejects = false;
     slept = [];
   });
 
@@ -123,6 +130,16 @@ describe('LaunchdServiceManager', () => {
     expect(slept).toEqual([]);
   });
 
+  it('install : un plist préexistant en 0644 (ancien setup) est ramené à 0600', async () => {
+    const plist = plistPath(join(root, 'home'));
+    await mkdir(join(root, 'home', 'Library', 'LaunchAgents'), { recursive: true });
+    await writeFile(plist, 'ancien');
+    await chmod(plist, 0o644);
+    await manager().install();
+    expect((await stat(plist)).mode & 0o777).toBe(0o600);
+    expect(await readFile(plist, 'utf8')).toContain('<key>ProgramArguments</key>');
+  });
+
   it('install : un bootstrap qui échoue est retenté une fois après 500 ms', async () => {
     replies = { bootstrap: [fail('Input/output error'), ok] };
     await manager().install();
@@ -144,9 +161,18 @@ describe('LaunchdServiceManager', () => {
     expect(calls).toEqual([['launchctl', 'kickstart', `gui/501/${LAUNCHD_LABEL}`]]);
   });
 
-  it('start : un kickstart en échec remonte la sortie launchctl', async () => {
+  it('start : un enabled préexistant trop ouvert est ramené à 0600', async () => {
+    const enabled = enabledPath(join(root, 'data'));
+    await writeFile(enabled, '');
+    await chmod(enabled, 0o644);
+    await manager().start();
+    expect((await stat(enabled)).mode & 0o777).toBe(0o600);
+  });
+
+  it('start : un kickstart en échec remonte la sortie launchctl et retire enabled (un install() ultérieur ne doit pas démarrer)', async () => {
     replies = { kickstart: [fail('Could not find service')] };
     await expect(manager().start()).rejects.toThrow("Impossible de démarrer l'agent launchd : Could not find service");
+    expect(await exists(enabledPath(join(root, 'data')))).toBe(false);
   });
 
   it('stop : supprime enabled puis envoie stop sur la socket ; aucun launchctl quand le daemon répond', async () => {
@@ -156,6 +182,13 @@ describe('LaunchdServiceManager', () => {
     expect(await exists(enabled)).toBe(false);
     expect(sent).toEqual(['stop']);
     expect(calls).toEqual([]);
+  });
+
+  it('stop : send rejeté (daemon coincé derrière sa porte) → kill SIGTERM via launchd', async () => {
+    sendRejects = true;
+    await manager().stop();
+    expect(sent).toEqual(['stop']);
+    expect(calls).toEqual([['launchctl', 'kill', 'SIGTERM', `gui/501/${LAUNCHD_LABEL}`]]);
   });
 
   it('stop : socket injoignable → kill SIGTERM via launchd, sans envoyer stop', async () => {
@@ -172,6 +205,11 @@ describe('LaunchdServiceManager', () => {
       kind: 'launchd', installed: false, running: false, pid: null, enabledAtBoot: true, detail: 'agent launchd non chargé',
     });
     expect(calls).toEqual([['launchctl', 'print', `gui/501/${LAUNCHD_LABEL}`]]);
+  });
+
+  it('status : launchctl introuvable (exit 127) → non installé, avec un détail qui le dit', async () => {
+    replies = { print: [{ exitCode: 127, stdout: '', stderr: 'spawn launchctl ENOENT' }] };
+    expect(await manager().status()).toMatchObject({ kind: 'launchd', installed: false, running: false, pid: null, detail: 'launchctl introuvable' });
   });
 
   it('status : job running avec pid', async () => {

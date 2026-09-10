@@ -2,7 +2,7 @@ import { chmod, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { realExec, type Exec } from './exec.js';
+import { EXIT_NOT_FOUND, realExec, type Exec } from './exec.js';
 import type { ServiceContext, ServiceManager, ServiceStatus } from './types.js';
 
 export const LAUNCHD_LABEL = 'com.sisyphe.daemon';
@@ -184,7 +184,10 @@ export class LaunchdServiceManager implements ServiceManager {
   async status(): Promise<ServiceStatus> {
     const r = await this.ctx.exec('launchctl', ['print', this.target]);
     const enabledAtBoot = await exists(this.enabled);
-    if (r.exitCode !== 0) return { kind: 'launchd', installed: false, running: false, pid: null, enabledAtBoot, detail: NOT_LOADED };
+    if (r.exitCode !== 0) {
+      const detail = r.exitCode === EXIT_NOT_FOUND ? 'launchctl introuvable' : NOT_LOADED;
+      return { kind: 'launchd', installed: false, running: false, pid: null, enabledAtBoot, detail };
+    }
     const parsed = parseLaunchctlPrint(r.stdout);
     return { kind: 'launchd', installed: true, running: parsed.state === 'running', pid: parsed.pid, enabledAtBoot, detail: describePrint(parsed) };
   }
@@ -198,22 +201,30 @@ export class LaunchdServiceManager implements ServiceManager {
 
   async start(): Promise<void> {
     await writeFile(this.enabled, '', { mode: 0o600 });
+    await chmod(this.enabled, 0o600);
     const r = await this.ctx.exec('launchctl', ['kickstart', this.target]);
     if (r.exitCode !== 0) {
+      // Sans ce retrait, un install() ultérieur démarrerait le daemon via PathState : install() ne démarre pas.
+      await rm(this.enabled, { force: true });
       throw new Error(`Impossible de démarrer l'agent launchd : ${r.stderr || `code ${r.exitCode}`}. L'agent est-il installé (sisyphe setup) ?`);
     }
   }
 
   /**
    * `enabled` d'abord : sans lui, launchd ne relance pas le daemon qu'on arrête. Socket injoignable
-   * (daemon planté, bloqué ou déjà arrêté) : SIGTERM via launchd, sans se soucier du code de retour —
-   * un job qui ne tourne plus n'a rien à recevoir.
+   * (daemon planté ou déjà arrêté) ou `stop` rejeté (daemon qui répond au ping mais reste coincé derrière
+   * sa porte) : SIGTERM via launchd, sans se soucier du code de retour — un job qui ne tourne plus n'a
+   * rien à recevoir.
    */
   async stop(): Promise<void> {
     await rm(this.enabled, { force: true });
     if (await this.ctx.client.isReachable()) {
-      await this.ctx.client.send('stop');
-      return;
+      try {
+        await this.ctx.client.send('stop');
+        return;
+      } catch {
+        // SIGTERM ci-dessous.
+      }
     }
     await this.ctx.exec('launchctl', ['kill', 'SIGTERM', this.target]);
   }

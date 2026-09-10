@@ -1,6 +1,6 @@
 import type { SpawnOptions } from 'node:child_process';
 import { writeSync } from 'node:fs';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -20,6 +20,8 @@ describe('NoneServiceManager', () => {
   let slept: number[];
   /** Ce que le faux daemon écrit sur le descripteur reçu : prouve qu'il pointe bien sur le log. */
   let childOutput: string;
+  /** Erreur que le faux enfant émet sur `'error'` (exécutable introuvable…), null pour un spawn réussi. */
+  let spawnError: Error | null;
 
   function manager(): NoneServiceManager {
     const ctx: ServiceContext = {
@@ -36,7 +38,10 @@ describe('NoneServiceManager', () => {
         const entry = { file, args, options, unrefs: 0 };
         spawned.push(entry);
         if (childOutput) writeSync(options.stdio![1] as number, childOutput);
-        return { unref: () => { entry.unrefs += 1; } };
+        return {
+          unref: () => { entry.unrefs += 1; },
+          once: (_event, cb) => { if (spawnError) cb(spawnError); },
+        };
       },
       sleep: async (ms) => { slept.push(ms); clock += ms; },
       now: () => clock,
@@ -54,6 +59,7 @@ describe('NoneServiceManager', () => {
     clock = 1_000;
     slept = [];
     childOutput = '';
+    spawnError = null;
   });
 
   afterEach(async () => {
@@ -84,9 +90,10 @@ describe('NoneServiceManager', () => {
     expect(stdio[0]).toBe('ignore');
     expect(typeof stdio[1]).toBe('number');
     expect(stdio[2]).toBe(stdio[1]);
-    expect(s!.options.env).toMatchObject({ SISYPHE_HOME: root, PATH: '/usr/bin' });
+    expect(s!.options.env).toEqual({ SISYPHE_HOME: root, PATH: '/usr/bin' }); // celui du plist/de l'unité, pas celui du shell parent
     expect(s!.unrefs).toBe(1);
     expect(await readFile(detachedLogPath(paths.logsDir), 'utf8')).toBe('hello\n');
+    expect((await stat(detachedLogPath(paths.logsDir))).mode & 0o777).toBe(0o600);
     expect(pings).toBe(1);
     expect(slept).toEqual([]);
   });
@@ -117,9 +124,25 @@ describe('NoneServiceManager', () => {
     expect(pings).toBe(21); // 0, 250, …, 5000 ms
   });
 
-  it('stop envoie stop sur la socket', async () => {
+  it('start échoue aussitôt quand le spawn échoue (exécutable introuvable…), sans attendre la socket', async () => {
+    reachable = [false];
+    spawnError = new Error('spawn /usr/bin/node ENOENT');
+    await expect(manager().start()).rejects.toThrow('impossible de lancer le daemon : spawn /usr/bin/node ENOENT');
+    expect(pings).toBe(0);
+    expect(slept).toEqual([]);
+  });
+
+  it('stop envoie stop sur la socket quand un daemon vivant tient le verrou', async () => {
+    await writeFile(join(root, 'daemon.lock'), String(process.pid));
     await manager().stop();
     expect(sent).toEqual(['stop']);
+  });
+
+  it('stop est idempotent : sans verrou ou avec un verrou périmé, rien n’est envoyé', async () => {
+    await manager().stop();
+    await writeFile(join(root, 'daemon.lock'), String(2 ** 22 - 1));
+    await manager().stop();
+    expect(sent).toEqual([]);
   });
 
   it('status : verrou absent → arrêté ; verrou vivant → running avec pid ; verrou périmé → arrêté', async () => {

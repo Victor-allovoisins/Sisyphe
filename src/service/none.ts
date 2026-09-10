@@ -9,14 +9,21 @@ import type { ServiceContext, ServiceManager, ServiceStatus } from './types.js';
 
 export const NO_SERVICE_MESSAGE = 'aucun service géré sur cette plateforme';
 
-/** Attente maximale de la socket de contrôle après le spawn, et pas entre deux essais. */
+/**
+ * Attente maximale de la socket de contrôle après le spawn, et pas entre deux essais. Chaque `isReachable()`
+ * peut lui-même durer jusqu'au délai du ping (2 s) : le pire cas réel est donc ≈ 5 s + 2 s.
+ */
 const START_TIMEOUT_MS = 5_000;
 const START_POLL_MS = 250;
 /** Lignes du log rapportées quand le daemon ne répond pas à temps. */
 const LOG_TAIL_LINES = 20;
 
 /** Sous-ensemble structurel de `child_process.spawn` : un test passe un faux qui n'exécute rien. */
-export type Spawn = (file: string, args: string[], options: SpawnOptions) => { unref(): void };
+export type Spawn = (
+  file: string,
+  args: string[],
+  options: SpawnOptions,
+) => { unref(): void; once(event: 'error', cb: (err: Error) => void): unknown };
 
 export interface NoneServiceManagerOptions {
   spawn?: Spawn;
@@ -72,16 +79,24 @@ export class NoneServiceManager implements ServiceManager {
     await mkdir(paths.logsDir, { recursive: true, mode: 0o700 });
     const logPath = detachedLogPath(paths.logsDir);
     // Le descripteur est hérité par l'enfant au spawn : le parent peut le fermer aussitôt.
-    const fd = openSync(logPath, 'a');
+    const fd = openSync(logPath, 'a', 0o600);
+    let spawnError: Error | undefined;
     try {
-      // Même environnement que sous launchd/systemd (PATH, HOME, SISYPHE_HOME, clé API…) par-dessus celui du parent.
-      const child = this.spawn(nodePath, [scriptPath, 'start'], { detached: true, stdio: ['ignore', fd, fd], env: { ...process.env, ...env } });
+      // `env` seul, comme le plist launchd ou l'unité systemd : le daemon voit le même environnement quelle
+      // que soit la plateforme, pas celui du shell qui héberge l'UI.
+      const child = this.spawn(nodePath, [scriptPath, 'start'], { detached: true, stdio: ['ignore', fd, fd], env });
+      // Exécutable introuvable ou non exécutable : Node le signale par un événement, jamais par une exception
+      // au spawn ; sans écouteur, l'erreur ferait tomber le parent.
+      child.once('error', (err) => {
+        spawnError = err;
+      });
       child.unref();
     } finally {
       closeSync(fd);
     }
     const deadline = this.now() + START_TIMEOUT_MS;
     while (true) {
+      if (spawnError) throw new Error(`impossible de lancer le daemon : ${spawnError.message}`);
       if (await client.isReachable()) return;
       if (this.now() >= deadline) break;
       await this.sleep(START_POLL_MS);
@@ -90,7 +105,10 @@ export class NoneServiceManager implements ServiceManager {
     throw new Error(`le daemon n'a pas répondu en ${START_TIMEOUT_MS / 1000} s ; dernières lignes de ${logPath} :\n${tail(log.trimEnd(), LOG_TAIL_LINES)}`);
   }
 
+  /** Idempotent : sans daemon vivant derrière le verrou, rien à arrêter — pas d'erreur « injoignable ». */
   async stop(): Promise<void> {
+    const lock = await readLock(this.ctx.paths);
+    if (!lock?.alive) return;
     await this.ctx.client.send('stop');
   }
 }
