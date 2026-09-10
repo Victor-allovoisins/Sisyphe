@@ -1,7 +1,7 @@
 import { createApp } from '../../app.js';
 import { Daemon } from '../../daemon/daemon.js';
 import { acquireLock } from '../../daemon/lock.js';
-import { LAUNCHD_LABEL } from '../launchd.js';
+import { LAUNCHD_LABEL } from '../../service/launchd.js';
 
 export async function startCommand(opts: { once?: boolean }): Promise<void> {
   const app = await createApp({ logToFile: !opts.once });

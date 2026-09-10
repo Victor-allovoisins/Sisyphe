@@ -10,7 +10,7 @@ import { dataPaths, defaultDataDir, ensureDataDirs, expandHome, machineConfigPat
 import { parseRepo } from '../../github/source.js';
 import { buildChecks } from './doctor.js';
 import { runChecks, which } from '../checks.js';
-import { LAUNCHD_LABEL, installLaunchAgent, plistPath, renderPlist } from '../launchd.js';
+import { LAUNCHD_LABEL, installLaunchAgent, plistPath, renderPlist } from '../../service/launchd.js';
 
 /** Réponse affichée par défaut quand ANTHROPIC_API_KEY est déjà dans l'environnement : la clé elle-même n'est jamais affichée à l'écran. */
 export const ENV_KEY_PLACEHOLDER = "[valeur de l'environnement]";
@@ -254,7 +254,7 @@ export async function setupCommand(): Promise<void> {
         },
       });
       await installLaunchAgent(plist);
-      console.log(`Daemon installé et démarré : ${plistPath()}\nLogs : ${paths.logsDir}`);
+      console.log(`Agent launchd installé (daemon non démarré) : ${plistPath()}\nLogs : ${paths.logsDir}`);
     } else {
       console.log(
         agentBackend === 'sdk'

@@ -1,7 +1,7 @@
 import { open, readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { summarizeTranscript } from '../cli/format.js';
-import { probeLaunchd, type LaunchdStatus } from '../cli/launchd.js';
+import { probeLaunchd, type LaunchdStatus } from '../service/launchd.js';
 import { AmbiguousJobPrefixError, findJob } from '../cli/resolve-job.js';
 import type { AgentBackend, MachineConfig } from '../config/machine.js';
 import { jobDir, type DataPaths } from '../config/paths.js';

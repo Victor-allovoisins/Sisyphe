@@ -6,7 +6,7 @@ import type { DataPaths } from '../../config/paths.js';
 import { REPO_CONFIG_FILENAME, parseRepoConfig } from '../../config/repo.js';
 import { parseRepo, type RepoRef } from '../../github/source.js';
 import { firstWord, runChecks, which, type Check } from '../checks.js';
-import { LAUNCHD_LABEL, parseLaunchctlPrint } from '../launchd.js';
+import { LAUNCHD_LABEL, parseLaunchctlPrint } from '../../service/launchd.js';
 
 const BYTES_PER_GB = 1024 ** 3;
 const MIN_FREE_DISK_GB = 10;
