@@ -41,11 +41,13 @@ interface ServiceManager {
 }
 ```
 
-`createServiceManager({ platform, exec, paths, nodePath, scriptPath, env, client })` choisit l'implémentation : `darwin` → launchd ; `linux` avec `systemctl --user` fonctionnel → systemd ; sinon `none`. `exec` (wrapper execa) est injectable pour tester les commandes émises sans les lancer. `client` est le `ControlClient` de la socket de contrôle (UI v2 §2.2), utilisé pour l'arrêt propre.
+L'environnement transmis au daemon est construit une seule fois, par `defaultServiceContext` : `PATH` (préfixé du répertoire du node courant, sans quoi un node géré par nvm ou mise reste introuvable pour les enfants du daemon ; omis s'il est vide), `HOME`, `SISYPHE_HOME` si la variable est définie dans l'environnement (c'est elle qui permet au service de retrouver `config.yml`), et `ANTHROPIC_API_KEY` seulement avec `agentBackend: sdk`. Les trois gestionnaires transmettent exactement ce `ctx.env` : plist, unité et lancement détaché sont identiques.
+
+`createServiceManager({ platform, exec, paths, nodePath, scriptPath, env, client })` choisit l'implémentation : `darwin` → launchd ; `linux` dont le bus utilisateur répond (`systemctl --user show -p Version`, verbe qui échoue sans gestionnaire de session, contrairement à `--version` qui n'ouvre aucune connexion) → systemd ; sinon `none`. `exec` (wrapper execa) est injectable pour tester les commandes émises sans les lancer. `client` est le `ControlClient` de la socket de contrôle (UI v2 §2.2), utilisé pour l'arrêt propre.
 
 ### 3.2 launchd (macOS)
 
-- Plist `~/Library/LaunchAgents/com.sisyphe.daemon.plist` (0600), `ProgramArguments` = `<node> <dist>/cli/index.js start`, `EnvironmentVariables` = PATH (répertoire du node en tête) + HOME + `SISYPHE_HOME` si défini, `WorkingDirectory` = dataDir, `StandardErrorPath` = `<logsDir>/launchd.err.log`, `RunAtLoad` **false**, `KeepAlive` = `{ PathState: { "<dataDir>/enabled": true } }`, `ThrottleInterval` 30. launchd démarre le job quand le fichier `enabled` existe et le relance s'il tombe ; fichier absent → il ne le relance pas.
+- Plist `~/Library/LaunchAgents/com.sisyphe.daemon.plist` (0600), `ProgramArguments` = `<node> <dist>/cli/index.js start`, `EnvironmentVariables` = `ctx.env` tel quel (§3.1), `WorkingDirectory` = dataDir, `StandardErrorPath` = `<logsDir>/launchd.err.log`, `RunAtLoad` **false**, `KeepAlive` = `{ PathState: { "<dataDir>/enabled": true } }`, `ThrottleInterval` 30. launchd démarre le job quand le fichier `enabled` existe et le relance s'il tombe ; fichier absent → il ne le relance pas.
 - `install()` : écrit le plist, `launchctl bootout` puis `bootstrap gui/<uid>` (deux essais comme aujourd'hui). Aucun démarrage puisque `enabled` n'existe pas.
 - `start()` : crée `<dataDir>/enabled` (vide), puis `launchctl kickstart gui/<uid>/com.sisyphe.daemon`.
 - `stop()` : supprime `enabled`, puis `client.send('stop')` ; socket injoignable → `launchctl kill SIGTERM gui/<uid>/com.sisyphe.daemon`.
@@ -58,17 +60,19 @@ interface ServiceManager {
   ```ini
   [Unit]
   Description=Sisyphe daemon
-  After=network-online.target
   [Service]
   ExecStart=<node> <dist>/cli/index.js start
   WorkingDirectory=<dataDir>
-  Environment=PATH=<path> HOME=<home> [SISYPHE_HOME=<dataDir>]
+  Environment=PATH=<path>
+  Environment=HOME=<home>
+  Environment=SISYPHE_HOME=<valeur de l'environnement, si définie>
   Restart=on-failure
   RestartSec=30
   [Install]
   WantedBy=default.target
   ```
-- `install()` : écrit l'unité, `systemctl --user daemon-reload`, puis `loginctl enable-linger` (sans quoi les services utilisateur meurent à la déconnexion) ; refus → avertissement avec `sudo loginctl enable-linger $USER` à lancer une fois, l'installation continue.
+  Une ligne `Environment=` par variable, l'affectation entière citée si la valeur contient une espace, une apostrophe, un guillemet ou une barre oblique inverse (forme documentée par systemd) ; `%` doublé en `%%` partout ; `$` doublé en `$$` dans `ExecStart` seulement (aucune expansion dans `Environment=`). **`WorkingDirectory=` n'est jamais cité** : le parseur de systemd ne déguillemette pas ce réglage et rejetterait l'unité entière (chemin non absolu). Pas de `After=network-online.target` : c'est une unité système, rien ne l'amène dans une transaction utilisateur et `After=` seul ne tire aucune unité ; la résilience vient de `Restart=on-failure`.
+- `install()` : écrit l'unité (0600, écriture puis `chmod` : le mode d'écriture ne s'applique qu'à la création), `systemctl --user daemon-reload` (échec → erreur citant la commande et conseillant `sisyphe setup --reinstall-service`), puis `loginctl enable-linger` (sans quoi les services utilisateur meurent à la déconnexion) ; refus → avertissement avec `sudo loginctl enable-linger $USER` à lancer une fois, l'installation continue.
 - `start()` : `systemctl --user enable --now sisyphe`. `stop()` : `systemctl --user disable --now sisyphe` (un `stop` explicite n'est jamais relancé par `Restart=on-failure`).
 - `status()` : `systemctl --user show sisyphe -p ActiveState,SubState,MainPID,UnitFileState` (`clé=valeur` par ligne) → `installed` = `UnitFileState` ≠ vide et ≠ `not-found`, `running` = `ActiveState=active`, `pid` = `MainPID` (0 → null), `enabledAtBoot` = `UnitFileState=enabled`.
 - `uninstall()` : `disable --now`, suppression de l'unité, `daemon-reload`.
@@ -95,7 +99,8 @@ Aucun service installé (`install()` lève « plateforme sans service géré »)
 ## 6. Sécurité et limites
 
 - `sudo` uniquement pour `apt-get` (Node) sur Ubuntu ; tout le reste s'installe dans le compte utilisateur. Le binaire gitleaks est vérifié par la somme publiée avec la release.
-- Le fichier `enabled` et les unités sont en 0600 dans des répertoires de l'utilisateur ; l'interface reste locale (127.0.0.1).
+- Le fichier `enabled`, le plist et l'unité sont en 0600 dans des répertoires de l'utilisateur ; l'interface reste locale (127.0.0.1).
+- Avec `agentBackend: sdk`, la clé API est recopiée dans le plist ou l'unité : même exposition que le fichier de config pour le même compte, mais une seconde copie hors de l'arborescence de données ; après rotation de la clé, relancer `sisyphe setup --reinstall-service`. Le backend `cli` (défaut) n'écrit aucun secret.
 - Un seul daemon par machine (verrou `daemon.lock`) : le service et un `sisyphe start` manuel s'excluent, le message du verrou indique `sisyphe service stop`.
 - Non couvert : Windows, autres distributions Linux (le script s'arrête avec un message), installation de Xcode, mise à jour automatique, exécution de l'interface elle-même en service.
 
@@ -105,6 +110,7 @@ Aucun service installé (`install()` lève « plateforme sans service géré »)
 - `createServiceManager` : sélection par plateforme et disponibilité de `systemctl`.
 - `install.sh` : `sh -n` ; exécution `--dry-run` avec `SISYPHE_INSTALL_OS=darwin` puis `ubuntu` et un `PATH` réduit (aucun outil trouvé) → la sortie liste les commandes attendues dans l'ordre ; avec tous les outils présents → seulement build et setup.
 - `ui` : dossier de données sans base → la base est créée, migrée et servie ; base v1 → migrée ; config absente → erreur claire.
+- Unité systemd : `systemd-analyze verify ~/.config/systemd/user/sisyphe.service` sur une machine Ubuntu, y compris avec un `dataDir` contenant une espace (la validité du fichier ne se vérifie pas depuis macOS).
 - Validation réelle : sur le Mac de Victor (`install.sh` sur un clone frais, `sisyphe ui`, Démarrer, reboot, le daemon revient ; Arrêter, reboot, il ne revient pas), puis sur un Ubuntu (VM ou conteneur avec systemd) dès qu'une machine est disponible.
 
 ## 8. Ordre de réalisation
