@@ -154,7 +154,9 @@ describe('overview', () => {
 
   it('l’état du service est mis en cache : un snapshot toutes les 2 s ne lance pas un launchctl par tic', async () => {
     let calls = 0;
+    let at = new Date('2026-09-10T10:00:00.000Z');
     const ui = await makeUi({
+      now: () => at,
       service: {
         status: async () => {
           calls++;
@@ -166,8 +168,46 @@ describe('overview', () => {
     await ui.data.overview();
     await ui.data.overview();
     await ui.data.overview();
+    expect(calls).toBe(1);
+
+    // Le cache suit l'horloge injectée : au-delà des 5 s, la sonde est refaite.
+    at = new Date('2026-09-10T10:00:06.000Z');
+    await ui.data.overview();
+    expect(calls).toBe(2);
+  });
+
+  it('deux snapshots simultanés partagent la même sonde plutôt que d’en lancer deux', async () => {
+    let calls = 0;
+    const ui = await makeUi({
+      service: {
+        status: async () => {
+          calls++;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          return { kind: 'launchd', installed: true, running: true, pid: 42, enabledAtBoot: true, detail: 'state = running' };
+        },
+      },
+    });
+
+    await Promise.all([ui.data.overview(), ui.data.overview()]);
 
     expect(calls).toBe(1);
+  });
+
+  it('une sonde en échec n’est pas mise en cache : l’appel suivant réessaie', async () => {
+    let calls = 0;
+    const ui = await makeUi({
+      service: {
+        status: async () => {
+          calls++;
+          if (calls === 1) throw new Error('launchctl introuvable');
+          return { kind: 'launchd', installed: true, running: true, pid: 42, enabledAtBoot: true, detail: 'state = running' };
+        },
+      },
+    });
+
+    await expect(ui.data.overview()).rejects.toThrow('launchctl introuvable');
+    expect((await ui.data.overview()).service.running).toBe(true);
+    expect(calls).toBe(2);
   });
 
   it('l’overview publie le statut du service tel que le gestionnaire le rend', async () => {

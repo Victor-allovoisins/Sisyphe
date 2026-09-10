@@ -172,6 +172,28 @@ describe('socket de contrôle : cycle de vie', () => {
     expect(listCandidatesCalls(h)).toBe(0); // aucun tick encore : on a bien répondu depuis le prologue
   });
 
+  it('stop() pendant le prologue : start() se résout, la socket est fermée et son fichier supprimé', async () => {
+    const h = await makeHarness({ steps: [], issues: [] });
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    h.source.ensureLabels = () => blocked;
+    const daemon = new Daemon(h.deps, QUIET);
+    const started = daemon.start();
+    const client = new ControlClient(h.paths.controlSocketPath);
+    await waitFor(() => client.isReachable());
+
+    const stopped = daemon.stop(); // l'arrêt arrive alors que le prologue n'a pas rendu la main
+    release();
+    await withinWait(stopped, 'arrêt');
+    await withinWait(started, 'start()');
+
+    await expect(stat(h.paths.controlSocketPath)).rejects.toThrow();
+    expect(await client.isReachable()).toBe(false);
+    expect(listCandidatesCalls(h)).toBe(0); // aucun tick : les timers n'ont jamais été posés
+  });
+
   it('`control: false` : start() n’ouvre rien', async () => {
     const h = await makeHarness({ steps: [], issues: [] });
     const daemon = new Daemon(h.deps, { ...QUIET, control: false });

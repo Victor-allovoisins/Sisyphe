@@ -119,7 +119,7 @@ async function loadLaunchAgent(plist: string, { exec, homeDir, uid, sleep }: Loa
   if (result.exitCode !== 0) {
     const detail = result.stderr || `code ${result.exitCode}`;
     throw new Error(
-      `Impossible de charger l'agent launchd : ${detail}. Essayer « launchctl bootout gui/$UID/${LAUNCHD_LABEL} » puis relancer sisyphe setup.`,
+      `Impossible de charger l'agent launchd : ${detail}. Essayer « launchctl bootout gui/$UID/${LAUNCHD_LABEL} » puis « sisyphe setup --reinstall-service ».`,
     );
   }
 }

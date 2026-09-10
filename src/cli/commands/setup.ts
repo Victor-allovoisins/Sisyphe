@@ -4,13 +4,14 @@ import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { stringify } from 'yaml';
 import { createApp, type App } from '../../app.js';
-import { loadMachineConfig, MachineConfigError, parseMachineConfig, type AgentBackend, type MachineConfig } from '../../config/machine.js';
+import { MachineConfigError, parseMachineConfig, type AgentBackend, type MachineConfig } from '../../config/machine.js';
 import { dataPaths, defaultDataDir, ensureDataDirs, expandHome, machineConfigPath, type DataPaths } from '../../config/paths.js';
 import { parseRepo } from '../../github/source.js';
 import { openDatabase } from '../../store/db.js';
+import type { ServiceManager } from '../../service/index.js';
 import { buildChecks } from './doctor.js';
 import { runChecks, which } from '../checks.js';
-import { serviceManagerFor, type CreateManager } from './service.js';
+import { NONE_SERVICE_HINT, loadServiceTarget, serviceManagerFor, type CreateManager } from './service.js';
 
 /** Réponse affichée par défaut quand ANTHROPIC_API_KEY est déjà dans l'environnement : la clé elle-même n'est jamais affichée à l'écran. */
 export const ENV_KEY_PLACEHOLDER = "[valeur de l'environnement]";
@@ -108,18 +109,22 @@ export async function prepareData(paths: DataPaths): Promise<void> {
   openDatabase(paths.dbPath).close();
 }
 
-/**
- * Installe (ou réinstalle) le service de la plateforme sans rien démarrer, et affiche ses avertissements
- * non bloquants (linger systemd…). Le garde-fou sur l'entrée vaut aussi pour `--reinstall-service`, qui
- * saute le pré-vol : un service pointant sur un script `tsx` ne démarrerait jamais.
- */
-export async function installService(
-  paths: DataPaths,
-  machine: Pick<MachineConfig, 'agentBackend'>,
-  createManager?: CreateManager,
-): Promise<void> {
+/** Refuse d'aller plus loin quand la CLI ne tourne pas depuis le build : un service pointant sur un script `tsx` ne démarrerait jamais. */
+export function assertBuiltEntry(): void {
   const entry = resolveEntryPath(process.argv[1] ?? '');
   if (!isBuiltEntry(entry)) throw new Error(`Installer le service depuis le build : node dist/cli/index.js setup (entrée = ${entry}).`);
+}
+
+/**
+ * Installe (ou réinstalle) le service sans rien démarrer, après avoir vérifié que le daemon aura de quoi
+ * travailler, et affiche ses avertissements non bloquants (linger systemd…). Renvoie `false` sur une
+ * plateforme sans service géré : il n'y a rien à installer, et ce n'est pas une erreur.
+ */
+export async function installService(
+  machine: Pick<MachineConfig, 'agentBackend'>,
+  manager: ServiceManager,
+  apiKey?: string,
+): Promise<boolean> {
   // Backend `cli` : la session claude.ai remplace la clé API, mais `claude` doit être joignable depuis le
   // PATH que le service transmettra au daemon — sinon chaque job échouerait.
   if (machine.agentBackend === 'cli') {
@@ -129,14 +134,18 @@ export async function installService(
       throw new Error('claude introuvable sur le PATH : installer Claude Code puis relancer setup.');
     }
   }
-  // Backend `sdk` : la clé ne vient que de l'environnement de ce process (setup l'y pose après la question).
-  // Absente — cas de `--reinstall-service` lancé depuis un shell sans clé — le service serait installé muet.
-  if (machine.agentBackend === 'sdk' && !process.env.ANTHROPIC_API_KEY) {
+  // Backend `sdk` : la clé vient de la question de setup ou de l'environnement. Absente — cas de
+  // `--reinstall-service` lancé depuis un shell sans clé — le service serait installé muet.
+  if (machine.agentBackend === 'sdk' && !(apiKey || process.env.ANTHROPIC_API_KEY)) {
     throw new Error("ANTHROPIC_API_KEY absente de l'environnement : le service serait installé sans clé. La définir puis relancer.");
   }
-  const manager = await serviceManagerFor(paths, machine, createManager);
+  if ((await manager.status()).kind === 'none') {
+    console.log(NONE_SERVICE_HINT);
+    return false;
+  }
   const { warnings } = await manager.install();
   for (const w of warnings) console.log(`⚠️ ${w}`);
+  return true;
 }
 
 export interface SetupOptions {
@@ -145,10 +154,15 @@ export interface SetupOptions {
 }
 
 export async function setupCommand(opts: SetupOptions = {}, deps: { createManager?: CreateManager } = {}): Promise<void> {
+  // En tête des deux branches : échouer en une seconde plutôt qu'après tout l'entretien.
+  assertBuiltEntry();
+
   if (opts.reinstallService) {
-    const machine = await loadMachineConfig(machineConfigPath());
-    await installService(dataPaths(machine.dataDir), machine, deps.createManager);
-    console.log(`Service réinstallé, daemon non démarré.\n${START_HINT}`);
+    const { machine, paths, manager } = await loadServiceTarget({ createManager: deps.createManager });
+    // Les dossiers et la base d'abord : le plist et l'unité référencent `logsDir` et la racine des données,
+    // et c'est cette commande que doctor conseille pour réparer une installation.
+    await prepareData(paths);
+    if (await installService(machine, manager)) console.log(`Service réinstallé, daemon non démarré.\n${START_HINT}`);
     return;
   }
 
@@ -209,6 +223,7 @@ export async function setupCommand(opts: SetupOptions = {}, deps: { createManage
       existing?.agentBackend ?? 'cli',
     )) as AgentBackend;
 
+    let apiKey = '';
     if (agentBackend === 'sdk') {
       const envKey = process.env.ANTHROPIC_API_KEY;
       const apiKeyAnswer = await askValidated(
@@ -216,9 +231,7 @@ export async function setupCommand(opts: SetupOptions = {}, deps: { createManage
         validateApiKey,
         envKey ? ENV_KEY_PLACEHOLDER : undefined,
       );
-      // La clé recueillie n'est pas forcément dans l'environnement de cette session : on l'y pose pour que
-      // les checks portent sur elle et que `defaultServiceContext` la transmette au service.
-      process.env.ANTHROPIC_API_KEY = envKey && apiKeyAnswer === ENV_KEY_PLACEHOLDER ? envKey : apiKeyAnswer;
+      apiKey = envKey && apiKeyAnswer === ENV_KEY_PLACEHOLDER ? envKey : apiKeyAnswer;
     }
 
     const raw = buildRawConfig({ appId, installationId, privateKeyPath, repos, dataDir, agentBackend }, existing);
@@ -244,11 +257,14 @@ export async function setupCommand(opts: SetupOptions = {}, deps: { createManage
     } catch (err) {
       initError = err;
     }
+    // La clé recueillie n'est pas forcément exportée dans cette session : on la donne aux checks sans la
+    // poser dans `process.env`, que tout enfant (`which`, `claude --version`…) hériterait.
+    const checkEnv = agentBackend === 'sdk' ? { ...process.env, ANTHROPIC_API_KEY: apiKey } : process.env;
     // Le service est forcément absent à ce stade (on ne l'a pas encore installé) : ce check n'a de sens
     // que pour `sisyphe doctor` une fois le daemon en place, pas pour le pré-vol de setup.
     // `machine` (fraîchement parsée) plutôt que seulement `app?.machine` : si createApp a échoué après la
     // config (client GitHub…), le pré-vol doit quand même vérifier le bon backend, pas retomber sur `sdk`.
-    const checks = buildChecks({ machine: app?.machine ?? machine, github: app?.github, env: process.env, paths: app?.paths });
+    const checks = buildChecks({ machine: app?.machine ?? machine, github: app?.github, env: checkEnv, paths: app?.paths });
     if (initError && !(initError instanceof MachineConfigError)) {
       const err = initError;
       checks.push({ name: 'initialisation', run: async () => { throw err; } });
@@ -261,9 +277,11 @@ export async function setupCommand(opts: SetupOptions = {}, deps: { createManage
     }
 
     await prepareData(paths);
-    await installService(paths, machine, deps.createManager);
-    console.log(`Service installé, daemon non démarré. Logs : ${paths.logsDir}`);
-    console.log(`${START_HINT} Vérifier l'installation avec \`sisyphe doctor\`.`);
+    const manager = await serviceManagerFor(paths, machine, { createManager: deps.createManager, apiKey });
+    if (await installService(machine, manager, apiKey)) {
+      console.log(`Service installé, daemon non démarré. Logs : ${paths.logsDir}`);
+      console.log(`${START_HINT} Vérifier l'installation avec \`sisyphe doctor\`.`);
+    }
   } finally {
     rl.close();
   }

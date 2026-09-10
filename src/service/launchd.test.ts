@@ -170,7 +170,7 @@ describe('LaunchdServiceManager', () => {
   it('install : deux bootstrap en échec → erreur avec la sortie launchctl et le bootout à essayer', async () => {
     replies = { bootstrap: [fail('Bootstrap failed: 5: Input/output error'), fail('Bootstrap failed: 5: Input/output error')] };
     await expect(manager().install()).rejects.toThrow(
-      `Impossible de charger l'agent launchd : Bootstrap failed: 5: Input/output error. Essayer « launchctl bootout gui/$UID/${LAUNCHD_LABEL} » puis relancer sisyphe setup.`,
+      `Impossible de charger l'agent launchd : Bootstrap failed: 5: Input/output error. Essayer « launchctl bootout gui/$UID/${LAUNCHD_LABEL} » puis « sisyphe setup --reinstall-service ».`,
     );
   });
 

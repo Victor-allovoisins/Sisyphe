@@ -1,14 +1,14 @@
 import { existsSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
-import { MachineConfigError, loadMachineConfig, type MachineConfig } from '../../config/machine.js';
-import { dataPaths, ensureDataDirs, machineConfigPath } from '../../config/paths.js';
+import { MachineConfigError } from '../../config/machine.js';
+import { ensureDataDirs, machineConfigPath } from '../../config/paths.js';
 import { SCHEMA_VERSION, openDatabase, openDatabaseReadOnly } from '../../store/db.js';
 import { JobStore } from '../../store/jobs.js';
 import { PhaseStore } from '../../store/phases.js';
 import { createUiData } from '../../ui/data.js';
 import { PAGE_HTML } from '../../ui/page.js';
 import { DEFAULT_UI_PORT, startUiServer, type UiServer } from '../../ui/server.js';
-import { serviceManagerFor } from './service.js';
+import { loadServiceTarget, type ServiceTarget } from './service.js';
 
 export function parsePort(raw: string | undefined): number {
   if (raw === undefined) return DEFAULT_UI_PORT;
@@ -17,10 +17,10 @@ export function parsePort(raw: string | undefined): number {
   return port;
 }
 
-/** Config machine, avec la consigne d'installation quand elle manque : l'UI est souvent le premier contact. */
-export async function loadUiConfig(): Promise<MachineConfig> {
+/** Config, chemins et gestionnaire de service, avec la consigne d'installation quand la config manque : l'UI est souvent le premier contact. */
+async function loadUiTarget(): Promise<ServiceTarget> {
   try {
-    return await loadMachineConfig(machineConfigPath());
+    return await loadServiceTarget();
   } catch (err) {
     if (err instanceof MachineConfigError && err.kind === 'missing') {
       throw new Error(`Config machine absente : ${machineConfigPath()}. Lancer install.sh ou \`sisyphe setup\`.`);
@@ -56,13 +56,13 @@ export interface RunningUi {
 
 /** Monte l'UI (config, base, gestionnaire de service, serveur) sans bloquer : `uiCommand` attend le signal. */
 export async function startUi(opts: { port?: string }): Promise<RunningUi> {
-  const machine = await loadUiConfig();
-  const paths = dataPaths(machine.dataDir);
+  // Tout ce qui peut échouer passe avant l'ouverture de la base : une erreur ne doit pas laisser
+  // une connexion SQLite ouverte derrière elle.
+  const { machine, paths, manager } = await loadUiTarget();
   const port = parsePort(opts.port);
   await ensureDataDirs(paths);
   const db = openUiDatabase(paths.dbPath);
-  const service = await serviceManagerFor(paths, machine);
-  const data = createUiData({ store: new JobStore(db), phases: new PhaseStore(db), paths, machine, service });
+  const data = createUiData({ store: new JobStore(db), phases: new PhaseStore(db), paths, machine, service: manager });
   let server: UiServer;
   try {
     server = await startUiServer({ data, page: PAGE_HTML, port });

@@ -110,6 +110,12 @@ describe('defaultServiceContext', () => {
     expect(ctx.env.SISYPHE_HOME).toBe('/srv/sisyphe');
   });
 
+  it('env : la clé fournie explicitement l’emporte sur celle de l’environnement, et reste réservée au backend sdk', () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-environnement');
+    expect(defaultServiceContext({ paths, client, machine: { agentBackend: 'sdk' }, apiKey: 'sk-repondue' }).env.ANTHROPIC_API_KEY).toBe('sk-repondue');
+    expect(defaultServiceContext({ paths, client, machine: { agentBackend: 'cli' }, apiKey: 'sk-repondue' }).env).not.toHaveProperty('ANTHROPIC_API_KEY');
+  });
+
   it('env : ANTHROPIC_API_KEY transmise seulement au backend sdk, et seulement si elle est définie', () => {
     vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
     expect(defaultServiceContext({ paths, client, machine: { agentBackend: 'sdk' } }).env.ANTHROPIC_API_KEY).toBe('sk-test');

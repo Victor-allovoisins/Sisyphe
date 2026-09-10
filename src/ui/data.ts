@@ -226,12 +226,20 @@ async function newestTranscript(dir: string, files: string[]): Promise<{ file: s
 export function createUiData(deps: UiDataDeps): UiData {
   const { store, phases, paths, machine } = deps;
   const now = deps.now ?? (() => new Date());
-  let cachedService: { at: number; status: ServiceStatus } | null = null;
+  // La promesse est mémorisée, pas seulement sa valeur : deux snapshots simultanés partagent la même
+  // sonde au lieu de lancer deux `launchctl print`. Un échec n'est pas mis en cache — le suivant réessaie.
+  let cachedService: { at: number; status: Promise<ServiceStatus> } | null = null;
 
   async function serviceStatus(): Promise<ServiceStatus> {
-    const at = Date.now();
-    if (!cachedService || at - cachedService.at > SERVICE_TTL_MS) cachedService = { at, status: await deps.service.status() };
-    return cachedService.status;
+    const at = now().getTime();
+    if (!cachedService || at - cachedService.at > SERVICE_TTL_MS) cachedService = { at, status: deps.service.status() };
+    const pending = cachedService;
+    try {
+      return await pending.status;
+    } catch (err) {
+      if (cachedService === pending) cachedService = null;
+      throw err;
+    }
   }
 
   async function feedFor(jobId: string): Promise<string[]> {

@@ -9,15 +9,24 @@ const status: ServiceStatus = {
   kind: 'launchd', installed: true, running: true, pid: 4242, enabledAtBoot: true, detail: 'state = running',
 };
 
+interface FakeOptions {
+  /** État initial ; `start`/`stop` le font basculer, sauf `stuck`. */
+  running?: boolean;
+  kind?: ServiceStatus['kind'];
+  /** Le daemon ne bascule jamais : l'attente doit s'arrêter au délai plutôt que tourner sans fin. */
+  stuck?: boolean;
+}
+
 /** Gestionnaire factice : aucun `launchctl` ni `systemctl` réel dans la suite. */
-function fakeManager(): { manager: ServiceManager; calls: string[] } {
+function fakeManager(opts: FakeOptions = {}): { manager: ServiceManager; calls: string[] } {
   const calls: string[] = [];
+  let running = opts.running ?? true;
   return {
     calls,
     manager: {
       status: async () => {
         calls.push('status');
-        return status;
+        return { ...status, kind: opts.kind ?? status.kind, running, pid: running ? status.pid : null };
       },
       install: async () => {
         calls.push('install');
@@ -25,9 +34,11 @@ function fakeManager(): { manager: ServiceManager; calls: string[] } {
       },
       start: async () => {
         calls.push('start');
+        if (!opts.stuck) running = true;
       },
       stop: async () => {
         calls.push('stop');
+        if (!opts.stuck) running = false;
       },
       uninstall: async () => {
         calls.push('uninstall');
@@ -87,14 +98,27 @@ describe('serviceCommand', () => {
   });
 
   it('start et stop routent vers le gestionnaire puis affichent le statut obtenu', async () => {
-    const started = fakeManager();
+    const started = fakeManager({ running: false });
     await serviceCommand('start', { createManager: async () => started.manager });
     expect(started.calls).toEqual(['start', 'status']);
     expect(logs.join('\n')).toContain('running : true');
 
-    const stopped = fakeManager();
+    logs = [];
+    const stopped = fakeManager({ running: true });
     await serviceCommand('stop', { createManager: async () => stopped.manager });
     expect(stopped.calls).toEqual(['stop', 'status']);
+    // Le statut affiché est celui d'après l'arrêt : la socket répond « ok » avant que le daemon ait fini.
+    expect(logs.join('\n')).toContain('running : false');
+    expect(logs.join('\n')).toContain('pid : -');
+  });
+
+  it('daemon qui ne bascule pas : l’attente s’arrête au délai et affiche l’état réel', async () => {
+    const { manager, calls } = fakeManager({ running: true, stuck: true });
+
+    await serviceCommand('stop', { createManager: async () => manager, settleMs: 30 });
+
+    expect(calls.filter((c) => c === 'status').length).toBeGreaterThan(1); // il a bien réessayé
+    expect(logs.join('\n')).toContain('running : true');
   });
 
   it('uninstall ne demande rien et ne sonde pas le statut d’un service qui n’existe plus', async () => {
@@ -102,8 +126,17 @@ describe('serviceCommand', () => {
 
     await serviceCommand('uninstall', { createManager: async () => manager });
 
-    expect(calls).toEqual(['uninstall']);
+    expect(calls).toEqual(['status', 'uninstall']);
     expect(logs.join('\n')).toContain('Service désinstallé.');
+  });
+
+  it('uninstall sur une plateforme sans service géré : consigne, pas d’erreur', async () => {
+    const { manager, calls } = fakeManager({ kind: 'none' });
+
+    await serviceCommand('uninstall', { createManager: async () => manager });
+
+    expect(calls).toEqual(['status']);
+    expect(logs.join('\n')).toContain('Aucun service géré sur cette plateforme');
   });
 
   it('l’erreur du gestionnaire remonte telle quelle', async () => {

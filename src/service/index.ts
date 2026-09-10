@@ -37,6 +37,8 @@ export interface DefaultServiceContextInput {
   client: ServiceClient;
   /** Le backend décide si la clé API voyage jusqu'au daemon. */
   machine: Pick<MachineConfig, 'agentBackend'>;
+  /** Clé transmise explicitement (setup vient de la recueillir) ; sinon celle de l'environnement. */
+  apiKey?: string;
 }
 
 /**
@@ -69,11 +71,13 @@ function daemonPath(home: string): string {
  * Contexte de production : l'environnement transmis au daemon est réduit à PATH, HOME, `SISYPHE_HOME` si le
  * process l'a, et la clé API seulement pour le backend sdk — le même quel que soit le gestionnaire.
  */
-export function defaultServiceContext({ paths, client, machine }: DefaultServiceContextInput): ServiceContext {
+export function defaultServiceContext({ paths, client, machine, apiKey }: DefaultServiceContextInput): ServiceContext {
   const home = homedir();
   const env: Record<string, string> = { PATH: daemonPath(home), HOME: home };
   if (process.env.SISYPHE_HOME) env.SISYPHE_HOME = process.env.SISYPHE_HOME;
-  if (machine.agentBackend === 'sdk' && process.env.ANTHROPIC_API_KEY) env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+  // La clé fournie l'emporte : elle n'a pas à transiter par `process.env`, que tout enfant hériterait.
+  const key = apiKey || process.env.ANTHROPIC_API_KEY;
+  if (machine.agentBackend === 'sdk' && key) env.ANTHROPIC_API_KEY = key;
   return {
     paths, nodePath: process.execPath, scriptPath: cliScriptPath(), env, client, exec: realExec, homeDir: home, uid: defaultUid(),
   };

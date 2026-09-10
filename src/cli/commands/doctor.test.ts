@@ -185,8 +185,7 @@ describe('check « service »', () => {
 
   it('non installé : avertissement citant sisyphe setup --reinstall-service, jamais un échec bloquant', async () => {
     const check = checkOf(fakeService({ installed: false, running: false, pid: null, enabledAtBoot: false, detail: 'agent launchd non chargé' }));
-    expect(check.warn).toBe(true);
-    await expect(check.run()).rejects.toThrow('sisyphe setup --reinstall-service');
+    await expect(check.run()).resolves.toEqual({ warn: true, message: 'launchd : non installé — lancer `sisyphe setup --reinstall-service`' });
   });
 
   it('plateforme sans service géré : avertissement sans conseil de réinstallation', async () => {

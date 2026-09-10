@@ -87,19 +87,26 @@ const MIGRATIONS: readonly string[] = [
 /** Version de schéma attendue : `PRAGMA user_version` d'une base à jour. L'UI s'en sert pour savoir s'il faut migrer. */
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
+const userVersion = (db: DatabaseSync): number => (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
+
 /**
- * Ouvre (ou crée) la base et applique les migrations manquantes, chacune dans une transaction.
- * L'index unique `jobs_active_issue` rend structurel l'invariant « un seul job actif par issue ».
+ * Applique les migrations manquantes à partir de `from`, une transaction chacune. Le daemon n'est plus
+ * seul à migrer (`sisyphe ui` et `sisyphe setup` le font aussi) : deux processus peuvent donc partir du
+ * même `from`. `BEGIN IMMEDIATE` prend le verrou d'écriture d'entrée de jeu — le second attend
+ * (`busy_timeout`) au lieu d'échouer à la première écriture — et la version est relue *dans* la
+ * transaction : si l'autre est passé avant, on saute la migration au lieu de la rejouer. Pas de
+ * `CREATE TABLE IF NOT EXISTS`, qui masquerait une migration à moitié appliquée.
+ * Exporté pour que le test puisse rejouer le plan périmé du perdant.
  */
-export function openDatabase(path: string): DatabaseSync {
-  const db = new DatabaseSync(path);
-  db.exec('PRAGMA foreign_keys = ON;');
-  db.exec('PRAGMA busy_timeout = 5000;');
-  if (path !== ':memory:') db.exec('PRAGMA journal_mode = WAL;');
-  const row = db.prepare('PRAGMA user_version').get() as { user_version: number };
-  for (let v = row.user_version; v < MIGRATIONS.length; v++) {
+export function applyMigrations(db: DatabaseSync, from: number): void {
+  for (let v = from; v < MIGRATIONS.length; v++) {
     try {
-      db.exec('BEGIN');
+      db.exec('BEGIN IMMEDIATE');
+      if (userVersion(db) > v) {
+        // Migration déjà appliquée par un autre processus pendant qu'on attendait le verrou.
+        db.exec('ROLLBACK');
+        continue;
+      }
       db.exec(MIGRATIONS[v]);
       db.exec(`PRAGMA user_version = ${v + 1}`);
       db.exec('COMMIT');
@@ -113,6 +120,18 @@ export function openDatabase(path: string): DatabaseSync {
       throw new Error(`Migration ${v + 1} échouée : ${(err as Error).message}`, { cause: err });
     }
   }
+}
+
+/**
+ * Ouvre (ou crée) la base et applique les migrations manquantes, chacune dans une transaction.
+ * L'index unique `jobs_active_issue` rend structurel l'invariant « un seul job actif par issue ».
+ */
+export function openDatabase(path: string): DatabaseSync {
+  const db = new DatabaseSync(path);
+  db.exec('PRAGMA foreign_keys = ON;');
+  db.exec('PRAGMA busy_timeout = 5000;');
+  if (path !== ':memory:') db.exec('PRAGMA journal_mode = WAL;');
+  applyMigrations(db, userVersion(db));
   return db;
 }
 

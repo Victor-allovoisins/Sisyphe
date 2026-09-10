@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { InvalidTransitionError } from '../jobs/state.js';
 import { ACTION_OUTCOMES, ACTION_SOURCES, ActionStore } from './actions.js';
-import { openDatabase, sqlList } from './db.js';
+import { DatabaseSync } from 'node:sqlite';
+import { SCHEMA_VERSION, applyMigrations, openDatabase, sqlList } from './db.js';
 import { JobStore } from './jobs.js';
 import { PhaseStore } from './phases.js';
 import { JOB_STATES, TERMINAL_STATES } from './types.js';
@@ -191,6 +192,31 @@ describe('openDatabase', () => {
     expect(b.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'actions'").get()).toBeTruthy();
     expect(new ActionStore(b).record({ action: 'retry', source: 'ui', outcome: 'ok' }).outcome).toBe('ok');
     b.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('deux migrateurs concurrents sur la même base : le second ne rejoue rien et les deux finissent à jour', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sisyphe-db-'));
+    const file = join(dir, 'sisyphe.db');
+    const seed = openDatabase(file);
+    seed.exec('DROP TABLE actions');
+    seed.exec('PRAGMA user_version = 1'); // base v1, comme avant la migration 2
+    seed.close();
+
+    // Le gagnant migre. Le perdant a lu `user_version` avant lui : il repart donc du plan périmé « v1 »,
+    // exactement ce que fait un second processus (daemon, `sisyphe ui`, `sisyphe setup`) parti en même temps.
+    const winner = openDatabase(file);
+    const loser = new DatabaseSync(file);
+    loser.exec('PRAGMA busy_timeout = 5000;');
+    applyMigrations(loser, 1);
+
+    const version = (db: DatabaseSync) => (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
+    expect(version(winner)).toBe(SCHEMA_VERSION);
+    expect(version(loser)).toBe(SCHEMA_VERSION);
+    // Une seule table `actions` : la migration n'a pas été rejouée par-dessus elle-même.
+    expect(new ActionStore(loser).record({ action: 'retry', source: 'ui', outcome: 'ok' }).outcome).toBe('ok');
+    winner.close();
+    loser.close();
     await rm(dir, { recursive: true, force: true });
   });
 

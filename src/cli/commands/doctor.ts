@@ -91,12 +91,15 @@ async function checkDiskSpace(root: string): Promise<string> {
   return `${freeGb.toFixed(1)} Go libres`;
 }
 
-/** État du service. Jamais bloquant : un daemon arrêté ou un service absent est un avertissement, pas une panne. */
+/**
+ * État du service. Jamais bloquant : un service absent ou un daemon arrêté est un avertissement, pas une
+ * panne — d'où la forme `{ warn }` plutôt qu'un `throw`, réservé ici aux vraies pannes de la sonde.
+ */
 async function checkService(service: DoctorService): Promise<string | { warn: true; message: string }> {
   const s = await service.status();
   // `none` : rien n'est installable ici, inutile de conseiller une réinstallation.
   if (s.kind === 'none') return { warn: true, message: `aucun service géré sur cette plateforme (${s.detail})` };
-  if (!s.installed) throw new Error(`${s.kind} : non installé — lancer \`sisyphe setup --reinstall-service\``);
+  if (!s.installed) return { warn: true, message: `${s.kind} : non installé — lancer \`sisyphe setup --reinstall-service\`` };
   const boot = s.enabledAtBoot ? 'oui' : 'non';
   return `${s.kind}, ${s.running ? `actif (pid ${s.pid ?? '?'})` : 'arrêté'}, au boot : ${boot} · ${s.detail}`;
 }
@@ -215,7 +218,7 @@ export async function doctorCommand(): Promise<void> {
   // Sans config, ni racine de données ni gestionnaire de service : le check « config machine » dit déjà tout.
   const paths = app?.paths ?? (machine ? dataPaths(machine.dataDir) : undefined);
   const service = machine && paths ? await serviceManagerFor(paths, machine) : undefined;
-  const checks = buildChecks({ machine, github: app?.github, env: process.env, paths: app?.paths, service });
+  const checks = buildChecks({ machine, github: app?.github, env: process.env, paths, service });
 
   // La config invalide est déjà signalée par le check « config machine » : ne pas la répéter ici.
   if (initError && !(initError instanceof MachineConfigError)) {
