@@ -31,9 +31,9 @@ Le daemon ouvre une **socket UNIX de contrôle** et exécute lui-même toutes le
 
 `ControlClient(paths)` : `send(cmd, args)` ouvre la socket, envoie la ligne, lit la réponse, ferme ; timeout 5 s ; socket absente ou connexion refusée → erreur typée `DaemonUnreachableError`. `isReachable()` = `ping` réussi. Utilisé par l'UI et par `sisyphe cancel` : si le daemon répond, la commande passe par la socket (annulation immédiate et journalisée) ; sinon comportement actuel (retrait du label, annulation au prochain démarrage).
 
-### 2.3 Démarrage du daemon depuis l'UI (`src/ui/spawn-daemon.ts`)
+### 2.3 Démarrage et arrêt du daemon depuis l'UI
 
-Sans socket par définition. Séquence : `readLock` → si un daemon vit déjà, `ok: false` « déjà démarré ». Sinon, si l'agent launchd `LAUNCHD_LABEL` est chargé (`probeLaunchd`), `launchctl kickstart -k gui/$UID/<label>` ; sinon `spawn(process.execPath, [<dist>/cli/index.js, 'start'], { detached: true, stdio: ['ignore', out, out] })` puis `unref()`, où `out` est `<dataDir>/logs/daemon-stdout.log` ouvert en ajout. Puis attente jusqu'à 5 s que `ping` réponde ; sinon `ok: false` avec les 20 dernières lignes de `daemon-stdout.log`.
+Remplacé le 2026-09-10 par `2026-09-10-sisyphe-install-service-design.md` §3 à §5 : Démarrer et Arrêter passent par le `ServiceManager` (launchd, systemd, ou lancement détaché quand aucun service n'est installé), pour que le daemon survive à l'interface et revienne au boot dans l'état choisi. Après `start()`, l'UI attend jusqu'à 5 s que la socket réponde ; sinon `ok: false` avec la fin du log du service.
 
 ### 2.4 Données
 
@@ -45,14 +45,14 @@ Sans socket par définition. Séquence : `readLock` → si un daemon vit déjà,
 
 - `POST /api/actions/<name>` avec `name ∈ cancel | retry | enqueue | poll | pause | resume | stop | start`, corps JSON (`{ jobId }`, `{ repo, issueNumber }` ou `{}`), réponse `200 { ok: true, result }`, `400` arguments invalides, `403` en-têtes anti-CSRF absents ou mode `--read-only`, `409` refus métier (`ok: false` du daemon, message relayé), `502` daemon injoignable (`DaemonUnreachableError`), `500` autre erreur sans stack.
 - Anti-CSRF (Host déjà vérifié en v1) : `Content-Type: application/json` obligatoire, en-tête `X-Sisyphe-Action: 1` obligatoire (un formulaire HTML ne peut envoyer ni l'un ni l'autre sans CORS préalable), et si `Origin` est présent il doit valoir `http://127.0.0.1:<port>`, `http://localhost:<port>` ou `http://[::1]:<port>`. Corps limité à 16 Ko.
-- `GET /api/overview` gagne `daemon.paused: boolean | null` (null si injoignable), `control: { reachable: boolean }`, `readOnly: boolean` et `recentActions: Action[]` (20 dernières). `GET /api/jobs/:id` gagne `actions: Action[]`.
+- `GET /api/overview` gagne `daemon.paused: boolean | null` (null si injoignable), `control: { reachable: boolean }`, `readOnly: boolean`, `recentActions: Action[]` (20 dernières) et `service: ServiceStatus` (remplace `launchd`). `GET /api/jobs/:id` gagne `actions: Action[]`.
 - Les autres GET et le SSE sont inchangés ; le `ping` de l'overview est mémorisé 1 s pour ne pas ouvrir une connexion par requête SSE.
 - `sisyphe ui --read-only` : `readOnly: true` dans l'overview, tout POST → 403, aucun bouton affiché.
-- Base non migrée : `uiCommand` lit `PRAGMA user_version` à l'ouverture et refuse de démarrer si la base est antérieure au schéma attendu (message : lancer `sisyphe start` une fois pour migrer), puisque la connexion `readOnly` ne migre jamais.
+- Base absente ou non migrée : `uiCommand` la crée et la migre en l'ouvrant une fois en écriture, puis la rouvre en `readOnly` (spec install-service §4) ; l'interface reste en lecture seule ensuite.
 
 ### 2.6 Page (`src/ui/page.ts`)
 
-- Bandeau système : boutons Démarrer / Arrêter / Pause ou Reprendre / Poll maintenant. Bandeau orange « En pause » quand `daemon.paused`. Daemon injoignable : seul Démarrer est actif, les autres boutons grisés avec `title="daemon arrêté"`.
+- Bandeau système : `service.kind` et « au boot : oui/non », boutons Démarrer / Arrêter / Pause ou Reprendre / Poll maintenant. Bandeau orange « En pause » quand `daemon.paused`. Daemon injoignable : seul Démarrer est actif, les autres boutons grisés avec `title="daemon arrêté"`.
 - Cartes des jobs actifs, tableau Jobs et panneau de détail : bouton Annuler sur un job non terminal ; bouton Relancer sur `failed`, `blocked`, `cancelled`. Formulaire « Nouveau job » en tête de l'onglet Jobs : `<select>` des repos (issus de l'overview) + champ numérique, bouton Créer.
 - `confirm()` natif avant Annuler, Relancer, Arrêter. Bouton désactivé pendant l'appel. Toast en bas à droite : succès (vert, 4 s) ou erreur (rouge, message relayé, 8 s). Rafraîchissement par le SSE existant et un `fetch` de la vue courante après succès.
 - Bloc « Dernières actions » sur le tableau de bord (heure, action, job ou repo#issue, résultat) ; liste des actions dans le détail d'un job.
