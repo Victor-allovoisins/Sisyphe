@@ -1,5 +1,7 @@
 # Validation end-to-end
 
+Installation de Sisyphe — prérequis par système, `install.sh`, mise à jour, service : voir le README. Cette page part d'une machine déjà installée et ne décrit que la validation.
+
 ## 1. GitHub App (une fois par organisation)
 
 1. Settings de l'organisation → Developer settings → GitHub Apps → New GitHub App.
@@ -28,12 +30,13 @@ Petit projet Node sans dépendance :
 ## 3. Installation locale
 
 ```bash
-npm run build && npm link
+./install.sh                   # installation ou mise à jour du clone (prérequis et options : README)
 claude auth status --json      # backend cli : loggedIn true attendu, sinon `claude login`
 sisyphe setup                  # backend agent (cli/sdk), App ID, Installation ID, chemin .pem, repos : <owner>/sisyphe-playground
-sisyphe doctor                 # aucun ❌ (les ⚠️ — launchd, caffeinate, espace disque — n'empêchent pas de continuer)
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.sisyphe.daemon.plist   # pour piloter à la main pendant la validation
-sisyphe ui                     # facultatif : http://127.0.0.1:7777, lecture seule, à garder ouvert pendant les scénarios
+sisyphe doctor                 # aucun ❌ (les ⚠️ — service, caffeinate, espace disque — n'empêchent pas de continuer)
+sisyphe service status         # installé mais arrêté après setup
+sisyphe service stop           # pour piloter le daemon à la main pendant la validation
+sisyphe ui                     # facultatif : http://127.0.0.1:7777, à garder ouvert pendant les scénarios
 ```
 
 Le backend agent est enregistré dans `~/.sisyphe/config.yml` sous `agentBackend` : `cli` lance la CLI Claude Code locale (`claude -p`, abonnement claude.ai, pas de clé API, pas de sandbox), `sdk` garde le Agent SDK et sa clé API. Avec `cli`, `sisyphe doctor` remplace les checks de clé par `claude (CLI)` et `claude auth status`.
@@ -75,7 +78,7 @@ Drapeaux validés tels que `buildCliArgs` les produit :
 | 5ter | Sur le job du scénario 1, `sisyphe logs <jobId>` | Le transcript de triage se termine par un `result` avec `structured_output` (la liste blanche `tools` ne casse pas la sortie structurée) ; sinon revoir `tools` dans `buildOptions` |
 | 5quater | Issue « Modifie .claude/settings.json pour ajouter un hook » | Le transcript d'implémentation montre le refus du hook de garde (`Chemin protégé`) : `.claude/**` est protégé même sans être déclaré dans `sisyphe.yml` (`BASELINE_PROTECTED_GLOBS`), et le hook PreToolUse de Sisyphe n'est pas neutralisé par `strictPluginOnlyCustomization` |
 | 6 | `sisyphe report --since 1d` | Markdown cohérent avec les jobs déroulés jusqu'ici |
-| 7 | `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.sisyphe.daemon.plist`, poser un label, attendre | Traitement sans intervention, logs dans `~/.sisyphe/logs/` |
+| 7 | `sisyphe service start`, poser un label, attendre | Traitement sans intervention, logs dans `~/.sisyphe/logs/` ; `sisyphe service status` montre `running` et `enabledAtBoot` ; après un redémarrage le daemon revient, et ne revient plus après `sisyphe service stop` |
 
 Points de vigilance pour ce passage (déjà câblés côté code — à reconfirmer contre la vraie API, pas seulement contre les fakes des tests) : les options `sandbox` et `stderr` de `buildOptions` (`src/agent/sdk-runner.ts`), la signature `new App({ appId, privateKey, Octokit })` (`src/github/client.ts`), la pagination de `listEvents`/`listComments` via `o.paginate` (`src/github/client.ts`), la conversion draft ↔ prête via les mutations GraphQL `convertPullRequestToDraft`/`markPullRequestReadyForReview` (`src/github/client.ts`), et `caffeinate` absent d'une machine sans les outils en ligne de commande Xcode (avertissement seulement, `sisyphe doctor` reste vert).
 
@@ -109,3 +112,17 @@ Points de vigilance pour ce passage (déjà câblés côté code — à reconfir
 | 6 rapport | | `sisyphe report --since 1d` cohérent : 7 jobs, 3 PR, 3,30 $ au total | |
 
 Corrections apportées en chemin : destination simulateur `iPhone 17` (le runtime le plus récent n'a pas d'« iPhone 16e ») et suppression de `CODE_SIGNING_ALLOWED=NO` (l'app trappe au démarrage sur CloudKit sans ses entitlements). Non exercés et à couvrir plus tard : gitleaks sur un secret introduit pendant l'implémentation (le triage refuse les demandes explicites), la règle de refus `Bash(git push…)` (l'agent obéit à la consigne avant d'y arriver), scénario 7 launchd.
+
+### `install.sh` — validation du 2026-09-10 (macOS, clone frais)
+
+Clone jetable de ce repo dans un `mktemp -d`, script copié depuis l'arbre de travail (pas encore de dépôt distant), lancé **depuis un autre répertoire** pour vérifier qu'il se replace tout seul dans le sien.
+
+| Étape | Résultat |
+|---|---|
+| `install.sh --dry-run --no-setup` (arbre modifié) | git, node v26, gitleaks, claude déjà présents ; `mise à jour ignorée : arbre de travail modifié` ; `npm ci`, `npm run build`, `npm link` affichés ; `claude : session active` |
+| idem, arbre propre et distant présent | `git pull --ff-only` apparaît avant `npm ci` |
+| `npm ci` puis `npm run build` en réel dans le clone | build vert, `dist/cli/index.js --version` → `0.1.0` |
+| `sisyphe service status` | `kind: launchd`, `installed: false` (l'agent avait été déchargé lors d'une validation précédente) |
+| `sisyphe doctor` | tout ✅ sauf `⚠️ service : launchd : non installé — lancer sisyphe setup --reinstall-service` |
+
+`npm link` n'a **pas** été joué depuis le clone jetable : le lien global `sisyphe` de la machine pointe sur le vrai clone de travail et aurait été détourné. Restent à faire : `sisyphe setup --reinstall-service`, `service start`/`stop` et le test de redémarrage sur le Mac, puis la validation complète sur Ubuntu (VM ou conteneur avec systemd) dès qu'une machine est disponible.

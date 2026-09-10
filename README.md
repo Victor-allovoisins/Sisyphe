@@ -6,27 +6,57 @@ Daemon qui prend les issues GitHub labellisées `sisyphe`, les fait trier puis i
 - Plan : `docs/superpowers/plans/2026-09-08-sisyphe.md`
 - Validation : `docs/playground.md`
 
-## Prérequis (macOS)
+## Installation
 
-Xcode (pour un repo iOS), puis `brew install node git gitleaks xcodegen`. Node ≥ 24.
+```bash
+git clone git@github.com:ILokYou/sisyphe.git ~/sisyphe
+~/sisyphe/install.sh
+```
+
+`install.sh` (POSIX `sh`, macOS et Ubuntu) installe ce qui manque — `git`, Node ≥ 24, `gitleaks`, la CLI Claude Code —, compile le clone, pose le lien global `sisyphe`, puis lance `sisyphe setup`. Options : `--dry-run` (affiche chaque commande sans rien exécuter), `--no-setup`, `--no-pull`. Le script s'arrête à la première erreur en nommant l'étape fautive.
+
+Le seul `sudo` est celui d'`apt-get` sur Ubuntu (git, puis Node par le dépôt NodeSource) : gitleaks est posé dans `~/.local/bin` après vérification de sa somme de contrôle, et npm bascule sur un préfixe utilisateur (`~/.local`) si le préfixe global n'est pas accessible en écriture. Aucune installation npm sous `sudo`.
+
+Prérequis par système :
+
+- **macOS** : Homebrew (le script s'arrête avec la commande officielle s'il manque). Pour un repo cible iOS, en plus et hors périmètre du script : Xcode installé et ouvert une fois, un simulateur, et `brew install xcodegen` — ces outils-là sont vérifiés par le repo cible via son `sisyphe.yml`.
+- **Ubuntu** (ou dérivé Debian) : rien de plus, le script se charge du reste.
+
+À la fin, le script rappelle les deux dernières étapes : `claude login` si la session Claude Code n'est pas ouverte, puis `sisyphe ui`.
+
+Les données vivent sous `~/.sisyphe` (redéfinissable via `SISYPHE_HOME`).
+
+## Mise à jour
+
+Relancer le même script :
+
+```bash
+~/sisyphe/install.sh
+```
+
+Il fait `git pull --ff-only` (seulement si le clone a un dépôt distant et un arbre de travail propre), rebuild, et ne rejoue pas `sisyphe setup` quand la config existe déjà. Si l'unité de service a changé d'une version à l'autre : `sisyphe setup --reinstall-service`.
 
 ## GitHub App
 
 Une App GitHub `sisyphe[bot]`, permissions Contents (read & write), Issues (read & write), Pull requests (read & write), Metadata (read), installée uniquement sur les repos cibles (spec §9). Marche à suivre complète : `docs/playground.md` §1.
-
-## Installation
-
-```bash
-npm install && npm run build && npm link
-sisyphe setup && sisyphe doctor
-```
 
 `sisyphe setup` demande le backend agent, écrit dans la config machine sous `agentBackend` :
 
 - `cli` : la CLI Claude Code installée localement (`claude -p`), donc l'abonnement claude.ai. C'est la réponse proposée par défaut à la question de `sisyphe setup` (le défaut du schéma, pour une config écrite à la main, reste `sdk`). Prérequis : `claude auth status --json` renvoie `loggedIn: true`. Le sandbox n'est pas supporté par ce backend.
 - `sdk` : le Agent SDK, qui exige une clé API Anthropic (console) dans `ANTHROPIC_API_KEY` — `export ANTHROPIC_API_KEY=sk-ant-...` avant `sisyphe setup`.
 
-Les données vivent sous `~/.sisyphe` (redéfinissable via `SISYPHE_HOME`).
+## Service
+
+Le daemon tourne en service utilisateur — launchd sur macOS, systemd `--user` sur Ubuntu. `sisyphe setup` installe l'unité sans démarrer le daemon ; ensuite le service survit à la fermeture de l'interface et revient au boot dans l'état où on l'a laissé : démarré s'il tournait, arrêté sinon.
+
+```bash
+sisyphe service status      # kind, running, pid, enabledAtBoot
+sisyphe service start       # démarre maintenant et active au boot
+sisyphe service stop        # arrête maintenant et désactive au boot
+sisyphe service uninstall
+```
+
+Les boutons Démarrer et Arrêter de l'interface (`sisyphe ui`) pilotent ces deux mêmes opérations — c'est le service qui est démarré ou arrêté, jamais un processus détaché de la page (branchement livré par l'UI v2, en cours). Sur une plateforme sans gestionnaire de service, `sisyphe service start` lance un daemon détaché qui, lui, ne survit pas au redémarrage.
 
 ## Côté repo cible
 
@@ -34,11 +64,11 @@ Un fichier `sisyphe.yml` à la racine de la branche par défaut (exemple iOS : `
 
 ## Commandes
 
-`sisyphe start [--once]`, `status`, `logs <jobId> [--phase triage|implement|setup|verify] [--raw]`, `report [--since 30d] [--repo owner/repo]`, `ui [--port 7777]`, `cancel <jobId>`, `doctor`, `setup`.
+`sisyphe start [--once]`, `status`, `logs <jobId> [--phase triage|implement|setup|verify] [--raw]`, `report [--since 30d] [--repo owner/repo]`, `ui [--port 7777]`, `cancel <jobId>`, `doctor`, `setup [--reinstall-service]`, `service <status|start|stop|uninstall>`.
 
 ### Interface web
 
-`sisyphe ui` sert une page locale en **lecture seule** sur `http://127.0.0.1:7777` : tableau de bord temps réel (daemon, launchd, budget du jour, jobs actifs et fil des actions de l'agent), historique des jobs avec panneau de détail (phases, transcript résumé, sorties de vérification, diff, secrets détectés) et KPIs par période. La base est ouverte en `readOnly`, aucune action n'est possible depuis l'interface, aucun appel réseau n'est fait, et rien n'est jamais écrit. Captures : `docs/ui/`.
+`sisyphe ui` sert une page locale sur `http://127.0.0.1:7777` : tableau de bord temps réel (daemon, service, budget du jour, jobs actifs et fil des actions de l'agent), historique des jobs avec panneau de détail (phases, transcript résumé, sorties de vérification, diff, secrets détectés) et KPIs par période. La page crée et migre sa base au besoin, puis l'ouvre en `readOnly` : elle n'écrit rien d'autre et ne fait aucun appel réseau. Les seules actions prévues sont Démarrer et Arrêter, qui passent par le service (UI v2). Captures : `docs/ui/`.
 
 ## Développement
 
