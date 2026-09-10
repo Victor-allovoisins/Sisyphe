@@ -1,5 +1,5 @@
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { dataPaths } from '../config/paths.js';
@@ -16,7 +16,6 @@ describe('renderUnit', () => {
       [
         '[Unit]',
         'Description=Sisyphe daemon',
-        'After=network-online.target',
         '',
         '[Service]',
         'ExecStart=/usr/bin/node /x/dist/cli/index.js start',
@@ -41,15 +40,29 @@ describe('renderUnit', () => {
     expect(unit.match(/^Environment=/gm)).toHaveLength(2);
   });
 
-  it('cite entre guillemets les chemins et valeurs avec espaces, et double les % (spécificateurs systemd)', () => {
+  it('cite entre guillemets les valeurs avec espace ou quote, et double les % (spécificateurs systemd)', () => {
     const unit = renderUnit({
       nodePath: '/Users/v/My Tools/node', scriptPath: '/x/dist/cli/index.js', paths: dataPaths('/home/v/data dir'),
-      env: { PATH: '/opt/a b/bin:/usr/bin', HOME: '/home/v', ANTHROPIC_API_KEY: 'sk-100%' },
+      env: { PATH: '/opt/a b/bin:/usr/bin', HOME: '/home/v', ANTHROPIC_API_KEY: "sk-100%'x" },
     });
     expect(unit).toContain('ExecStart="/Users/v/My Tools/node" /x/dist/cli/index.js start');
-    expect(unit).toContain('WorkingDirectory="/home/v/data dir"');
     expect(unit).toContain('Environment="PATH=/opt/a b/bin:/usr/bin"');
-    expect(unit).toContain('Environment=ANTHROPIC_API_KEY=sk-100%%');
+    expect(unit).toContain(`Environment="ANTHROPIC_API_KEY=sk-100%%'x"`); // une quote simple non citée ouvrirait une citation
+  });
+
+  it('WorkingDirectory n’est jamais cité : systemd ne déquote pas cette directive et rejetterait l’unité', () => {
+    const unit = renderUnit({ ...input, paths: dataPaths('/home/v/data dir'), env: {} });
+    expect(unit).toContain('WorkingDirectory=/home/v/data dir');
+    expect(unit).not.toContain('WorkingDirectory="');
+  });
+
+  it('ExecStart : $ littéral doublé (ligne de commande), mais laissé tel quel dans Environment (aucune expansion)', () => {
+    const unit = renderUnit({
+      nodePath: '/opt/node$v/bin/node', scriptPath: '/x/dist/cli/index.js', paths: dataPaths('/home/v/.sisyphe'),
+      env: { ANTHROPIC_API_KEY: 'sk-$v' },
+    });
+    expect(unit).toContain('ExecStart=/opt/node$$v/bin/node /x/dist/cli/index.js start');
+    expect(unit).toContain('Environment=ANTHROPIC_API_KEY=sk-$v');
   });
 });
 
@@ -147,15 +160,15 @@ describe('SystemdServiceManager', () => {
   it('install : loginctl enable-linger refusé → avertissement avec la commande sudo, installation poursuivie', async () => {
     replies = { 'enable-linger': [fail('Could not enable linger: Access denied')] };
     expect(await manager().install()).toEqual({
-      warnings: ["`sudo loginctl enable-linger victor` à lancer une fois, sinon le service s'arrête à la déconnexion"],
+      warnings: [`\`sudo loginctl enable-linger ${userInfo().username}\` à lancer une fois, sinon le service s'arrête à la déconnexion`],
     });
     expect(await exists(unitPath(home))).toBe(true);
   });
 
-  it('install : daemon-reload en échec → erreur qui cite la commande et son stderr, sans appeler loginctl', async () => {
+  it('install : daemon-reload en échec → erreur qui cite la commande, son stderr et la reprise, sans appeler loginctl', async () => {
     replies = { 'daemon-reload': [fail('Failed to connect to bus: No medium found')] };
     await expect(manager().install()).rejects.toThrow(
-      'systemctl --user daemon-reload a échoué (code 1) : Failed to connect to bus: No medium found',
+      "systemctl --user daemon-reload a échoué (code 1) : Failed to connect to bus: No medium found. L'unité est écrite mais non chargée : relancer « sisyphe setup --reinstall-service » une fois le problème corrigé.",
     );
     expect(calls).toEqual([['systemctl', '--user', 'daemon-reload']]);
   });
@@ -242,8 +255,10 @@ describe('SystemdServiceManager', () => {
     expect(calls.map((c) => c[2])).toEqual(['disable', 'daemon-reload']);
   });
 
-  it('uninstall : daemon-reload en échec → erreur', async () => {
+  it('uninstall : daemon-reload en échec → erreur brute, sans le conseil de réinstallation propre à install', async () => {
     replies = { 'daemon-reload': [fail('Failed to connect to bus: No medium found')] };
-    await expect(manager().uninstall()).rejects.toThrow('systemctl --user daemon-reload a échoué (code 1) : Failed to connect to bus: No medium found');
+    await expect(manager().uninstall()).rejects.toThrow(
+      new Error('systemctl --user daemon-reload a échoué (code 1) : Failed to connect to bus: No medium found'),
+    );
   });
 });

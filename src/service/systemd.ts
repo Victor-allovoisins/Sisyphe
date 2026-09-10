@@ -1,6 +1,8 @@
-import { chmod, mkdir, rm, writeFile } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { mkdir, rm } from 'node:fs/promises';
+import { userInfo } from 'node:os';
+import { dirname, join } from 'node:path';
 import { EXIT_NOT_FOUND, type ExecResult } from './exec.js';
+import { write0600 } from './files.js';
 import type { ServiceContext, ServiceManager, ServiceStatus } from './types.js';
 
 /** Nom de l'unité utilisateur (`sisyphe.service`) tel qu'on le passe à systemctl. */
@@ -10,26 +12,38 @@ const SHOW_PROPERTIES = 'ActiveState,SubState,MainPID,UnitFileState';
 
 export type UnitInput = Pick<ServiceContext, 'nodePath' | 'scriptPath' | 'paths' | 'env'>;
 
+/** `%` introduit un spécificateur (`%h`…) : le doubler est le seul échappement commun à toutes les directives. */
+function specifiers(value: string): string {
+  return value.replaceAll('%', '%%');
+}
+
 /**
- * Un mot d'unité systemd : `%` est un spécificateur (`%h`…), donc doublé ; une valeur avec espace,
- * guillemet ou antislash est citée entre guillemets doubles, seuls `\` et `"` s'y échappent.
+ * Un mot d'unité systemd : une valeur contenant un espace ou une quote (systemd déquote `"` comme `'`)
+ * est citée entre guillemets doubles, où seuls `\` et `"` s'échappent.
  */
 function word(value: string): string {
-  const v = value.replaceAll('%', '%%');
-  return /[\s"\\]/.test(v) ? `"${v.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"` : v;
+  const v = specifiers(value);
+  return /['\s"\\]/.test(v) ? `"${v.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"` : v;
+}
+
+/** Mot d'une ligne de commande : `$FOO` et `${FOO}` y sont remplacés, `$$` est le `$` littéral. */
+function commandWord(value: string): string {
+  return word(value.replaceAll('$', '$$$$'));
 }
 
 export function renderUnit(i: UnitInput): string {
   // `Environment=` prend des mots `CLÉ=VALEUR` : c'est l'affectation entière qu'on cite, comme la doc systemd.
+  // Pas d'expansion de variables ici, donc pas de `$` doublé — il resterait tel quel dans l'environnement.
   const env = Object.entries(i.env).map(([k, v]) => `Environment=${word(`${k}=${v}`)}`);
   return [
     '[Unit]',
     'Description=Sisyphe daemon',
-    'After=network-online.target',
     '',
     '[Service]',
-    `ExecStart=${word(i.nodePath)} ${word(i.scriptPath)} start`,
-    `WorkingDirectory=${word(i.paths.root)}`,
+    `ExecStart=${commandWord(i.nodePath)} ${commandWord(i.scriptPath)} start`,
+    // Jamais de guillemets : systemd ne déquote pas cette directive et rejetterait l'unité entière
+    // (chemin jugé non absolu). `paths.root` sort de `resolve()`, il est donc toujours absolu.
+    `WorkingDirectory=${specifiers(i.paths.root)}`,
     ...env,
     'Restart=on-failure',
     'RestartSec=30',
@@ -114,15 +128,17 @@ export class SystemdServiceManager implements ServiceManager {
   async install(): Promise<{ warnings: string[] }> {
     const p = this.unit;
     await mkdir(dirname(p), { recursive: true });
-    // `writeFile(mode)` n'est appliqué qu'à la création : une unité déjà présente garde ses permissions sans le chmod.
-    await writeFile(p, renderUnit(this.ctx), { mode: 0o600 });
-    await chmod(p, 0o600);
-    await this.systemctl('daemon-reload');
+    await write0600(p, renderUnit(this.ctx));
+    try {
+      await this.systemctl('daemon-reload');
+    } catch (err) {
+      // L'unité est sur le disque mais systemd ne la connaît pas : dire comment reprendre l'installation.
+      throw new Error(`${(err as Error).message}. L'unité est écrite mais non chargée : relancer « sisyphe setup --reinstall-service » une fois le problème corrigé.`);
+    }
     const warnings: string[] = [];
     const linger = await this.ctx.exec('loginctl', ['enable-linger']);
     if (linger.exitCode !== 0) {
-      const user = basename(this.ctx.homeDir);
-      warnings.push(`\`sudo loginctl enable-linger ${user}\` à lancer une fois, sinon le service s'arrête à la déconnexion`);
+      warnings.push(`\`sudo loginctl enable-linger ${userInfo().username}\` à lancer une fois, sinon le service s'arrête à la déconnexion`);
     }
     return { warnings };
   }

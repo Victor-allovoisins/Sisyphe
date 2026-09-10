@@ -1,3 +1,4 @@
+import { execa } from 'execa';
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -38,10 +39,29 @@ describe('renderPlist', () => {
     expect(p).not.toContain('<key>KeepAlive</key><true/>');
   });
 
-  it('préfixe le PATH avec le répertoire du node exécutant et redirige stdout vers /dev/null', () => {
+  it('rend env tel quel (le PATH du daemon est composé par defaultServiceContext) et redirige stdout vers /dev/null', () => {
     const p = renderPlist({ ...input, env: { PATH: '/usr/bin:/opt/homebrew/bin:/bin' } });
-    expect(p).toContain('<string>/opt/homebrew/bin:/usr/bin:/bin</string>'); // sans doublon du répertoire du node
+    expect(p).toContain('<key>PATH</key>\n      <string>/usr/bin:/opt/homebrew/bin:/bin</string>');
     expect(p).toContain('<key>StandardOutPath</key><string>/dev/null</string>');
+  });
+
+  // Le rendu n'est vraiment validé que par le programme qui le lira : `plutil` est l'analyseur de launchd.
+  it.skipIf(process.platform !== 'darwin')('est accepté par plutil, échappement compris', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sisyphe-plutil-'));
+    try {
+      const file = join(dir, `${LAUNCHD_LABEL}.plist`);
+      await writeFile(
+        file,
+        renderPlist({
+          ...input, nodePath: '/Users/v/My Tools/node', dataDir: '/Users/v/My Data', logsDir: '/Users/v/My Data/logs',
+          env: { PATH: '/Users/v/My Tools:/usr/bin', ANTHROPIC_API_KEY: 'sk-<a&b>"c"', HOME: '/Users/v' },
+        }),
+      );
+      const r = await execa('plutil', ['-lint', file], { reject: false });
+      expect(r.exitCode, `plutil -lint : ${r.stdout}${r.stderr}`).toBe(0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

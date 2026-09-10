@@ -1,8 +1,9 @@
-import { chmod, mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { EXIT_NOT_FOUND, realExec, type Exec } from './exec.js';
+import { write0600 } from './files.js';
 import type { ServiceContext, ServiceManager, ServiceStatus } from './types.js';
 
 export const LAUNCHD_LABEL = 'com.sisyphe.daemon';
@@ -27,12 +28,9 @@ export function enabledPath(dataDir: string): string {
 }
 
 export function renderPlist(i: PlistInput): string {
-  // Le PATH transmis à launchd n'hérite d'aucun shell (nvm/mise, homebrew...) : on préfixe avec le
-  // répertoire du node qui exécute sisyphe lui-même, sinon le script planté au premier lancement.
-  const nodeDir = dirname(i.nodePath);
-  const dirs = [nodeDir, ...(i.env.PATH ? i.env.PATH.split(':') : [])].filter(Boolean);
-  const env = { ...i.env, PATH: [...new Set(dirs)].join(':') };
-  const envXml = Object.entries(env)
+  // `env` est rendu tel quel : c'est `defaultServiceContext` qui compose l'environnement du daemon (dont le
+  // PATH préfixé par le répertoire du node), identique pour le plist, l'unité systemd et le spawn détaché.
+  const envXml = Object.entries(i.env)
     .map(([k, v]) => `      <key>${esc(k)}</key>\n      <string>${esc(v)}</string>`)
     .join('\n');
   // RunAtLoad false + KeepAlive/PathState : charger l'agent n'exécute rien ; c'est le fichier `enabled`
@@ -98,7 +96,8 @@ function describePrint({ state, lastExitCode }: LaunchctlPrint): string {
 
 const NOT_LOADED = 'agent launchd non chargé';
 
-function defaultUid(): number {
+/** uid de l'utilisateur courant, 501 (premier compte macOS) là où `getuid` n'existe pas. */
+export function defaultUid(): number {
   return process.getuid?.() ?? 501;
 }
 
@@ -126,10 +125,7 @@ interface LoadInput {
 async function loadLaunchAgent(plist: string, { exec, homeDir, uid, sleep }: LoadInput): Promise<void> {
   const p = plistPath(homeDir);
   await mkdir(dirname(p), { recursive: true });
-  // `writeFile(mode)` n'est appliqué qu'à la création : un fichier déjà présent (relance de setup)
-  // garde ses permissions d'origine sans le chmod explicite.
-  await writeFile(p, plist, { mode: 0o600 });
-  await chmod(p, 0o600);
+  await write0600(p, plist);
   const domain = `gui/${uid}`;
   await exec('launchctl', ['bootout', domain, p]);
   let result = await exec('launchctl', ['bootstrap', domain, p]);
@@ -200,8 +196,7 @@ export class LaunchdServiceManager implements ServiceManager {
   }
 
   async start(): Promise<void> {
-    await writeFile(this.enabled, '', { mode: 0o600 });
-    await chmod(this.enabled, 0o600);
+    await write0600(this.enabled, '');
     const r = await this.ctx.exec('launchctl', ['kickstart', this.target]);
     if (r.exitCode !== 0) {
       // Sans ce retrait, un install() ultérieur démarrerait le daemon via PathState : install() ne démarre pas.
