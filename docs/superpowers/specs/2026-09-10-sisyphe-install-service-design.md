@@ -75,7 +75,7 @@ interface ServiceManager {
 
 ### 3.4 none
 
-Aucun service installé (`install()` lève « plateforme sans service géré ») : `start()` lance `sisyphe start` détaché (`spawn(process.execPath, [<dist>/cli/index.js, 'start'], { detached: true, stdio: ['ignore', fd, fd] })`, `fd` = `<logsDir>/daemon-stdout.log` en ajout, `unref()`) puis attend jusqu'à 5 s que la socket réponde ; `stop()` = `client.send('stop')` ; `status()` = `readLock` (`running`, `pid`), `enabledAtBoot: false`.
+Aucun service installé (`install()` lève « plateforme sans service géré ») : `start()` lance `sisyphe start` détaché (`spawn(process.execPath, [<dist>/cli/index.js, 'start'], { detached: true, stdio: ['ignore', fd, fd], env: ctx.env })` : le même environnement réduit que le plist et l'unité, jamais celui du shell de l'UI ;, `fd` = `<logsDir>/daemon-stdout.log` en ajout, `unref()`) puis attend jusqu'à 5 s que la socket réponde ; `stop()` = `client.send('stop')` ; `status()` = `readLock` (`running`, `pid`), `enabledAtBoot: false`.
 
 ## 4. Commandes CLI
 
