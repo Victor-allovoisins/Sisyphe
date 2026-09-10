@@ -94,7 +94,8 @@ Aucun service installé (`install()` lève « plateforme sans service géré »)
 
 - L'overview expose `service: ServiceStatus` à la place de `launchd` ; le bandeau affiche `kind`, « au boot : oui/non », et l'état du daemon.
 - Démarrer = `ServiceManager.start()` ; Arrêter = `ServiceManager.stop()` (et non plus `stop` par la socket seule : sinon launchd ou systemd relanceraient le daemon). Le contrôleur d'actions (UI v2 §2.5) route `start` et `stop` vers le `ServiceManager`, tout le reste vers la socket. `spawn-daemon.ts` de l'UI v2 devient l'implémentation `none` du §3.4.
-- Après `start()`, l'UI attend jusqu'à 5 s que la socket réponde avant de renvoyer `ok` ; sinon `ok: false` avec la fin du log du service (`launchd.err.log`, `journalctl --user -u sisyphe -n 20`, ou `daemon-stdout.log`).
+- `Daemon.start()` ouvre la socket de contrôle **avant** `reconcile()` et `ensureLabels()` : ce prologue interroge GitHub pour chaque repo et peut durer bien plus que quelques secondes, et les commandes reçues entre-temps attendent derrière la porte de sérialisation au lieu de tomber sur une socket absente.
+- Après `start()`, l'UI attend jusqu'à 30 s que la socket réponde avant de renvoyer `ok` ; sinon `ok: false` avec la fin du log du service (`launchd.err.log`, `journalctl --user -u sisyphe -n 20`, ou `daemon-stdout.log`). Chaque `ping` a lui-même 2 s de délai, donc le budget doit rester large devant le temps de démarrage réel.
 
 ## 6. Sécurité et limites
 
@@ -111,6 +112,7 @@ Aucun service installé (`install()` lève « plateforme sans service géré »)
 - `install.sh` : `sh -n` ; exécution `--dry-run` avec `SISYPHE_INSTALL_OS=darwin` puis `ubuntu` et un `PATH` réduit (aucun outil trouvé) → la sortie liste les commandes attendues dans l'ordre ; avec tous les outils présents → seulement build et setup.
 - `ui` : dossier de données sans base → la base est créée, migrée et servie ; base v1 → migrée ; config absente → erreur claire.
 - Unité systemd : `systemd-analyze verify ~/.config/systemd/user/sisyphe.service` sur une machine Ubuntu, y compris avec un `dataDir` contenant une espace (la validité du fichier ne se vérifie pas depuis macOS).
+- Mécanisme launchd validé en réel le 2026-09-10 sur un job jetable (`RunAtLoad false` + `KeepAlive/PathState`) : bootstrap sans `enabled` ne démarre pas ; `enabled` puis `kickstart` démarre ; le job tué alors que `enabled` existe est relancé ; `enabled` supprimé puis job tué, il reste arrêté ; un bootstrap avec `enabled` présent (équivalent du boot) le redémarre seul ; sans `enabled`, il reste arrêté. La réserve de la documentation Apple sur le caractère « race-prone » de `PathState` ne se manifeste dans aucun de ces six cas.
 - Validation réelle : sur le Mac de Victor (`install.sh` sur un clone frais, `sisyphe ui`, Démarrer, reboot, le daemon revient ; Arrêter, reboot, il ne revient pas), puis sur un Ubuntu (VM ou conteneur avec systemd) dès qu'une machine est disponible.
 
 ## 8. Ordre de réalisation
