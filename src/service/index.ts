@@ -1,6 +1,6 @@
 import { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { MachineConfig } from '../config/machine.js';
 import type { DataPaths } from '../config/paths.js';
@@ -54,13 +54,15 @@ function cliScriptPath(): string {
 
 /**
  * PATH du daemon : aucun des trois lanceurs (plist, unité, spawn détaché) n'hérite d'un shell, donc le
- * répertoire du node courant passe en tête — un node de nvm/mise ou de homebrew serait sinon introuvable.
- * Process sans PATH : aucune entrée, pour que le gestionnaire applique son défaut ; un `PATH=` vide serait pire.
+ * répertoire du node courant passe en tête — un node de nvm/mise ou de homebrew serait sinon introuvable —
+ * puis le PATH du process, puis le socle : `<home>/.local/bin` (où install.sh pose gitleaks sur Ubuntu) et
+ * les répertoires système, pour que `claude`, `git`, `gitleaks` et les outils des repos restent joignables
+ * même lancé depuis un environnement dépouillé. Dédoublonné pour rester lisible.
  */
-function daemonPath(): string | undefined {
-  const current = process.env.PATH;
-  if (!current) return undefined;
-  return [...new Set([dirname(process.execPath), ...current.split(':')])].filter(Boolean).join(':');
+function daemonPath(home: string): string {
+  const current = process.env.PATH?.split(':') ?? [];
+  const dirs = [dirname(process.execPath), ...current, join(home, '.local', 'bin'), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin'];
+  return [...new Set(dirs)].filter(Boolean).join(':');
 }
 
 /**
@@ -69,10 +71,7 @@ function daemonPath(): string | undefined {
  */
 export function defaultServiceContext({ paths, client, machine }: DefaultServiceContextInput): ServiceContext {
   const home = homedir();
-  const path = daemonPath();
-  const env: Record<string, string> = {};
-  if (path) env.PATH = path;
-  env.HOME = home;
+  const env: Record<string, string> = { PATH: daemonPath(home), HOME: home };
   if (process.env.SISYPHE_HOME) env.SISYPHE_HOME = process.env.SISYPHE_HOME;
   if (machine.agentBackend === 'sdk' && process.env.ANTHROPIC_API_KEY) env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
   return {

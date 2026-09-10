@@ -10,7 +10,7 @@ import { JobStore } from '../store/jobs.js';
 import { PhaseStore } from '../store/phases.js';
 import { emptyFlags, type JobState } from '../store/types.js';
 import { AmbiguousJobPrefixError } from '../cli/resolve-job.js';
-import { createUiData, UiInputError, type LaunchdProbe } from './data.js';
+import { createUiData, UiInputError, type UiService } from './data.js';
 
 /** Pid hors de l'espace des pid macOS (max 99998) : `process.kill(pid, 0)` échoue toujours en ESRCH. */
 const DEAD_PID = 999_999;
@@ -54,9 +54,12 @@ function insertPhase(db: DatabaseSync, p: { jobId: string; name?: string; attemp
   ).run(p.jobId, p.name ?? 'implement', p.attempt ?? 1, p.costUsd ?? 0, p.startedAt ?? new Date().toISOString(), p.finishedAt ?? null);
 }
 
-const okLaunchd: LaunchdProbe = async () => ({ loaded: true, lastExitCode: 0, detail: 'state = running' });
+/** Service factice : jamais de `launchctl` ni de `systemctl` réel dans la suite. */
+const okService: UiService = {
+  status: async () => ({ kind: 'launchd', installed: true, running: true, pid: 42, enabledAtBoot: true, detail: 'state = running' }),
+};
 
-async function makeUi(opts: { launchd?: LaunchdProbe; now?: () => Date; dailyBudgetUsd?: number } = {}) {
+async function makeUi(opts: { service?: UiService; now?: () => Date; dailyBudgetUsd?: number } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'sisyphe-ui-'));
   const paths = dataPaths(root);
   const db = openDatabase(':memory:');
@@ -65,7 +68,7 @@ async function makeUi(opts: { launchd?: LaunchdProbe; now?: () => Date; dailyBud
   const machine = parseMachineConfig(
     `github:\n  appId: 1\n  installationId: 1\n  privateKeyPath: /dev/null\nrepos:\n  - acme/demo\n  - acme/other\ndataDir: ${root}\ndailyBudgetUsd: ${opts.dailyBudgetUsd ?? 20}\n`,
   );
-  const data = createUiData({ store, phases, paths, machine, launchd: opts.launchd ?? okLaunchd, now: opts.now });
+  const data = createUiData({ store, phases, paths, machine, service: opts.service ?? okService, now: opts.now });
   return { root, paths, db, store, phases, machine, data };
 }
 
@@ -149,12 +152,14 @@ describe('overview', () => {
     expect(o.active[0].phase).toBeNull();
   });
 
-  it('la sonde launchd est mise en cache : un snapshot toutes les 2 s ne lance pas un launchctl par tic', async () => {
+  it('l’état du service est mis en cache : un snapshot toutes les 2 s ne lance pas un launchctl par tic', async () => {
     let calls = 0;
     const ui = await makeUi({
-      launchd: async () => {
-        calls++;
-        return { loaded: true, lastExitCode: 0, detail: 'state = running' };
+      service: {
+        status: async () => {
+          calls++;
+          return { kind: 'launchd', installed: true, running: true, pid: 42, enabledAtBoot: true, detail: 'state = running' };
+        },
       },
     });
 
@@ -165,10 +170,11 @@ describe('overview', () => {
     expect(calls).toBe(1);
   });
 
-  it('launchd est injectable : la sonde par défaut n’est jamais appelée en test', async () => {
-    const ui = await makeUi({ launchd: async () => ({ loaded: false, lastExitCode: null, detail: 'agent launchd non chargé' }) });
+  it('l’overview publie le statut du service tel que le gestionnaire le rend', async () => {
+    const status = { kind: 'systemd' as const, installed: false, running: false, pid: null, enabledAtBoot: false, detail: 'unité absente' };
+    const ui = await makeUi({ service: { status: async () => status } });
 
-    expect((await ui.data.overview()).launchd).toEqual({ loaded: false, lastExitCode: null, detail: 'agent launchd non chargé' });
+    expect((await ui.data.overview()).service).toEqual(status);
   });
 });
 

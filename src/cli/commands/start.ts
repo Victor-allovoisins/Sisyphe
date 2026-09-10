@@ -1,13 +1,12 @@
 import { createApp } from '../../app.js';
 import { Daemon } from '../../daemon/daemon.js';
 import { acquireLock } from '../../daemon/lock.js';
-import { LAUNCHD_LABEL } from '../../service/launchd.js';
 
 export async function startCommand(opts: { once?: boolean }): Promise<void> {
   const app = await createApp({ logToFile: !opts.once });
   const log = app.deps.log;
 
-  // Un crash non rattrapé ne doit pas disparaître silencieusement (stdout perdu sous launchd) :
+  // Un crash non rattrapé ne doit pas disparaître silencieusement (stdout perdu sous le service) :
   // on le journalise en fatal via le logger de l'app avant de sortir.
   process.on('unhandledRejection', (reason) => {
     log.fatal({ err: reason }, 'unhandledRejection');
@@ -22,11 +21,11 @@ export async function startCommand(opts: { once?: boolean }): Promise<void> {
   try {
     release = await acquireLock(app.paths);
   } catch (err) {
-    // Le cas le plus probable : l'agent launchd tourne déjà en tâche de fond (KeepAlive) et on vient de
-    // relancer `sisyphe start` à la main par-dessus — indiquer comment l'arrêter plutôt que de laisser
-    // le message brut du verrou.
+    // Le cas le plus probable : le service tourne déjà en tâche de fond et on vient de relancer
+    // `sisyphe start` à la main par-dessus — indiquer comment l'arrêter plutôt que de laisser le
+    // message brut du verrou.
     if (err instanceof Error && err.message.includes('tourne déjà')) {
-      throw new Error(`${err.message} Arrêter l'agent launchd d'abord : launchctl bootout gui/$UID/${LAUNCHD_LABEL}.`);
+      throw new Error(`${err.message} Arrêter le service d'abord : \`sisyphe service stop\`.`);
     }
     throw err;
   }

@@ -1,4 +1,5 @@
-import { dirname } from 'node:path';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dataPaths } from '../config/paths.js';
 import type { Exec, ExecResult } from './exec.js';
@@ -63,6 +64,8 @@ describe('createServiceManager', () => {
 describe('defaultServiceContext', () => {
   const paths = dataPaths('/home/v/.sisyphe');
   const nodeDir = dirname(process.execPath);
+  /** Socle ajouté en queue du PATH du daemon, après `<home>/.local/bin`. */
+  const STANDARD_DIRS = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin'];
 
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -85,14 +88,20 @@ describe('defaultServiceContext', () => {
     vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
     const ctx = defaultServiceContext({ paths, client, machine: { agentBackend: 'cli' } });
     // Le répertoire du node courant en tête : aucun des lanceurs n'hérite du PATH d'un shell.
-    expect(ctx.env).toEqual({ PATH: `${nodeDir}:/sisyphe-test/a:/sisyphe-test/b`, HOME: ctx.homeDir });
+    expect(ctx.env).toEqual({
+      PATH: `${nodeDir}:/sisyphe-test/a:/sisyphe-test/b:${join(homedir(), '.local', 'bin')}:${STANDARD_DIRS.join(':')}`,
+      HOME: ctx.homeDir,
+    });
   });
 
-  it('env : le répertoire du node déjà présent dans le PATH n’y est pas dupliqué', () => {
-    vi.stubEnv('PATH', `/sisyphe-test/a:${nodeDir}:/sisyphe-test/b`);
+  it('env : le PATH garde le node en tête, ~/.local/bin et le socle système, sans doublon', () => {
+    vi.stubEnv('PATH', `/sisyphe-test/a:${nodeDir}:/usr/bin:/sisyphe-test/b`);
     const { PATH } = defaultServiceContext({ paths, client, machine: { agentBackend: 'cli' } }).env;
-    expect(PATH).toBe(`${nodeDir}:/sisyphe-test/a:/sisyphe-test/b`);
-    expect(PATH!.split(':').filter((d) => d === nodeDir)).toHaveLength(1);
+    const dirs = PATH!.split(':');
+    expect(dirs[0]).toBe(nodeDir);
+    expect(dirs).toContain(join(homedir(), '.local', 'bin'));
+    for (const d of STANDARD_DIRS) expect(dirs).toContain(d);
+    expect(new Set(dirs).size).toBe(dirs.length); // ni le node ni /usr/bin, déjà présents, ne sont répétés
   });
 
   it('env : SISYPHE_HOME reprise du process quand elle est définie', () => {
@@ -109,8 +118,10 @@ describe('defaultServiceContext', () => {
     expect(defaultServiceContext({ paths, client, machine: { agentBackend: 'sdk' } }).env).not.toHaveProperty('ANTHROPIC_API_KEY');
   });
 
-  it('env : PATH absent du process → aucune entrée PATH (le gestionnaire applique son défaut, un PATH vide serait pire)', () => {
+  it('env : PATH absent du process → le node et le socle suffisent, jamais un PATH vide', () => {
     vi.stubEnv('PATH', undefined);
-    expect(defaultServiceContext({ paths, client, machine: { agentBackend: 'cli' } }).env).not.toHaveProperty('PATH');
+    expect(defaultServiceContext({ paths, client, machine: { agentBackend: 'cli' } }).env.PATH).toBe(
+      `${nodeDir}:${join(homedir(), '.local', 'bin')}:${STANDARD_DIRS.join(':')}`,
+    );
   });
 });

@@ -150,6 +150,28 @@ describe('socket de contrôle : cycle de vie', () => {
     expect(JSON.parse(answer)).toEqual({ ok: false, error: 'lent : j1' });
   });
 
+  it('la socket est ouverte avant le prologue : ping répond pendant une réconciliation encore en cours', async () => {
+    const h = await makeHarness({ steps: [], issues: [] });
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // Le prologue interroge GitHub repo par repo : ici il ne rend jamais la main avant qu'on le libère.
+    h.source.ensureLabels = () => blocked;
+    const daemon = new Daemon(h.deps, QUIET);
+    const started = daemon.start();
+    cleanups.push(async () => {
+      release(); // sans quoi start() reste bloqué dans le prologue et n'observerait jamais l'arrêt
+      await daemon.stop();
+      await started;
+    });
+
+    const client = new ControlClient(h.paths.controlSocketPath);
+    await waitFor(() => client.isReachable());
+    expect((await client.send('ping')).ok).toBe(true);
+    expect(listCandidatesCalls(h)).toBe(0); // aucun tick encore : on a bien répondu depuis le prologue
+  });
+
   it('`control: false` : start() n’ouvre rien', async () => {
     const h = await makeHarness({ steps: [], issues: [] });
     const daemon = new Daemon(h.deps, { ...QUIET, control: false });

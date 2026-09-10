@@ -322,10 +322,11 @@ export const PAGE_HTML = `<!doctype html>
     clear(box);
     box.appendChild(stat('Daemon', o.daemon.running ? 'actif' : 'arrêté', o.daemon.running ? 'ok' : 'ko',
       o.daemon.pid ? 'pid ' + o.daemon.pid : 'aucun verrou'));
-    var l = o.launchd || { loaded: null, detail: '' };
-    var launchdValue = l.loaded === null ? 'n/a' : (l.loaded ? 'chargé' : 'absent');
-    var launchdTone = l.loaded === null ? '' : (l.loaded && l.lastExitCode !== 0 && l.lastExitCode !== null ? 'warn' : (l.loaded ? 'ok' : 'warn'));
-    box.appendChild(stat('launchd', launchdValue, launchdTone, l.detail));
+    var svc = o.service || { kind: 'none', installed: false, running: false, enabledAtBoot: false, detail: '' };
+    var serviceValue = svc.kind === 'none' ? 'aucun' : (svc.installed ? svc.kind : svc.kind + ' absent');
+    var serviceTone = svc.kind === 'none' ? '' : (svc.installed ? (svc.running ? 'ok' : 'warn') : 'warn');
+    var serviceDetail = 'au boot : ' + (svc.enabledAtBoot ? 'oui' : 'non') + (svc.detail ? ' · ' + svc.detail : '');
+    box.appendChild(stat('Service', serviceValue, serviceTone, serviceDetail));
     box.appendChild(stat('Backend', o.backend, '', o.repos.join(' · ')));
     box.appendChild(stat('Actifs', o.counts.active, o.counts.active ? 'ok' : '', 'dont ' + o.counts.queued + ' en file'));
     box.appendChild(stat('Terminés', o.counts.done, o.counts.done ? 'ok' : '', ''));

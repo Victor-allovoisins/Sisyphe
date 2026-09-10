@@ -2,7 +2,7 @@ import { mkdir, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { EXIT_NOT_FOUND, realExec, type Exec } from './exec.js';
+import { EXIT_NOT_FOUND, type Exec } from './exec.js';
 import { write0600 } from './files.js';
 import type { ServiceContext, ServiceManager, ServiceStatus } from './types.js';
 
@@ -67,14 +67,6 @@ ${envXml}
 `;
 }
 
-export interface LaunchdStatus {
-  /** null : plateforme sans launchd (l'agent n'existe que sur macOS). */
-  loaded: boolean | null;
-  /** null : jamais lancé depuis le chargement — ne pas inventer un 0, ce serait un faux succès. */
-  lastExitCode: number | null;
-  detail: string;
-}
-
 export interface LaunchctlPrint {
   state: string;
   lastExitCode: number | null;
@@ -99,15 +91,6 @@ const NOT_LOADED = 'agent launchd non chargé';
 /** uid de l'utilisateur courant, 501 (premier compte macOS) là où `getuid` n'existe pas. */
 export function defaultUid(): number {
   return process.getuid?.() ?? 501;
-}
-
-/** État de l'agent launchd de l'utilisateur courant. Ne lève jamais : l'UI affiche un avertissement, pas une erreur. */
-export async function probeLaunchd(): Promise<LaunchdStatus> {
-  if (process.platform !== 'darwin') return { loaded: null, lastExitCode: null, detail: 'launchd : macOS uniquement' };
-  const r = await realExec('launchctl', ['print', `gui/${defaultUid()}/${LAUNCHD_LABEL}`]);
-  if (r.exitCode !== 0) return { loaded: false, lastExitCode: null, detail: NOT_LOADED };
-  const parsed = parseLaunchctlPrint(r.stdout);
-  return { loaded: true, lastExitCode: parsed.lastExitCode, detail: describePrint(parsed) };
 }
 
 export function plistPath(homeDir: string = homedir()): string {
@@ -139,11 +122,6 @@ async function loadLaunchAgent(plist: string, { exec, homeDir, uid, sleep }: Loa
       `Impossible de charger l'agent launchd : ${detail}. Essayer « launchctl bootout gui/$UID/${LAUNCHD_LABEL} » puis relancer sisyphe setup.`,
     );
   }
-}
-
-/** Écrit le plist et (re)charge l'agent dans le domaine de l'utilisateur courant. */
-export async function installLaunchAgent(plist: string): Promise<void> {
-  await loadLaunchAgent(plist, { exec: realExec, homeDir: homedir(), uid: defaultUid(), sleep: (ms) => delay(ms) });
 }
 
 async function exists(path: string): Promise<boolean> {

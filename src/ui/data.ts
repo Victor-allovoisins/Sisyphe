@@ -1,7 +1,7 @@
 import { open, readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { summarizeTranscript } from '../cli/format.js';
-import { probeLaunchd, type LaunchdStatus } from '../service/launchd.js';
+import type { ServiceStatus } from '../service/index.js';
 import { AmbiguousJobPrefixError, findJob } from '../cli/resolve-job.js';
 import type { AgentBackend, MachineConfig } from '../config/machine.js';
 import { jobDir, type DataPaths } from '../config/paths.js';
@@ -28,8 +28,8 @@ const MAX_FILLED_DAYS = 400;
 const FEED_SOURCE_LINES = 400;
 /** Le fil ne lit que la fin du transcript : un transcript en cours grossit sans borne et le snapshot tombe toutes les 2 s. */
 const FEED_TAIL_BYTES = 256 * 1024;
-/** L'état launchd change rarement ; le snapshot SSE, lui, tombe toutes les 2 s : sans ce cache, un `launchctl print` par tic. */
-const LAUNCHD_TTL_MS = 30_000;
+/** L'état du service change rarement ; le snapshot SSE, lui, tombe toutes les 2 s : sans ce cache, un `launchctl print` par tic. */
+const SERVICE_TTL_MS = 5_000;
 const TRANSCRIPT_RE = /^transcript-([a-z]+)-(\d+)\.jsonl$/;
 const VERIFY_RE = /^(setup\.log|verify-.+\.log)$/;
 
@@ -41,15 +41,18 @@ export class UiInputError extends Error {
   }
 }
 
-export type LaunchdProbe = () => Promise<LaunchdStatus>;
+/** Le sous-ensemble du ServiceManager dont l'UI a besoin : un test passe un faux, jamais launchd ni systemd. */
+export interface UiService {
+  status(): Promise<ServiceStatus>;
+}
 
 export interface UiDataDeps {
   store: JobStore;
   phases: PhaseStore;
   paths: DataPaths;
   machine: MachineConfig;
-  /** Injectée en test : jamais de `launchctl` réel dans la suite. */
-  launchd?: LaunchdProbe;
+  /** Gestionnaire de service de la plateforme ; son `status()` est mémorisé quelques secondes. */
+  service: UiService;
   now?: () => Date;
 }
 
@@ -79,7 +82,7 @@ export interface ActiveJob extends Job {
 export interface Overview {
   now: string;
   daemon: { running: boolean; pid: number | null };
-  launchd: LaunchdStatus;
+  service: ServiceStatus;
   budget: { spentTodayUsd: number; dailyBudgetUsd: number; ratio: number };
   backend: AgentBackend;
   repos: string[];
@@ -223,13 +226,12 @@ async function newestTranscript(dir: string, files: string[]): Promise<{ file: s
 export function createUiData(deps: UiDataDeps): UiData {
   const { store, phases, paths, machine } = deps;
   const now = deps.now ?? (() => new Date());
-  const probe = deps.launchd ?? probeLaunchd;
-  let cachedLaunchd: { at: number; status: LaunchdStatus } | null = null;
+  let cachedService: { at: number; status: ServiceStatus } | null = null;
 
-  async function launchd(): Promise<LaunchdStatus> {
+  async function serviceStatus(): Promise<ServiceStatus> {
     const at = Date.now();
-    if (!cachedLaunchd || at - cachedLaunchd.at > LAUNCHD_TTL_MS) cachedLaunchd = { at, status: await probe() };
-    return cachedLaunchd.status;
+    if (!cachedService || at - cachedService.at > SERVICE_TTL_MS) cachedService = { at, status: await deps.service.status() };
+    return cachedService.status;
   }
 
   async function feedFor(jobId: string): Promise<string[]> {
@@ -262,7 +264,7 @@ export function createUiData(deps: UiDataDeps): UiData {
     return {
       now: at.toISOString(),
       daemon: { running: lock?.alive ?? false, pid: lock?.pid ?? null },
-      launchd: await launchd(),
+      service: await serviceStatus(),
       budget: {
         spentTodayUsd,
         dailyBudgetUsd: machine.dailyBudgetUsd,

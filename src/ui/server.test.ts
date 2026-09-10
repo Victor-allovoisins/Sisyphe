@@ -65,7 +65,7 @@ async function startTestServer(port = 0): Promise<{ server: UiServer; db: Databa
     phases: new PhaseStore(db),
     paths,
     machine,
-    launchd: async () => ({ loaded: true, lastExitCode: 0, detail: 'state = running' }),
+    service: { status: async () => ({ kind: 'launchd' as const, installed: true, running: true, pid: 42, enabledAtBoot: true, detail: 'state = running' }) },
   });
   const server = await startUiServer({ data, page: PAGE, port, intervalMs: 50 });
   servers.push(server);

@@ -1,12 +1,14 @@
 import { execa } from 'execa';
 import { statfs } from 'node:fs/promises';
+import { userInfo } from 'node:os';
 import { createApp, machineConfigPath, type App } from '../../app.js';
 import { loadMachineConfig, MachineConfigError, type MachineConfig } from '../../config/machine.js';
-import type { DataPaths } from '../../config/paths.js';
+import { dataPaths, type DataPaths } from '../../config/paths.js';
 import { REPO_CONFIG_FILENAME, parseRepoConfig } from '../../config/repo.js';
 import { parseRepo, type RepoRef } from '../../github/source.js';
-import { firstWord, runChecks, which, type Check } from '../checks.js';
-import { LAUNCHD_LABEL, parseLaunchctlPrint } from '../../service/launchd.js';
+import type { ServiceStatus } from '../../service/index.js';
+import { firstWord, runChecks, which, whichOrHint, withHint, type Check } from '../checks.js';
+import { serviceManagerFor } from './service.js';
 
 const BYTES_PER_GB = 1024 ** 3;
 const MIN_FREE_DISK_GB = 10;
@@ -17,13 +19,22 @@ export interface DoctorGitHub {
   getFileContent(repo: RepoRef, path: string, ref?: string): Promise<string | null>;
 }
 
+/** Le sous-ensemble du ServiceManager dont doctor a besoin : un test passe un faux, jamais launchd ni systemd. */
+export interface DoctorService {
+  status(): Promise<ServiceStatus>;
+}
+
 export interface BuildChecksInput {
   machine?: MachineConfig;
   github?: DoctorGitHub;
   env: NodeJS.ProcessEnv;
   paths?: DataPaths;
+  /** Absent (config illisible) : aucun check « service ». */
+  service?: DoctorService;
   /** Injectable pour les tests ; par défaut process.versions.node. */
   nodeVersion?: string;
+  /** Décide des consignes d'installation, du check caffeinate (macOS) et du check linger (Linux). */
+  platform?: NodeJS.Platform;
 }
 
 async function checkApiKeyLive(key: string): Promise<string | { warn: true; message: string }> {
@@ -60,8 +71,8 @@ export function parseAuthStatus(stdout: string): string {
   return typeof status.authMethod === 'string' ? `connecté (${status.authMethod})` : 'connecté';
 }
 
-async function checkClaudeCli(): Promise<string> {
-  await which('claude');
+async function checkClaudeCli(platform: NodeJS.Platform): Promise<string> {
+  await whichOrHint('claude', platform);
   const r = await execa('claude', ['--version'], { reject: false });
   if (r.exitCode !== 0) throw new Error(`\`claude --version\` a échoué (code ${r.exitCode})`);
   return r.stdout.trim();
@@ -80,32 +91,45 @@ async function checkDiskSpace(root: string): Promise<string> {
   return `${freeGb.toFixed(1)} Go libres`;
 }
 
-async function checkLaunchdAgent(): Promise<string> {
-  const uid = process.getuid?.() ?? 501;
-  const r = await execa('launchctl', ['print', `gui/${uid}/${LAUNCHD_LABEL}`], { reject: false });
-  if (r.exitCode !== 0) throw new Error('agent launchd non chargé');
-  const { state, lastExitCode } = parseLaunchctlPrint(r.stdout);
-  // Absent (jamais lancé depuis le chargement) : ne pas inventer un code de sortie 0, ce serait un faux succès.
-  if (lastExitCode === null) return `state = ${state}`;
-  if (lastExitCode !== 0) throw new Error(`state = ${state}, last exit code = ${lastExitCode}`);
-  return `state = ${state}, last exit code = ${lastExitCode}`;
+/** État du service. Jamais bloquant : un daemon arrêté ou un service absent est un avertissement, pas une panne. */
+async function checkService(service: DoctorService): Promise<string | { warn: true; message: string }> {
+  const s = await service.status();
+  // `none` : rien n'est installable ici, inutile de conseiller une réinstallation.
+  if (s.kind === 'none') return { warn: true, message: `aucun service géré sur cette plateforme (${s.detail})` };
+  if (!s.installed) throw new Error(`${s.kind} : non installé — lancer \`sisyphe setup --reinstall-service\``);
+  const boot = s.enabledAtBoot ? 'oui' : 'non';
+  return `${s.kind}, ${s.running ? `actif (pid ${s.pid ?? '?'})` : 'arrêté'}, au boot : ${boot} · ${s.detail}`;
+}
+
+/**
+ * Sans linger, systemd tue les services utilisateur à la déconnexion : le daemon ne survivrait ni à un
+ * `exit` de session SSH ni à un redémarrage. Avertissement seulement, l'installation reste utilisable en session.
+ */
+async function checkLinger(): Promise<string> {
+  const user = userInfo().username;
+  const r = await execa('loginctl', ['show-user', user, '-p', 'Linger'], { reject: false });
+  if (r.exitCode !== 0) throw new Error(`\`loginctl show-user ${user} -p Linger\` a échoué : linger inconnu`);
+  if (!/^Linger=yes$/m.test(r.stdout.trim())) {
+    throw new Error(`désactivé : le service s'arrête à la déconnexion — \`sudo loginctl enable-linger ${user}\``);
+  }
+  return 'activé';
 }
 
 /** Construit la liste des checks, sans en exécuter aucun (fonction pure côté construction). */
 export function buildChecks(input: BuildChecksInput): Check[] {
+  const platform = input.platform ?? process.platform;
   const checks: Check[] = [
     {
       name: 'node',
       run: async () => {
         const version = input.nodeVersion ?? process.versions.node;
         const major = Number(version.split('.')[0]);
-        if (major < 24) throw new Error(`Node ${version}, il faut 24 ou plus`);
+        if (major < 24) withHint(`Node ${version}, il faut 24 ou plus`, 'node', platform);
         return version;
       },
     },
-    { name: 'git', run: () => which('git') },
-    { name: 'gitleaks', run: () => which('gitleaks') },
-    { name: 'caffeinate', warn: true, run: () => which('caffeinate') },
+    { name: 'git', run: () => whichOrHint('git', platform) },
+    { name: 'gitleaks', run: () => whichOrHint('gitleaks', platform) },
     {
       name: 'config machine',
       run: async () => {
@@ -115,10 +139,13 @@ export function buildChecks(input: BuildChecksInput): Check[] {
     },
   ];
 
+  // `caffeinate` est un outil macOS : ailleurs, le daemon n'a aucune veille à empêcher.
+  if (platform === 'darwin') checks.push({ name: 'caffeinate', warn: true, run: () => which('caffeinate') });
+
   // Backend `cli` : c'est la CLI locale et sa session claude.ai qui remplacent la clé API.
   // Config absente ou illisible (machine indéfinie) : on reste sur le défaut du schéma, `sdk`.
   if (input.machine?.agentBackend === 'cli') {
-    checks.push({ name: 'claude (CLI)', run: checkClaudeCli });
+    checks.push({ name: 'claude (CLI)', run: () => checkClaudeCli(platform) });
     checks.push({ name: 'claude auth status', run: checkClaudeAuth });
   } else {
     checks.push({
@@ -138,9 +165,9 @@ export function buildChecks(input: BuildChecksInput): Check[] {
     checks.push({ name: 'espace disque', warn: true, run: () => checkDiskSpace(paths.root) });
   }
 
-  if (process.platform === 'darwin') {
-    checks.push({ name: 'agent launchd', warn: true, run: checkLaunchdAgent });
-  }
+  const { service } = input;
+  if (service) checks.push({ name: 'service', warn: true, run: () => checkService(service) });
+  if (platform === 'linux') checks.push({ name: 'linger', warn: true, run: checkLinger });
 
   if (input.machine && input.github) {
     const machine = input.machine;
@@ -185,7 +212,10 @@ export async function doctorCommand(): Promise<void> {
   // L'init peut échouer après la config (client GitHub, par exemple) : on relit la config seule pour
   // savoir quel backend agent vérifier, sinon doctor retomberait à tort sur les checks de clé API.
   const machine = app?.machine ?? (await loadMachineConfig(machineConfigPath()).catch(() => undefined));
-  const checks = buildChecks({ machine, github: app?.github, env: process.env, paths: app?.paths });
+  // Sans config, ni racine de données ni gestionnaire de service : le check « config machine » dit déjà tout.
+  const paths = app?.paths ?? (machine ? dataPaths(machine.dataDir) : undefined);
+  const service = machine && paths ? await serviceManagerFor(paths, machine) : undefined;
+  const checks = buildChecks({ machine, github: app?.github, env: process.env, paths: app?.paths, service });
 
   // La config invalide est déjà signalée par le check « config machine » : ne pas la répéter ici.
   if (initError && !(initError instanceof MachineConfigError)) {

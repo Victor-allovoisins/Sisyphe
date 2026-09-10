@@ -2,7 +2,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { stringify } from 'yaml';
 import { parseMachineConfig, type MachineConfig } from '../../config/machine.js';
 import { REPO_CONFIG_FILENAME } from '../../config/repo.js';
-import { buildChecks, parseAuthStatus, type DoctorGitHub } from './doctor.js';
+import type { ServiceStatus } from '../../service/index.js';
+import { buildChecks, parseAuthStatus, type DoctorGitHub, type DoctorService } from './doctor.js';
+
+const installedStatus: ServiceStatus = {
+  kind: 'launchd', installed: true, running: true, pid: 321, enabledAtBoot: true, detail: 'state = running',
+};
+
+/** Service factice : la suite n'appelle jamais `launchctl` ni `systemctl`. */
+function fakeService(status: Partial<ServiceStatus> = {}): DoctorService {
+  return { status: async () => ({ ...installedStatus, ...status }) };
+}
 
 function machineWith(repos: string[], extra: Record<string, unknown> = {}): MachineConfig {
   return parseMachineConfig(
@@ -33,11 +43,25 @@ async function run(checks: ReturnType<typeof buildChecks>, name: string): Promis
 
 describe('buildChecks — composition de la liste', () => {
   it('inclut toujours le socle, jamais les checks dépendants de github/machine sans les deux', () => {
-    const names = buildChecks({ env: {} }).map((c) => c.name);
+    const names = buildChecks({ env: {}, platform: 'darwin' }).map((c) => c.name);
     expect(names).toEqual(expect.arrayContaining(['node', 'git', 'gitleaks', 'caffeinate', 'ANTHROPIC_API_KEY', 'config machine']));
     expect(names).not.toContain('GitHub App');
     expect(names).not.toContain('clé API (appel minimal)');
     expect(names).not.toContain('espace disque');
+  });
+
+  it('caffeinate sur macOS seulement, linger sur Linux seulement', () => {
+    const darwin = buildChecks({ env: {}, platform: 'darwin' }).map((c) => c.name);
+    const linux = buildChecks({ env: {}, platform: 'linux' }).map((c) => c.name);
+    expect(darwin).toContain('caffeinate');
+    expect(darwin).not.toContain('linger');
+    expect(linux).toContain('linger');
+    expect(linux).not.toContain('caffeinate');
+  });
+
+  it('le check « service » n’existe que si un gestionnaire est fourni', () => {
+    expect(buildChecks({ env: {}, platform: 'darwin' }).map((c) => c.name)).not.toContain('service');
+    expect(buildChecks({ env: {}, platform: 'darwin', service: fakeService() }).map((c) => c.name)).toContain('service');
   });
 
   it('ajoute la sonde de clé API seulement si ANTHROPIC_API_KEY est présente', () => {
@@ -147,6 +171,39 @@ describe('buildChecks — GitHub App', () => {
 });
 
 // Le vrai binaire `claude` n'est jamais lancé par les tests : seule la lecture de sa sortie est exercée.
+describe('check « service »', () => {
+  const checkOf = (service: DoctorService) => {
+    const c = buildChecks({ env: {}, platform: 'darwin', service }).find((x) => x.name === 'service');
+    if (!c) throw new Error('check absent');
+    return c;
+  };
+
+  it('installé : ok, avec l’état du daemon et le redémarrage au boot', async () => {
+    await expect(checkOf(fakeService()).run()).resolves.toBe('launchd, actif (pid 321), au boot : oui · state = running');
+    await expect(checkOf(fakeService({ running: false, pid: null, enabledAtBoot: false })).run()).resolves.toContain('arrêté, au boot : non');
+  });
+
+  it('non installé : avertissement citant sisyphe setup --reinstall-service, jamais un échec bloquant', async () => {
+    const check = checkOf(fakeService({ installed: false, running: false, pid: null, enabledAtBoot: false, detail: 'agent launchd non chargé' }));
+    expect(check.warn).toBe(true);
+    await expect(check.run()).rejects.toThrow('sisyphe setup --reinstall-service');
+  });
+
+  it('plateforme sans service géré : avertissement sans conseil de réinstallation', async () => {
+    const result = await checkOf(fakeService({ kind: 'none', installed: false, detail: 'daemon arrêté' })).run();
+    expect(result).toEqual({ warn: true, message: 'aucun service géré sur cette plateforme (daemon arrêté)' });
+  });
+});
+
+describe('consignes d’installation', () => {
+  it('un prérequis en échec donne la commande de l’OS', async () => {
+    const tooOld = (platform: NodeJS.Platform) => run(buildChecks({ env: {}, platform, nodeVersion: '22.9.0' }), 'node');
+    expect(await tooOld('darwin')).toEqual({ ok: false, message: 'Node 22.9.0, il faut 24 ou plus — installer : brew install node' });
+    expect((await tooOld('linux') as { message: string }).message).toContain('apt-get install -y nodejs');
+    expect((await tooOld('freebsd') as { message: string }).message).toBe('Node 22.9.0, il faut 24 ou plus'); // rien de sûr à conseiller
+  });
+});
+
 describe('parseAuthStatus', () => {
   it('accepte loggedIn true et rapporte la méthode', () => {
     expect(parseAuthStatus(JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', email: 'x@y.z' }))).toBe('connecté (claude.ai)');
@@ -202,5 +259,5 @@ describe('buildChecks — clé API (appel minimal), fetch simulé (jamais de ré
 });
 
 // Volontairement non exercés (au-delà de la sonde de clé API ci-dessus, mockée) : lecture du vrai
-// config.yml (config machine), et `launchctl print` / `statfs` réels (agent launchd, espace disque).
+// config.yml (config machine), `statfs` réel (espace disque) et `loginctl` (linger, Linux seulement).
 // Ces checks sont couverts par leur seule présence dans buildChecks ; leur .run() n'est jamais invoqué ici.

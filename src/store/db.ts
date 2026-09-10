@@ -84,6 +84,9 @@ const MIGRATIONS: readonly string[] = [
   `,
 ];
 
+/** Version de schéma attendue : `PRAGMA user_version` d'une base à jour. L'UI s'en sert pour savoir s'il faut migrer. */
+export const SCHEMA_VERSION = MIGRATIONS.length;
+
 /**
  * Ouvre (ou crée) la base et applique les migrations manquantes, chacune dans une transaction.
  * L'index unique `jobs_active_issue` rend structurel l'invariant « un seul job actif par issue ».

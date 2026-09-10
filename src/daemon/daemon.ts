@@ -72,10 +72,11 @@ export class Daemon {
   }
 
   async start(): Promise<void> {
-    await reconcile(this.d);
-    await this.ensureLabels();
-    // stop() a pu survenir pendant ce prologue : ne pas poser de timers ni attendre indéfiniment.
+    // stop() avant même le premier await : ne rien ouvrir.
     if (this.stopping) return;
+    // La socket d'abord : le prologue (réconciliation, labels) interroge GitHub repo par repo et peut
+    // durer des dizaines de secondes. Sans socket ouverte, l'UI conclurait à tort à un échec de démarrage ;
+    // les commandes reçues entre-temps attendent derrière la porte de sérialisation.
     if (this.opts.control !== false) {
       this.control = await startControlServer({ path: this.d.paths.controlSocketPath, daemon: this, actions: this.d.actions, log: this.d.log });
       // stop() pendant l'ouverture n'a rien trouvé à fermer : c'est à nous de le faire.
@@ -83,6 +84,14 @@ export class Daemon {
         await this.closeControl();
         return;
       }
+    }
+    await reconcile(this.d);
+    await this.ensureLabels();
+    // stop() a pu survenir pendant ce prologue : ne pas poser de timers ni attendre indéfiniment.
+    // closeControl() est idempotent : doStop() a déjà pu fermer la socket de son côté.
+    if (this.stopping) {
+      await this.closeControl();
+      return;
     }
     const iv = this.opts.intervals ?? {};
     const pollMs = iv.pollMs ?? this.d.machine.pollIntervalSeconds * 1000;

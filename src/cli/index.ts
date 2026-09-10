@@ -4,6 +4,7 @@ import { cancelCommand } from './commands/cancel.js';
 import { doctorCommand } from './commands/doctor.js';
 import { logsCommand } from './commands/logs.js';
 import { reportCommand } from './commands/report.js';
+import { serviceCommand } from './commands/service.js';
 import { setupCommand } from './commands/setup.js';
 import { startCommand } from './commands/start.js';
 import { statusCommand } from './commands/status.js';
@@ -36,14 +37,23 @@ program
   .command('ui')
   .description('Interface web locale en lecture seule (127.0.0.1)')
   .option('--port <n>', 'port d’écoute', String(DEFAULT_UI_PORT))
-  .action(uiCommand);
+  .action((opts: { port?: string }) => uiCommand(opts));
 program
   .command('cancel')
   .description("Annule un job actif : via le daemon s'il tourne, sinon en retirant le label trigger")
   .argument('<jobId>')
   .action(cancelCommand);
 program.command('doctor').description("Vérifie l'installation").action(doctorCommand);
-program.command('setup').description('Configuration interactive et installation launchd').action(setupCommand);
+program
+  .command('setup')
+  .description('Configuration interactive et installation du service')
+  .option('--reinstall-service', 'saute les questions : réinstalle seulement le service depuis la config existante')
+  .action((opts: { reinstallService?: boolean }) => setupCommand(opts));
+program
+  .command('service')
+  .description('Gère le service du daemon (launchd, systemd ou daemon détaché)')
+  .argument('<action>', 'status | start | stop | uninstall')
+  .action((action: string) => serviceCommand(action));
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   console.error(err instanceof Error ? err.message : String(err));

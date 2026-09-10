@@ -1,11 +1,14 @@
-import { loadMachineConfig } from '../../config/machine.js';
-import { dataPaths, machineConfigPath } from '../../config/paths.js';
-import { openDatabaseReadOnly } from '../../store/db.js';
+import { existsSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
+import { MachineConfigError, loadMachineConfig, type MachineConfig } from '../../config/machine.js';
+import { dataPaths, ensureDataDirs, machineConfigPath } from '../../config/paths.js';
+import { SCHEMA_VERSION, openDatabase, openDatabaseReadOnly } from '../../store/db.js';
 import { JobStore } from '../../store/jobs.js';
 import { PhaseStore } from '../../store/phases.js';
 import { createUiData } from '../../ui/data.js';
 import { PAGE_HTML } from '../../ui/page.js';
-import { DEFAULT_UI_PORT, startUiServer } from '../../ui/server.js';
+import { DEFAULT_UI_PORT, startUiServer, type UiServer } from '../../ui/server.js';
+import { serviceManagerFor } from './service.js';
 
 export function parsePort(raw: string | undefined): number {
   if (raw === undefined) return DEFAULT_UI_PORT;
@@ -14,17 +17,53 @@ export function parsePort(raw: string | undefined): number {
   return port;
 }
 
+/** Config machine, avec la consigne d'installation quand elle manque : l'UI est souvent le premier contact. */
+export async function loadUiConfig(): Promise<MachineConfig> {
+  try {
+    return await loadMachineConfig(machineConfigPath());
+  } catch (err) {
+    if (err instanceof MachineConfigError && err.kind === 'missing') {
+      throw new Error(`Config machine absente : ${machineConfigPath()}. Lancer install.sh ou \`sisyphe setup\`.`);
+    }
+    throw err;
+  }
+}
+
+function schemaVersion(dbPath: string): number {
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    return (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
+  } finally {
+    db.close();
+  }
+}
+
 /**
- * Interface web locale, strictement en lecture : base ouverte en `readOnly`, aucun répertoire créé
- * (surtout pas `ensureDataDirs`), pas de `createApp` — ni client GitHub ni agent, donc aucune clé requise.
+ * Base prête à être lue par l'UI : absente ou en retard sur le schéma, elle est ouverte une fois en
+ * écriture (création et migrations) puis refermée. L'UI n'exige donc plus qu'un `sisyphe start` soit
+ * passé avant elle ; la connexion rendue reste strictement en lecture seule.
  */
-export async function uiCommand(opts: { port?: string }): Promise<void> {
-  const machine = await loadMachineConfig(machineConfigPath());
+export function openUiDatabase(dbPath: string): DatabaseSync {
+  if (!existsSync(dbPath) || schemaVersion(dbPath) < SCHEMA_VERSION) openDatabase(dbPath).close();
+  return openDatabaseReadOnly(dbPath);
+}
+
+export interface RunningUi {
+  server: UiServer;
+  /** Ferme le serveur puis la connexion SQLite, même si la fermeture du serveur échoue. */
+  close(): Promise<void>;
+}
+
+/** Monte l'UI (config, base, gestionnaire de service, serveur) sans bloquer : `uiCommand` attend le signal. */
+export async function startUi(opts: { port?: string }): Promise<RunningUi> {
+  const machine = await loadUiConfig();
   const paths = dataPaths(machine.dataDir);
   const port = parsePort(opts.port);
-  const db = openDatabaseReadOnly(paths.dbPath);
-  const data = createUiData({ store: new JobStore(db), phases: new PhaseStore(db), paths, machine });
-  let server: Awaited<ReturnType<typeof startUiServer>>;
+  await ensureDataDirs(paths);
+  const db = openUiDatabase(paths.dbPath);
+  const service = await serviceManagerFor(paths, machine);
+  const data = createUiData({ store: new JobStore(db), phases: new PhaseStore(db), paths, machine, service });
+  let server: UiServer;
   try {
     server = await startUiServer({ data, page: PAGE_HTML, port });
   } catch (err) {
@@ -32,15 +71,24 @@ export async function uiCommand(opts: { port?: string }): Promise<void> {
     db.close();
     throw err;
   }
-  console.log(`Sisyphe UI (lecture seule) : http://${server.host}:${server.port}`);
+  return {
+    server,
+    close: () =>
+      server.close().finally(() => {
+        db.close();
+      }),
+  };
+}
+
+/** Interface web locale, en lecture seule : pas de `createApp` — ni client GitHub ni agent, donc aucune clé requise. */
+export async function uiCommand(opts: { port?: string }): Promise<void> {
+  const ui = await startUi(opts);
+  console.log(`Sisyphe UI (lecture seule) : http://${ui.server.host}:${ui.server.port}`);
   console.log('Ctrl+C pour arrêter.');
   await new Promise<void>((resolve) => {
     // `finally` et non `then` : même si la fermeture échoue, Ctrl+C rend la main.
     const stop = () => {
-      void server.close().finally(() => {
-        db.close();
-        resolve();
-      });
+      void ui.close().finally(resolve);
     };
     process.once('SIGINT', stop);
     process.once('SIGTERM', stop);
