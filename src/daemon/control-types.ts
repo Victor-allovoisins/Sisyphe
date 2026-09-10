@@ -1,7 +1,9 @@
 /**
- * Types partagés entre le `Daemon` et ses clients de contrôle (socket UNIX, UI) : ce module
- * ne dépend de rien d'exécutable pour que l'UI puisse l'importer sans tirer le daemon.
+ * Types et schéma du protocole partagés entre le `Daemon`, la socket de contrôle et ses clients (CLI, UI) :
+ * ce module ne tire pas le daemon pour que l'UI puisse l'importer sans lui.
  */
+import { z } from 'zod';
+import { ACTION_SOURCES } from '../store/actions.js';
 
 export interface DaemonStatus {
   pid: number;
@@ -23,3 +25,32 @@ export interface EnqueueIssueInput {
   repo: string;
   issueNumber: number;
 }
+
+export const CONTROL_COMMANDS = ['ping', 'poll', 'pause', 'resume', 'stop', 'cancel', 'retry', 'enqueue'] as const;
+export type ControlCommand = (typeof CONTROL_COMMANDS)[number];
+
+/** Arguments d'une commande côté client ; le schéma ci-dessous dit lesquels chaque commande exige. */
+export interface ControlArgs {
+  jobId?: string;
+  repo?: string;
+  issueNumber?: number;
+}
+
+const source = z.enum(ACTION_SOURCES).default('cli');
+const jobId = z.string().min(1);
+
+/**
+ * Une requête = une ligne JSON. `source` dit qui commande (journal des actions) ; absent, c'est la CLI.
+ * Objets stricts : une clé inconnue est refusée plutôt qu'ignorée en silence.
+ */
+export const ControlRequestSchema = z.discriminatedUnion('cmd', [
+  z.strictObject({ cmd: z.literal('ping'), source }),
+  z.strictObject({ cmd: z.literal('poll'), source }),
+  z.strictObject({ cmd: z.literal('pause'), source }),
+  z.strictObject({ cmd: z.literal('resume'), source }),
+  z.strictObject({ cmd: z.literal('stop'), source }),
+  z.strictObject({ cmd: z.literal('cancel'), jobId, source }),
+  z.strictObject({ cmd: z.literal('retry'), jobId, source }),
+  z.strictObject({ cmd: z.literal('enqueue'), repo: z.string().min(1), issueNumber: z.number().int().positive(), source }),
+]);
+export type ControlRequest = z.infer<typeof ControlRequestSchema>;

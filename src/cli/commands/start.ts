@@ -43,4 +43,6 @@ export async function startCommand(opts: { once?: boolean }): Promise<void> {
   } finally {
     await release();
   }
+  // Arrêt demandé par la socket de contrôle : start() s'est résolu, on sort comme après SIGTERM, verrou relâché.
+  process.exit(0);
 }

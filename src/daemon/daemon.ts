@@ -8,6 +8,7 @@ import { purgeOldFiles } from '../log/logger.js';
 import type { ActionInput, ActionName, ActionSource } from '../store/actions.js';
 import { isTerminal, type Job, type JobState } from '../store/types.js';
 import { startCaffeinate } from './caffeinate.js';
+import { startControlServer, type ControlServer } from './control.js';
 import type { CommandResult, DaemonStatus, EnqueueIssueInput } from './control-types.js';
 import { pollOnce } from './poll.js';
 
@@ -27,6 +28,8 @@ function messageOf(err: unknown): string {
 export interface DaemonOptions {
   intervals?: { pollMs?: number; cancelMs?: number; prTrackMs?: number; purgeMs?: number };
   stopGraceMs?: number;
+  /** `start()` ouvre la socket de contrôle (`paths.controlSocketPath`) ; false pour les tests qui n'en veulent pas. */
+  control?: boolean;
 }
 
 export class Daemon {
@@ -36,6 +39,7 @@ export class Daemon {
   private readonly budgetAnnounced = new Set<string>();
   private budgetDay = '';
   private stopCaffeinate: (() => void) | null = null;
+  private control: ControlServer | null = null;
   private stopping = false;
   /** Porte de sérialisation : ticks, balayages d'annulation et commandes s'y enchaînent, jamais en parallèle. */
   private chain: Promise<void> = Promise.resolve();
@@ -72,6 +76,14 @@ export class Daemon {
     await this.ensureLabels();
     // stop() a pu survenir pendant ce prologue : ne pas poser de timers ni attendre indéfiniment.
     if (this.stopping) return;
+    if (this.opts.control !== false) {
+      this.control = await startControlServer({ path: this.d.paths.controlSocketPath, daemon: this, actions: this.d.actions, log: this.d.log });
+      // stop() pendant l'ouverture n'a rien trouvé à fermer : c'est à nous de le faire.
+      if (this.stopping) {
+        await this.closeControl();
+        return;
+      }
+    }
     const iv = this.opts.intervals ?? {};
     const pollMs = iv.pollMs ?? this.d.machine.pollIntervalSeconds * 1000;
     this.timers.push(setInterval(() => void this.tick(), pollMs));
@@ -105,6 +117,8 @@ export class Daemon {
   private async doStop(): Promise<void> {
     this.stopping = true;
     for (const t of this.timers) clearInterval(t);
+    // La socket d'abord : plus aucune commande n'entre pendant l'arrêt.
+    await this.closeControl();
     for (const c of this.running.values()) c.abort(SHUTDOWN);
 
     let graceTimer: NodeJS.Timeout | undefined;
@@ -122,6 +136,17 @@ export class Daemon {
     this.stopCaffeinate?.();
     this.log.info('daemon arrêté');
     this.resolveStopped?.();
+  }
+
+  private async closeControl(): Promise<void> {
+    const control = this.control;
+    this.control = null;
+    if (!control) return;
+    try {
+      await control.close();
+    } catch (err) {
+      this.log.warn({ err }, 'socket de contrôle : fermeture en erreur');
+    }
   }
 
   /**

@@ -32,6 +32,7 @@ describe('paths', () => {
     expect(worktreePath(p, 'a/b', 12)).toBe('/data/work/a__b/issue-12');
     expect(repoCachePath(p, 'a/b')).toBe('/data/cache/a__b');
     expect(jobDir(p, 'job-1')).toBe('/data/jobs/job-1');
+    expect(p.controlSocketPath).toBe('/data/control.sock');
   });
 
   it('defaultDataDir ignore une variable vide et honore SISYPHE_HOME', () => {

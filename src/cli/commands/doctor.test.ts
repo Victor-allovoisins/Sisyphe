@@ -65,7 +65,7 @@ describe('buildChecks — composition de la liste', () => {
     expect(buildChecks({ env: {} }).map((c) => c.name)).not.toContain('espace disque');
     const names = buildChecks({
       env: {},
-      paths: { root: '/tmp/x', dbPath: '', mirrorsDir: '', workDir: '', cacheDir: '', jobsDir: '', logsDir: '' },
+      paths: { root: '/tmp/x', dbPath: '', mirrorsDir: '', workDir: '', cacheDir: '', jobsDir: '', logsDir: '', controlSocketPath: '' },
     }).map((c) => c.name);
     expect(names).toContain('espace disque');
   });
