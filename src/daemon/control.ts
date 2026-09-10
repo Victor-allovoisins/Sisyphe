@@ -1,5 +1,5 @@
 import { chmod, rm } from 'node:fs/promises';
-import { createServer, type Socket } from 'node:net';
+import { createServer, type Server, type Socket } from 'node:net';
 import type { Logger } from 'pino';
 import type { ActionInput, ActionStore } from '../store/actions.js';
 import { CONTROL_COMMANDS, ControlRequestSchema, type CommandResult, type ControlRequest } from './control-types.js';
@@ -8,6 +8,8 @@ import type { Daemon } from './daemon.js';
 /** Une requête tient en une ligne courte ; au-delà, c'est un client défaillant ou hostile. */
 const MAX_REQUEST_BYTES = 64 * 1024;
 const IDLE_TIMEOUT_MS = 5_000;
+/** `stop` : temps laissé au client pour lire sa réponse et fermer avant que l'arrêt ne détruise les connexions. */
+const STOP_CLOSE_CAP_MS = 1_000;
 
 /** Ce que le serveur demande au daemon : le sous-ensemble public utilisé par les commandes. */
 export type ControlTarget = Pick<Daemon, 'status' | 'requestTick' | 'pause' | 'resume' | 'cancelJob' | 'retryJob' | 'enqueueIssue' | 'stop'>;
@@ -33,6 +35,10 @@ function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+function closeServer(server: Server): Promise<void> {
+  return new Promise((resolve) => server.close(() => resolve()));
+}
+
 /**
  * Socket UNIX de contrôle : une connexion = une requête (une ligne JSON) = une réponse (une ligne JSON),
  * puis le serveur ferme. Un fichier de socket déjà présent est périmé (le verrou `daemon.lock` garantit
@@ -41,12 +47,15 @@ function messageOf(err: unknown): string {
 export async function startControlServer(opts: ControlServerOptions): Promise<ControlServer> {
   const log = opts.log.child({ component: 'control' });
   const sockets = new Set<Socket>();
-  const server = createServer((socket) => {
+  // allowHalfOpen : un client qui ferme son côté émission sitôt sa ligne envoyée (`nc -N`, scripts) doit
+  // quand même recevoir la réponse d'une commande qui a attendu la porte du daemon ; sans lui, Node
+  // fermerait notre côté dès le `end` du client.
+  const server = createServer({ allowHalfOpen: true }, (socket) => {
     sockets.add(socket);
     socket.on('close', () => sockets.delete(socket));
     // Sans écouteur, une erreur de socket (client parti, écriture après destroy) ferait tomber le process.
     socket.on('error', (err) => log.debug({ err }, 'connexion de contrôle en erreur'));
-    void serve(socket, opts, log);
+    serve(socket, opts, log).catch((err) => log.error({ err }, 'connexion de contrôle : traitement en erreur'));
   });
 
   await rm(opts.path, { force: true });
@@ -57,7 +66,14 @@ export async function startControlServer(opts: ControlServerOptions): Promise<Co
       resolve();
     });
   });
-  await chmod(opts.path, 0o600);
+  try {
+    await chmod(opts.path, 0o600);
+  } catch (err) {
+    // Ne jamais laisser une socket ouverte (et un fichier) derrière un démarrage qui échoue.
+    await closeServer(server);
+    await rm(opts.path, { force: true });
+    throw err;
+  }
   server.on('error', (err) => log.error({ err }, 'socket de contrôle en erreur'));
   log.info({ path: opts.path }, 'socket de contrôle ouverte');
 
@@ -66,7 +82,7 @@ export async function startControlServer(opts: ControlServerOptions): Promise<Co
     close: () =>
       (closed ??= (async () => {
         for (const s of sockets) s.destroy();
-        await new Promise<void>((resolve) => server.close(() => resolve()));
+        await closeServer(server);
         // Node supprime le fichier en fermant ; filet de sécurité pour ne jamais laisser une socket périmée.
         await rm(opts.path, { force: true });
         log.info('socket de contrôle fermée');
@@ -96,12 +112,31 @@ async function serve(socket: Socket, opts: ControlServerOptions, log: Logger): P
   log.debug({ cmd: req.result.cmd, source: req.result.source }, 'commande reçue');
   reply(socket, await execute(req.result, opts, log));
   if (req.result.cmd === 'stop') {
-    // Hors du gestionnaire : la réponse est partie, le daemon peut fermer cette socket avec les autres.
-    setImmediate(() => void opts.daemon.stop());
+    // L'arrêt détruit les connexions ouvertes : on laisse d'abord le client lire sa réponse et fermer (borné).
+    await closedOrCap(socket, STOP_CLOSE_CAP_MS);
+    opts.daemon.stop().catch((err) => log.error({ err }, 'arrêt demandé par la socket : stop() en erreur'));
   }
 }
 
-/** Accumule jusqu'au premier `\n` (exclu). Une connexion à moitié fermée sans `\n` livre ce qu'elle a envoyé. */
+/** Résolue à la fermeture de la connexion, ou au bout de `ms` si le client la garde ouverte. */
+function closedOrCap(socket: Socket, ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    if (socket.closed) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    socket.once('close', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
+/**
+ * Accumule jusqu'au premier `\n` (exclu). Le client peut fermer son côté émission après sa ligne
+ * (`allowHalfOpen` garde le nôtre ouvert pour la réponse) ; sans `\n`, ce qu'il a envoyé fait la requête.
+ */
 function readLine(socket: Socket): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -169,7 +204,7 @@ async function execute(req: ControlRequest, opts: ControlServerOptions, log: Log
         return await daemon.enqueueIssue({ repo: req.repo, issueNumber: req.issueNumber }, req.source);
       case 'poll':
         // Le tick est programmé (il s'enchaîne après ce qui occupe la porte) ; on ne l'attend pas.
-        void daemon.requestTick();
+        daemon.requestTick().catch((err) => log.error({ err }, 'poll : tick en erreur'));
         journal(opts, log, { action: 'poll', source: req.source, outcome: 'ok' });
         return { ok: true, result: null };
       case 'stop':

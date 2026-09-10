@@ -5,8 +5,8 @@ import type { JobStore } from '../../src/store/jobs.js';
 import type { JobState } from '../../src/store/types.js';
 import { REPO, makeHarness, readyVerdict, repoRef, report, writeFeature } from '../helpers/harness.js';
 
-/** Timers à l'heure : seuls les appels explicites font avancer le daemon. */
-const QUIET = { intervals: { pollMs: 3_600_000, cancelMs: 3_600_000, prTrackMs: 3_600_000, purgeMs: 3_600_000 } };
+/** Timers à l'heure : seuls les appels explicites font avancer le daemon. Pas de socket : elle a ses propres tests. */
+const QUIET = { intervals: { pollMs: 3_600_000, cancelMs: 3_600_000, prTrackMs: 3_600_000, purgeMs: 3_600_000 }, control: false };
 const ISSUE_7 = { repo: repoRef, number: 7 };
 
 /** Amène un job `queued` à un état terminal en suivant les transitions autorisées. */

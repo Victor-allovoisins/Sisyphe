@@ -5,6 +5,9 @@ import { SHUTDOWN } from '../../src/jobs/pipeline.js';
 import { isTerminal } from '../../src/store/types.js';
 import { makeHarness, readyVerdict, repoRef, report, writeFeature } from '../helpers/harness.js';
 
+/** Timers à l'heure : seuls les appels explicites font avancer le daemon. Pas de socket : elle a ses propres tests. */
+const QUIET = { intervals: { pollMs: 3_600_000, cancelMs: 3_600_000, prTrackMs: 3_600_000, purgeMs: 3_600_000 }, control: false };
+
 describe('Daemon', () => {
   it('runOnce traite toute la file dans l’ordre', async () => {
     const h = await makeHarness({
@@ -78,7 +81,7 @@ describe('Daemon', () => {
       await new Promise((resolve) => setTimeout(resolve, 100));
       await realEnsureLabels(repo);
     };
-    const daemon = new Daemon(h.deps);
+    const daemon = new Daemon(h.deps, { control: false });
     const started = daemon.start();
     await new Promise((resolve) => setTimeout(resolve, 10));
     await daemon.stop();
@@ -90,7 +93,7 @@ describe('Daemon', () => {
 
   it('stop() pendant un job laisse le job non terminal et résout start()', async () => {
     const h = await makeHarness({ steps: [] });
-    const daemon = new Daemon(h.deps, { intervals: { pollMs: 3_600_000, cancelMs: 3_600_000, prTrackMs: 3_600_000, purgeMs: 3_600_000 } });
+    const daemon = new Daemon(h.deps, QUIET);
     let observedReason: unknown;
     // Le job passe en 'triaging' de façon synchrone bien avant d'atteindre l'agent (mkdir, git, worktree...) :
     // attendre l'état en base serait racy. On attend plutôt que l'agent factice soit réellement entré dans run().
@@ -129,10 +132,7 @@ describe('Daemon', () => {
 
   it('stop() abandonne un job bloqué après stopGraceMs plutôt que de pendre', async () => {
     const h = await makeHarness({ steps: [] });
-    const daemon = new Daemon(h.deps, {
-      intervals: { pollMs: 3_600_000, cancelMs: 3_600_000, prTrackMs: 3_600_000, purgeMs: 3_600_000 },
-      stopGraceMs: 50,
-    });
+    const daemon = new Daemon(h.deps, { ...QUIET, stopGraceMs: 50 });
     let agentStarted: () => void = () => undefined;
     const agentEntered = new Promise<void>((resolve) => {
       agentStarted = resolve;
@@ -226,9 +226,7 @@ describe('Daemon', () => {
     const ref = { repo: repoRef, number: 7 };
     await pollOnce(h.deps);
     await h.source.removeTriggerLabel(ref);
-    const daemon = new Daemon(h.deps, {
-      intervals: { pollMs: 3_600_000, cancelMs: 3_600_000, prTrackMs: 3_600_000, purgeMs: 3_600_000 },
-    });
+    const daemon = new Daemon(h.deps, QUIET);
     const started = daemon.start();
     const deadline = Date.now() + 2000;
     let job = h.store.listRecent(1)[0];

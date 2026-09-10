@@ -10,6 +10,8 @@ import { Daemon, type DaemonOptions } from './daemon.js';
 
 /** Timers à l'heure : seuls la socket et les appels explicites font avancer le daemon. */
 const QUIET: DaemonOptions = { intervals: { pollMs: 3_600_000, cancelMs: 3_600_000, prTrackMs: 3_600_000, purgeMs: 3_600_000 } };
+/** Borne unique de toutes les attentes : large, la machine de test peut être chargée. */
+const WAIT_MS = 15_000;
 
 type Harness = Awaited<ReturnType<typeof makeHarness>>;
 
@@ -18,12 +20,16 @@ afterEach(async () => {
   for (const c of cleanups.splice(0)) await c();
 });
 
-async function waitFor(check: () => boolean | Promise<boolean>, ms = 15_000): Promise<void> {
+async function waitFor(check: () => boolean | Promise<boolean>, ms = WAIT_MS): Promise<void> {
   const deadline = Date.now() + ms;
   while (!(await check())) {
     if (Date.now() > deadline) throw new Error('condition jamais atteinte');
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
+}
+
+function withinWait<T>(p: Promise<T>, what: string): Promise<T> {
+  return Promise.race([p, new Promise<never>((_r, reject) => setTimeout(() => reject(new Error(`${what} : jamais arrivé`)), WAIT_MS))]);
 }
 
 /** Daemon réel démarré sur les fakes, socket ouverte et joignable. Arrêté en fin de test, même en échec. */
@@ -35,17 +41,40 @@ async function startDaemon(h: Harness, opts: { paused?: boolean } = {}) {
     await daemon.stop();
     await started;
   });
-  const client = new ControlClient(h.paths.controlSocketPath, { timeoutMs: 2_000 });
+  const client = new ControlClient(h.paths.controlSocketPath);
   await waitFor(() => client.isReachable());
   return { daemon, client, started };
 }
 
-/** Envoie des octets bruts et renvoie tout ce que le serveur écrit jusqu'à la fermeture de la connexion. */
-function sendRaw(path: string, payload: Buffer | string): Promise<string> {
+/** Le daemon vu par la socket, avec un `cancel` bien plus long que le délai d'inactivité des tests. */
+function slowCancelTarget(daemon: Daemon, delayMs: number): ControlTarget {
+  return {
+    status: () => daemon.status(),
+    requestTick: () => daemon.requestTick(),
+    pause: (s) => daemon.pause(s),
+    resume: (s) => daemon.resume(s),
+    retryJob: (id, s) => daemon.retryJob(id, s),
+    enqueueIssue: (i, s) => daemon.enqueueIssue(i, s),
+    stop: () => daemon.stop(),
+    cancelJob: async (id) => {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      return { ok: false, error: `lent : ${id}` };
+    },
+  };
+}
+
+/**
+ * Envoie des octets bruts et renvoie tout ce que le serveur écrit jusqu'à la fermeture de la connexion.
+ * `halfClose` : ferme le côté émission sitôt la ligne partie, comme `nc -N` ou un script.
+ */
+function sendRaw(path: string, payload: Buffer | string, opts: { halfClose?: boolean } = {}): Promise<string> {
   return new Promise((resolve, reject) => {
     const socket = createConnection(path);
     const chunks: Buffer[] = [];
-    socket.on('connect', () => socket.write(payload));
+    socket.on('connect', () => {
+      socket.write(payload);
+      if (opts.halfClose) socket.end();
+    });
     socket.on('data', (c: Buffer) => chunks.push(c));
     socket.on('close', () => resolve(Buffer.concat(chunks).toString('utf8')));
     socket.on('error', reject);
@@ -93,7 +122,7 @@ describe('socket de contrôle : cycle de vie', () => {
       socket.on('close', () => resolve());
       socket.on('error', () => undefined);
     });
-    await expect(Promise.race([closedByServer, new Promise((_r, reject) => setTimeout(() => reject(new Error('jamais fermée')), 2_000))])).resolves.toBeUndefined();
+    await expect(withinWait(closedByServer, 'fermeture par le serveur')).resolves.toBeUndefined();
 
     await server.close();
     await server.close();
@@ -104,24 +133,21 @@ describe('socket de contrôle : cycle de vie', () => {
     const h = await makeHarness({ steps: [], issues: [] });
     const path = join(h.root, 'ctl.sock');
     const daemon = new Daemon(h.deps, { ...QUIET, control: false });
-    const target: ControlTarget = {
-      status: () => daemon.status(),
-      requestTick: () => daemon.requestTick(),
-      pause: (s) => daemon.pause(s),
-      resume: (s) => daemon.resume(s),
-      retryJob: (id, s) => daemon.retryJob(id, s),
-      enqueueIssue: (i, s) => daemon.enqueueIssue(i, s),
-      stop: () => daemon.stop(),
-      // Bien plus long que le délai d'inactivité : la réponse doit quand même arriver.
-      cancelJob: async (id) => {
-        await new Promise((resolve) => setTimeout(resolve, 300));
-        return { ok: false, error: `lent : ${id}` };
-      },
-    };
-    const server = await startControlServer({ path, daemon: target, actions: h.actions, log: h.deps.log, idleTimeoutMs: 100 });
+    const server = await startControlServer({ path, daemon: slowCancelTarget(daemon, 300), actions: h.actions, log: h.deps.log, idleTimeoutMs: 100 });
     cleanups.push(() => server.close());
 
     expect(await new ControlClient(path).send('cancel', { jobId: 'j1' })).toEqual({ ok: false, error: 'lent : j1' });
+  });
+
+  it('un client qui ferme son côté émission sitôt sa ligne envoyée reçoit quand même la réponse d’une commande lente', async () => {
+    const h = await makeHarness({ steps: [], issues: [] });
+    const path = join(h.root, 'ctl.sock');
+    const daemon = new Daemon(h.deps, { ...QUIET, control: false });
+    const server = await startControlServer({ path, daemon: slowCancelTarget(daemon, 300), actions: h.actions, log: h.deps.log });
+    cleanups.push(() => server.close());
+
+    const answer = await sendRaw(path, '{"cmd":"cancel","jobId":"j1"}\n', { halfClose: true });
+    expect(JSON.parse(answer)).toEqual({ ok: false, error: 'lent : j1' });
   });
 
   it('`control: false` : start() n’ouvre rien', async () => {
@@ -132,7 +158,7 @@ describe('socket de contrôle : cycle de vie', () => {
       await daemon.stop();
       await started;
     });
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await waitFor(() => listCandidatesCalls(h) >= 1); // le premier tick est passé : la socket aurait été ouverte avant
     await expect(stat(h.paths.controlSocketPath)).rejects.toThrow();
   });
 });
@@ -153,6 +179,7 @@ describe('socket de contrôle : commandes', () => {
   it('poll déclenche un tick de plus, répond sans l’attendre, et est journalisé', async () => {
     const h = await makeHarness({ steps: [], issues: [] });
     const { client } = await startDaemon(h);
+    await waitFor(() => listCandidatesCalls(h) >= 1); // le tick de start() est passé : le suivant sera bien celui du poll
     const before = listCandidatesCalls(h);
 
     expect(await client.send('poll', {}, 'ui')).toEqual({ ok: true, result: null });
@@ -174,7 +201,7 @@ describe('socket de contrôle : commandes', () => {
     const { client, started } = await startDaemon(h);
 
     expect(await client.send('stop', {}, 'ui')).toEqual({ ok: true, result: null });
-    await Promise.race([started, new Promise((_r, reject) => setTimeout(() => reject(new Error("start() ne s'est pas résolu")), 5_000))]);
+    await withinWait(started, 'résolution de start()');
     await expect(stat(h.paths.controlSocketPath)).rejects.toThrow();
     expect(await client.isReachable()).toBe(false);
     expect(h.actions.listRecent(1)[0]).toMatchObject({ action: 'stop', source: 'ui', outcome: 'ok' });

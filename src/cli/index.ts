@@ -37,7 +37,11 @@ program
   .description('Interface web locale en lecture seule (127.0.0.1)')
   .option('--port <n>', 'port d’écoute', String(DEFAULT_UI_PORT))
   .action(uiCommand);
-program.command('cancel').description('Annule un job actif en retirant le label trigger').argument('<jobId>').action(cancelCommand);
+program
+  .command('cancel')
+  .description("Annule un job actif : via le daemon s'il tourne, sinon en retirant le label trigger")
+  .argument('<jobId>')
+  .action(cancelCommand);
 program.command('doctor').description("Vérifie l'installation").action(doctorCommand);
 program.command('setup').description('Configuration interactive et installation launchd').action(setupCommand);
 

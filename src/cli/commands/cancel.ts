@@ -1,5 +1,6 @@
 import { createApp } from '../../app.js';
-import { ControlClient } from '../../daemon/control-client.js';
+import { ControlClient, DaemonUnreachableError } from '../../daemon/control-client.js';
+import type { CommandResult } from '../../daemon/control-types.js';
 import { issueRefOf, type IssueSource } from '../../github/source.js';
 import { isTerminal, type Job } from '../../store/types.js';
 import { resolveJob } from '../resolve-job.js';
@@ -15,17 +16,21 @@ export async function cancelCommand(jobId: string): Promise<void> {
 }
 
 /**
- * Daemon joignable : annulation immédiate par la socket, journalisée. Sinon on retire le label trigger :
- * le daemon annulera le job à son prochain contrôle, ou à son prochain démarrage. Un refus du daemon
- * lève une erreur : la CLI l'affiche et sort en code 1.
+ * Daemon joignable : annulation immédiate par la socket, journalisée. Injoignable : on retire le label
+ * trigger, le daemon annulera le job à son prochain contrôle ou à son prochain démarrage. La commande part
+ * directement (pas de `ping` préalable : un aller-retour de moins, et un daemon qui s'arrête entre les deux
+ * n'est pas une panne). Un refus du daemon lève une erreur : la CLI l'affiche et sort en code 1.
  */
 export async function cancelJob(job: Job, deps: { client: ControlClient; source: Pick<IssueSource, 'removeTriggerLabel'> }): Promise<void> {
-  if (await deps.client.isReachable()) {
-    const res = await deps.client.send<Job>('cancel', { jobId: job.id }, 'cli');
-    if (!res.ok) throw new Error(res.error);
-    console.log(`Job ${job.id} annulé.`);
+  let res: CommandResult<Job>;
+  try {
+    res = await deps.client.send<Job>('cancel', { jobId: job.id }, 'cli');
+  } catch (err) {
+    if (!(err instanceof DaemonUnreachableError)) throw err;
+    await deps.source.removeTriggerLabel(issueRefOf(job));
+    console.log(`Label retiré sur ${job.repo}#${job.issueNumber}. Si le daemon tourne, il annulera le job dans la minute ; sinon il l'annulera à son prochain démarrage.`);
     return;
   }
-  await deps.source.removeTriggerLabel(issueRefOf(job));
-  console.log(`Label retiré sur ${job.repo}#${job.issueNumber}. Si le daemon tourne, il annulera le job dans la minute ; sinon il l'annulera à son prochain démarrage.`);
+  if (!res.ok) throw new Error(res.error);
+  console.log(`Job ${job.id} annulé.`);
 }

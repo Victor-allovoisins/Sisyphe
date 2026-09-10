@@ -29,20 +29,19 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.restoreAllMocks();
-  if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
+  const s = server;
   server = null;
+  if (s) await new Promise<void>((resolve) => s.close(() => resolve()));
   await rm(root, { recursive: true, force: true });
 });
 
-/** Faux daemon : répond au ping, puis `onCancel` à la commande cancel. Enregistre chaque requête. */
-async function fakeDaemon(onCancel: CommandResult<unknown>): Promise<{ requests: Array<Record<string, unknown>> }> {
+/** Faux daemon : répond `answer` à toute requête et enregistre chacune. */
+async function fakeDaemon(answer: CommandResult<unknown>): Promise<{ requests: Array<Record<string, unknown>> }> {
   const requests: Array<Record<string, unknown>> = [];
   server = createServer((socket) => {
     socket.once('data', (c: Buffer) => {
-      const req = JSON.parse(c.toString('utf8').split('\n')[0]) as Record<string, unknown>;
-      requests.push(req);
-      const res: CommandResult<unknown> = req.cmd === 'ping' ? { ok: true, result: { pid: 1 } } : onCancel;
-      socket.end(`${JSON.stringify(res)}\n`);
+      requests.push(JSON.parse(c.toString('utf8').split('\n')[0]) as Record<string, unknown>);
+      socket.end(`${JSON.stringify(answer)}\n`);
     });
   });
   const s = server;
@@ -61,16 +60,13 @@ function fakeSource() {
 }
 
 describe('cancelJob', () => {
-  it('daemon joignable : envoie cancel (source cli) par la socket, sans toucher au label', async () => {
+  it('daemon joignable : envoie cancel (source cli) directement, sans ping préalable ni retrait de label', async () => {
     const { requests } = await fakeDaemon({ ok: true, result: { ...job, state: 'cancelled' } });
     const source = fakeSource();
 
     await cancelJob(job, { client: new ControlClient(path), source });
 
-    expect(requests).toEqual([
-      { cmd: 'ping', source: 'cli' },
-      { cmd: 'cancel', source: 'cli', jobId: job.id },
-    ]);
+    expect(requests).toEqual([{ cmd: 'cancel', source: 'cli', jobId: job.id }]);
     expect(source.removed).toEqual([]);
     expect(logs).toEqual([`Job ${job.id} annulé.`]);
   });
@@ -84,10 +80,21 @@ describe('cancelJob', () => {
     expect(logs).toEqual([]);
   });
 
+  it('réponse illisible du daemon : l’erreur remonte, pas de repli sur le label', async () => {
+    // Lit la requête avant de répondre : une socket dont l'entrée n'est jamais consommée ne se ferme pas, et close() attendrait.
+    server = createServer((socket) => socket.once('data', () => socket.end('???\n')));
+    const s = server;
+    await new Promise<void>((resolve) => s.listen(path, resolve));
+    const source = fakeSource();
+
+    await expect(cancelJob(job, { client: new ControlClient(path), source })).rejects.toThrow(/réponse illisible/);
+    expect(source.removed).toEqual([]);
+  });
+
   it('daemon injoignable : retire le label et prévient que l’annulation viendra plus tard', async () => {
     const source = fakeSource();
 
-    await cancelJob(job, { client: new ControlClient(path), source });
+    await cancelJob(job, { client: new ControlClient(path), source }); // aucune socket à ce chemin
 
     expect(source.removed).toMatchObject([{ repo: { full: 'acme/demo' }, number: 7 }]);
     expect(logs).toHaveLength(1);

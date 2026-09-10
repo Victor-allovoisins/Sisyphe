@@ -46,12 +46,11 @@ describe('ControlClient', () => {
     expect(await client.isReachable()).toBe(false);
   });
 
-  it('serveur muet → DaemonUnreachableError après le timeout injecté', async () => {
+  it('serveur muet → DaemonUnreachableError après le délai injecté : celui des commandes, ou celui de ping', async () => {
     await fakeServer(() => undefined);
-    const client = new ControlClient(path, { timeoutMs: 100 });
-    const started = Date.now();
-    await expect(client.send('ping')).rejects.toThrow(/ne répond pas \(100 ms\)/);
-    expect(Date.now() - started).toBeLessThan(1_500);
+    const client = new ControlClient(path, { timeoutMs: 100, pingTimeoutMs: 150 });
+    await expect(client.send('cancel', { jobId: 'j1' })).rejects.toThrow(/ne répond pas \(100 ms\)/);
+    await expect(client.send('ping')).rejects.toThrow(/ne répond pas \(150 ms\)/);
     expect(await client.isReachable()).toBe(false);
   });
 
@@ -70,6 +69,8 @@ describe('ControlClient', () => {
     await expect(client.isReachable()).rejects.toThrow(/réponse illisible/);
 
     answer = '{"ok":false}\n';
+    await expect(client.send('ping')).rejects.toThrow(/réponse inattendue/);
+    answer = '{"ok":true}\n'; // succès sans `result` : pas une réponse du protocole
     await expect(client.send('ping')).rejects.toThrow(/réponse inattendue/);
   });
 

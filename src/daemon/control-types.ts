@@ -26,9 +26,6 @@ export interface EnqueueIssueInput {
   issueNumber: number;
 }
 
-export const CONTROL_COMMANDS = ['ping', 'poll', 'pause', 'resume', 'stop', 'cancel', 'retry', 'enqueue'] as const;
-export type ControlCommand = (typeof CONTROL_COMMANDS)[number];
-
 /** Arguments d'une commande côté client ; le schéma ci-dessous dit lesquels chaque commande exige. */
 export interface ControlArgs {
   jobId?: string;
@@ -54,3 +51,16 @@ export const ControlRequestSchema = z.discriminatedUnion('cmd', [
   z.strictObject({ cmd: z.literal('enqueue'), repo: z.string().min(1), issueNumber: z.number().int().positive(), source }),
 ]);
 export type ControlRequest = z.infer<typeof ControlRequestSchema>;
+
+/** Dérivé du schéma : c'est lui qui fait foi. */
+export type ControlCommand = ControlRequest['cmd'];
+
+/**
+ * La liste d'exécution (message « commande inconnue »). `satisfies` refuse une entrée absente du schéma ;
+ * `ControlCommandsInSync` refuse une commande du schéma absente d'ici : les deux ne peuvent pas diverger.
+ */
+export const CONTROL_COMMANDS = ['ping', 'poll', 'pause', 'resume', 'stop', 'cancel', 'retry', 'enqueue'] as const satisfies readonly ControlCommand[];
+
+type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+type Assert<T extends true> = T;
+export type ControlCommandsInSync = Assert<Same<(typeof CONTROL_COMMANDS)[number], ControlCommand>>;

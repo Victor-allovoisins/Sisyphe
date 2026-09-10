@@ -2,7 +2,10 @@ import { createConnection } from 'node:net';
 import type { ActionSource } from '../store/actions.js';
 import type { CommandResult, ControlArgs, ControlCommand } from './control-types.js';
 
-const DEFAULT_TIMEOUT_MS = 5_000;
+/** Une commande peut attendre la fin du tick en cours (poll GitHub, démarrages) avant d'être traitée. */
+const DEFAULT_TIMEOUT_MS = 30_000;
+/** `ping` est traité sans passer par la porte : ne pas répondre vite, c'est ne pas répondre. */
+const DEFAULT_PING_TIMEOUT_MS = 2_000;
 /** Socket absente, daemon arrêté, connexion coupée pendant l'arrêt : autant de façons de ne pas répondre. */
 const UNREACHABLE_CODES = new Set(['ENOENT', 'ENOTSOCK', 'ECONNREFUSED', 'ECONNRESET', 'EPIPE']);
 
@@ -17,23 +20,37 @@ export class DaemonUnreachableError extends Error {
 function isCommandResult(v: unknown): v is CommandResult<unknown> {
   if (typeof v !== 'object' || v === null) return false;
   const r = v as { ok?: unknown; error?: unknown };
-  return r.ok === true || (r.ok === false && typeof r.error === 'string');
+  return (r.ok === true && 'result' in r) || (r.ok === false && typeof r.error === 'string');
+}
+
+export interface ControlClientOptions {
+  /** Délai des commandes (défaut 30 s : une commande peut patienter derrière le tick en cours). */
+  timeoutMs?: number;
+  /** Délai de `ping`, donc de `isReachable()` (défaut 2 s). */
+  pingTimeoutMs?: number;
 }
 
 /** Client de la socket de contrôle : une connexion par commande, une ligne envoyée, une ligne lue. */
 export class ControlClient {
   private readonly timeoutMs: number;
+  private readonly pingTimeoutMs: number;
 
   constructor(
     private readonly socketPath: string,
-    opts: { timeoutMs?: number } = {},
+    opts: ControlClientOptions = {},
   ) {
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.pingTimeoutMs = opts.pingTimeoutMs ?? DEFAULT_PING_TIMEOUT_MS;
   }
 
-  /** `stop` : la réponse arrive avant l'arrêt du daemon ; on n'attend pas la fin de son process. */
+  /**
+   * Rejette en `DaemonUnreachableError` si le daemon ne répond pas (socket absente, connexion refusée, délai
+   * dépassé) et en `Error` si sa réponse est illisible. `stop` : la réponse arrive avant l'arrêt du daemon ;
+   * on n'attend pas la fin de son process.
+   */
   async send<T = unknown>(cmd: ControlCommand, args: ControlArgs = {}, source: ActionSource = 'cli'): Promise<CommandResult<T>> {
-    const line = await this.exchange(`${JSON.stringify({ cmd, source, ...args })}\n`);
+    const timeoutMs = cmd === 'ping' ? this.pingTimeoutMs : this.timeoutMs;
+    const line = await this.exchange(`${JSON.stringify({ cmd, source, ...args })}\n`, timeoutMs);
     let parsed: unknown;
     try {
       parsed = JSON.parse(line);
@@ -54,7 +71,7 @@ export class ControlClient {
     }
   }
 
-  private exchange(payload: string): Promise<string> {
+  private exchange(payload: string, timeoutMs: number): Promise<string> {
     return new Promise((resolve, reject) => {
       const socket = createConnection(this.socketPath);
       const chunks: Buffer[] = [];
@@ -66,7 +83,7 @@ export class ControlClient {
         socket.destroy();
         fn();
       };
-      const timer = setTimeout(() => settle(() => reject(new DaemonUnreachableError(`le daemon ne répond pas (${this.timeoutMs} ms)`))), this.timeoutMs);
+      const timer = setTimeout(() => settle(() => reject(new DaemonUnreachableError(`le daemon ne répond pas (${timeoutMs} ms)`))), timeoutMs);
       socket.on('connect', () => socket.write(payload));
       socket.on('data', (chunk: Buffer) => {
         chunks.push(chunk);
