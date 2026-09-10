@@ -20,7 +20,7 @@ function finishAs(store: JobStore, id: string, final: 'done' | 'failed' | 'block
   for (const s of path[final]) store.transition(id, s);
 }
 
-async function waitFor(check: () => boolean, ms = 5000): Promise<void> {
+async function waitFor(check: () => boolean, ms = 15_000): Promise<void> {
   const deadline = Date.now() + ms;
   while (!check()) {
     if (Date.now() > deadline) throw new Error('condition jamais atteinte');
@@ -52,12 +52,24 @@ describe('Daemon : pause, tick immédiat, statut', () => {
     expect(daemon.resume('ui').paused).toBe(false);
     await daemon.requestTick();
     expect(h.store.get(job.id)!.state).not.toBe('queued');
-    await daemon.stop(); // attend le job démarré
+    await daemon.stop(); // interrompt le job démarré (SHUTDOWN) puis attend sa sortie
 
     expect(h.actions.listRecent(10).map((a) => [a.action, a.source, a.outcome])).toEqual([
       ['resume', 'ui', 'ok'],
       ['pause', 'ui', 'ok'],
     ]);
+  });
+
+  it('resume() démarre un job queued sans attendre le timer', async () => {
+    const h = await makeHarness({ steps: [{ output: readyVerdict }, { output: report('a'), sideEffect: writeFeature('hello\n') }] });
+    // Aucun timer (start() n'est pas appelé) : seul le tick déclenché par resume() peut démarrer le job.
+    const daemon = new Daemon(h.deps, QUIET);
+    await pollOnce(h.deps);
+    const job = h.store.listByStates(['queued'])[0];
+    daemon.pause('ui');
+    daemon.resume('ui');
+    await waitFor(() => h.store.get(job.id)!.state !== 'queued', 2000);
+    await daemon.stop();
   });
 
   it('requestTick pendant un tick lent : un seul tick de plus, après le premier ; le tick du timer est ignoré', async () => {

@@ -64,7 +64,7 @@ export class Daemon {
       if (!started) break;
       await started;
     }
-    await Promise.allSettled([...this.inflight]);
+    await Promise.allSettled([...this.inflight, this.chain]);
   }
 
   async start(): Promise<void> {
@@ -112,7 +112,8 @@ export class Daemon {
       graceTimer = setTimeout(() => resolve('timeout'), this.opts.stopGraceMs ?? STOP_GRACE_MS);
       graceTimer.unref();
     });
-    const outcome = await Promise.race([Promise.allSettled([...this.inflight]).then((): 'done' => 'done'), grace]);
+    // La porte aussi : une commande en vol ne doit pas être coupée par process.exit entre « créer le job » et « poser le label ».
+    const outcome = await Promise.race([Promise.allSettled([...this.inflight, this.chain]).then((): 'done' => 'done'), grace]);
     clearTimeout(graceTimer);
     if (outcome === 'timeout') {
       this.log.warn({ inflight: this.inflight.size }, 'arrêt : jobs encore en vol abandonnés, la réconciliation les reprendra');
@@ -274,14 +275,16 @@ export class Daemon {
   pause(source: ActionSource): DaemonStatus {
     this.paused = true;
     this.log.info({ source }, 'daemon en pause : aucun job ne démarre');
-    this.d.actions.record({ action: 'pause', source, outcome: 'ok' });
+    this.journal({ action: 'pause', source, outcome: 'ok' });
     return this.status();
   }
 
+  /** Idempotent. Déclenche un tick immédiat (sans l'attendre) : les jobs en file ne patientent pas jusqu'au timer. */
   resume(source: ActionSource): DaemonStatus {
     this.paused = false;
     this.log.info({ source }, 'daemon repris');
-    this.d.actions.record({ action: 'resume', source, outcome: 'ok' });
+    this.journal({ action: 'resume', source, outcome: 'ok' });
+    void this.requestTick();
     return this.status();
   }
 
@@ -308,7 +311,11 @@ export class Daemon {
       ref.repo = job.repo;
       ref.issueNumber = job.issueNumber;
       if (isTerminal(job.state)) return { ok: false, error: `job déjà terminé (${job.state})` };
-      await this.d.source.removeTriggerLabel(issueRefOf(job));
+      try {
+        await this.d.source.removeTriggerLabel(issueRefOf(job));
+      } catch (err) {
+        return { ok: false, error: `label impossible à retirer : ${messageOf(err)}` };
+      }
       const controller = this.running.get(jobId);
       if (controller) {
         controller.abort(CANCELLED);
@@ -344,6 +351,9 @@ export class Daemon {
       ref.repo = input.repo;
       ref.issueNumber = input.issueNumber;
       if (!this.d.machine.repos.includes(input.repo)) return { ok: false, error: `repo hors configuration : ${input.repo}` };
+      // Refus le plus courant, vérifié avant l'aller-retour GitHub ; createLabelled revérifie pour retryJob.
+      const active = this.d.store.findActiveByIssue(input.repo, input.issueNumber);
+      if (active) return { ok: false, error: `un job est déjà actif sur ${input.repo}#${input.issueNumber} (${active.id}, ${active.state})` };
       let issue: Issue;
       try {
         issue = await this.d.source.getIssue({ repo: parseRepo(input.repo), number: input.issueNumber });
@@ -394,9 +404,18 @@ export class Daemon {
           res = { ok: false, error: messageOf(err) };
         }
       }
-      this.d.actions.record({ action, source, ...ref, outcome: res.ok ? 'ok' : 'error', error: res.ok ? null : res.error });
+      this.journal({ action, source, ...ref, outcome: res.ok ? 'ok' : 'error', error: res.ok ? null : res.error });
       return res;
     });
+  }
+
+  /** Le journal ne transforme jamais une commande aboutie en rejet : un échec d'écriture est seulement loggé. */
+  private journal(input: ActionInput): void {
+    try {
+      this.d.actions.record(input);
+    } catch (err) {
+      this.log.error({ err }, 'journal des actions : écriture impossible');
+    }
   }
 
   /** Met à jour l'état des PR ouvertes de moins de 30 jours (KPI taux de merge). */
