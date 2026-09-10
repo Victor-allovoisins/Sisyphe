@@ -29,7 +29,7 @@ Le daemon ouvre une **socket UNIX de contrôle** et exécute lui-même toutes le
 
 ### 2.2 Client (`src/daemon/control-client.ts`)
 
-`ControlClient(paths)` : `send(cmd, args)` ouvre la socket, envoie la ligne, lit la réponse, ferme ; timeout 5 s ; socket absente ou connexion refusée → erreur typée `DaemonUnreachableError`. `isReachable()` = `ping` réussi. Utilisé par l'UI et par `sisyphe cancel` : si le daemon répond, la commande passe par la socket (annulation immédiate et journalisée) ; sinon comportement actuel (retrait du label, annulation au prochain démarrage).
+`ControlClient(paths)` : `send(cmd, args)` ouvre la socket, envoie la ligne, lit la réponse, ferme ; timeout 30 s pour les commandes (une commande attend la fin du tick en cours derrière la porte de sérialisation) et 2 s pour `ping` ; socket absente ou connexion refusée → erreur typée `DaemonUnreachableError`. `isReachable()` = `ping` réussi. Utilisé par l'UI et par `sisyphe cancel` : si le daemon répond, la commande passe par la socket (annulation immédiate et journalisée) ; sinon comportement actuel (retrait du label, annulation au prochain démarrage).
 
 ### 2.3 Démarrage et arrêt du daemon depuis l'UI
 
