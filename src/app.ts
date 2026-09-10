@@ -6,6 +6,7 @@ import { Git } from './git/git.js';
 import { GitHubIssueSource } from './github/client.js';
 import type { PipelineDeps } from './jobs/pipeline.js';
 import { createLogger } from './log/logger.js';
+import { ActionStore } from './store/actions.js';
 import { openDatabase } from './store/db.js';
 import { JobStore } from './store/jobs.js';
 import { PhaseStore } from './store/phases.js';
@@ -47,7 +48,7 @@ export async function createApp(opts: { logToFile?: boolean; needsAgent?: boolea
   }
   const agent = machine.agentBackend === 'cli' ? new CliAgentRunner({}) : new SdkAgentRunner({ sandbox: machine.sandbox });
   const deps: PipelineDeps = {
-    store: new JobStore(db), phases: new PhaseStore(db), source: github, agent, git: new Git(paths), paths, machine, log, env: process.env,
+    store: new JobStore(db), phases: new PhaseStore(db), actions: new ActionStore(db), source: github, agent, git: new Git(paths), paths, machine, log, env: process.env,
   };
   return { machine, paths, deps, github };
 }
