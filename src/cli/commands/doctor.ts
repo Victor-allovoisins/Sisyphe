@@ -1,11 +1,12 @@
 import { execa } from 'execa';
-import { statfs } from 'node:fs/promises';
+import { readFile, statfs } from 'node:fs/promises';
 import { userInfo } from 'node:os';
 import { createApp, machineConfigPath, type App } from '../../app.js';
 import { loadMachineConfig, MachineConfigError, type MachineConfig } from '../../config/machine.js';
 import { dataPaths, type DataPaths } from '../../config/paths.js';
 import { REPO_CONFIG_FILENAME, parseRepoConfig } from '../../config/repo.js';
 import { parseRepo, type RepoRef } from '../../github/source.js';
+import { isStaleLaunchAgentPlist, plistPath, STALE_PLIST_MESSAGE } from '../../service/launchd.js';
 import type { ServiceStatus } from '../../service/index.js';
 import { firstWord, runChecks, which, whichOrHint, withHint, type Check } from '../checks.js';
 import { serviceManagerFor } from './service.js';
@@ -35,6 +36,8 @@ export interface BuildChecksInput {
   nodeVersion?: string;
   /** Décide des consignes d'installation, du check caffeinate (macOS) et du check linger (Linux). */
   platform?: NodeJS.Platform;
+  /** Plist de l'agent launchd inspecté par le check « service » ; injectable pour ne jamais lire le vrai. */
+  plistPath?: string;
 }
 
 async function checkApiKeyLive(key: string): Promise<string | { warn: true; message: string }> {
@@ -92,16 +95,27 @@ async function checkDiskSpace(root: string): Promise<string> {
 }
 
 /**
- * État du service. Jamais bloquant : un service absent ou un daemon arrêté est un avertissement, pas une
- * panne — d'où la forme `{ warn }` plutôt qu'un `throw`, réservé ici aux vraies pannes de la sonde.
+ * État du service. Un service absent ou un daemon arrêté est un avertissement, pas une panne — d'où la
+ * forme `{ warn }` plutôt qu'un `throw`, réservé ici aux vraies pannes : sonde en erreur, ou agent launchd
+ * obsolète, qui fait mentir tout le reste de la ligne (« au boot » et l'arrêt lui-même).
  */
-async function checkService(service: DoctorService): Promise<string | { warn: true; message: string }> {
+async function checkService(service: DoctorService, plist: string): Promise<string | { warn: true; message: string }> {
   const s = await service.status();
   // `none` : rien n'est installable ici, inutile de conseiller une réinstallation.
   if (s.kind === 'none') return { warn: true, message: `aucun service géré sur cette plateforme (${s.detail})` };
   if (!s.installed) return { warn: true, message: `${s.kind} : non installé — lancer \`sisyphe setup --reinstall-service\`` };
+  if (s.kind === 'launchd') await assertFreshLaunchAgent(plist);
   const boot = s.enabledAtBoot ? 'oui' : 'non';
   return `${s.kind}, ${s.running ? `actif (pid ${s.pid ?? '?'})` : 'arrêté'}, au boot : ${boot} · ${s.detail}`;
+}
+
+/**
+ * Lève si le plist installé vient d'une version antérieure. Plist illisible (absent, droits) : aucun verdict
+ * — « sans `PathState` » doit vouloir dire « lu, et la clé n'y est pas », jamais « pas pu lire ».
+ */
+async function assertFreshLaunchAgent(plist: string): Promise<void> {
+  const text = await readFile(plist, 'utf8').catch(() => null);
+  if (text !== null && isStaleLaunchAgentPlist(text)) throw new Error(STALE_PLIST_MESSAGE);
 }
 
 /**
@@ -169,7 +183,12 @@ export function buildChecks(input: BuildChecksInput): Check[] {
   }
 
   const { service } = input;
-  if (service) checks.push({ name: 'service', warn: true, run: () => checkService(service) });
+  // Sans `warn: true` : une sonde en panne ou un agent launchd obsolète sont des échecs (❌), pas des
+  // détails. Les cas non bloquants (rien d'installé, plateforme sans service) passent par `{ warn }`.
+  if (service) {
+    const plist = input.plistPath ?? plistPath();
+    checks.push({ name: 'service', run: () => checkService(service, plist) });
+  }
   if (platform === 'linux') checks.push({ name: 'linger', warn: true, run: checkLinger });
 
   if (input.machine && input.github) {

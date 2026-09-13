@@ -47,7 +47,7 @@ Relancer le même script :
 ~/sisyphe/install.sh
 ```
 
-Il fait `git pull --ff-only` (seulement si le clone a un dépôt distant et un arbre de travail propre ; un pull impossible — branche sans suivi distant, historique divergent — ne fait pas échouer l'installation, le build se fait sur l'état local), rebuild, et ne rejoue pas `sisyphe setup` quand la config existe déjà. Si l'unité de service a changé d'une version à l'autre : `sisyphe setup --reinstall-service`.
+Il fait `git pull --ff-only` (seulement si le clone a un dépôt distant et un arbre de travail propre ; un pull impossible — branche sans suivi distant, historique divergent — ne fait pas échouer l'installation, le build se fait sur l'état local), rebuild, et ne rejoue pas l'entretien de `sisyphe setup` quand la config existe déjà : il lance `sisyphe setup --reinstall-service`, qui ne demande rien, ne démarre rien, et réécrit l'unité de service au cas où elle aurait changé d'une version à l'autre. `sisyphe doctor` signale un agent launchd resté à une version antérieure.
 
 ## Service
 

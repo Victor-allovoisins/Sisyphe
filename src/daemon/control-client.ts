@@ -6,14 +6,21 @@ import type { CommandResult, ControlArgs, ControlCommand } from './control-types
 const DEFAULT_TIMEOUT_MS = 30_000;
 /** `ping` est traité sans passer par la porte : ne pas répondre vite, c'est ne pas répondre. */
 const DEFAULT_PING_TIMEOUT_MS = 2_000;
-/** Socket absente, daemon arrêté, connexion coupée pendant l'arrêt : autant de façons de ne pas répondre. */
-const UNREACHABLE_CODES = new Set(['ENOENT', 'ENOTSOCK', 'ECONNREFUSED', 'ECONNRESET', 'EPIPE']);
+/** Connexion établie puis coupée (arrêt du daemon en cours) : c'est encore une façon de ne pas répondre. */
+const UNREACHABLE_CODES = new Set(['ECONNRESET', 'EPIPE']);
 
-/** Le daemon ne répond pas : socket absente, connexion refusée ou délai dépassé. Les autres erreurs sont des pannes. */
+/**
+ * Le daemon ne répond pas : socket absente, connexion refusée ou impossible, délai dépassé. Les autres
+ * erreurs sont des pannes. `timedOut` : la commande est partie et le délai a expiré — elle a pu être
+ * exécutée quand même, l'appelant ne doit pas annoncer qu'il ne s'est rien passé.
+ */
 export class DaemonUnreachableError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
+  readonly timedOut: boolean;
+
+  constructor(message: string, options?: ErrorOptions & { timedOut?: boolean }) {
     super(message, options);
     this.name = 'DaemonUnreachableError';
+    this.timedOut = options?.timedOut ?? false;
   }
 }
 
@@ -83,8 +90,15 @@ export class ControlClient {
         socket.destroy();
         fn();
       };
-      const timer = setTimeout(() => settle(() => reject(new DaemonUnreachableError(`le daemon ne répond pas (${timeoutMs} ms)`))), timeoutMs);
-      socket.on('connect', () => socket.write(payload));
+      const timer = setTimeout(
+        () => settle(() => reject(new DaemonUnreachableError(`le daemon ne répond pas (${timeoutMs} ms)`, { timedOut: true }))),
+        timeoutMs,
+      );
+      let connected = false;
+      socket.on('connect', () => {
+        connected = true;
+        socket.write(payload);
+      });
       socket.on('data', (chunk: Buffer) => {
         chunks.push(chunk);
         const all = Buffer.concat(chunks);
@@ -96,7 +110,12 @@ export class ControlClient {
         settle(() => (all.length > 0 ? resolve(all) : reject(new DaemonUnreachableError('le daemon a fermé la connexion sans répondre'))));
       });
       socket.on('error', (err: NodeJS.ErrnoException) => {
-        settle(() => reject(UNREACHABLE_CODES.has(err.code ?? '') ? new DaemonUnreachableError(`daemon injoignable (${err.code})`, { cause: err }) : err));
+        // Toute erreur d'avant la connexion dit la même chose : cette socket ne mène à aucun daemon —
+        // absente (ENOENT), refusée (ECONNREFUSED), chemin trop long (EINVAL), droits (EACCES)… Les
+        // recenser une à une laissait les autres devenir des pannes internes. Seul le code est repris :
+        // le message de Node contient le chemin de la socket, qui n'a rien à faire dans une réponse HTTP.
+        const unreachable = !connected || UNREACHABLE_CODES.has(err.code ?? '');
+        settle(() => reject(unreachable ? new DaemonUnreachableError(`daemon injoignable (${err.code ?? 'erreur de connexion'})`, { cause: err }) : err));
       });
     });
   }

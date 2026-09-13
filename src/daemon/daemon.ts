@@ -403,8 +403,9 @@ export class Daemon {
   }
 
   /**
-   * Crée le job puis pose le label, dans cet ordre : le poll refuse un label posé par l'App elle-même
-   * (`canTrigger`), il doit donc déjà trouver un job actif et passer son chemin. Et comme `watchCancellations`
+   * Crée le job puis pose le label, dans cet ordre : `canTrigger` ignore nos propres poses de label et
+   * retombe sur l'auteur de l'issue, donc un poll intercalé créerait un second job s'il n'en trouvait pas
+   * déjà un actif — il doit le trouver et passer son chemin. Et comme `watchCancellations`
    * annule un job actif sans label, la séquence entière tient sous la porte de sérialisation.
    */
   private async createLabelled(input: { repo: string; issueNumber: number; issueTitle: string }, ref: ActionRef): Promise<CommandResult<Job>> {

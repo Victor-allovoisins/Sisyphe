@@ -16,7 +16,6 @@ describe('NoneServiceManager', () => {
   /** Réponses successives d'`isReachable()` ; épuisées → la dernière est répétée. */
   let reachable: boolean[];
   let sent: string[];
-  let clock: number;
   let slept: number[];
   /** Ce que le faux daemon écrit sur le descripteur reçu : prouve qu'il pointe bien sur le log. */
   let childOutput: string;
@@ -43,8 +42,7 @@ describe('NoneServiceManager', () => {
           once: (_event, cb) => { if (spawnError) cb(spawnError); },
         };
       },
-      sleep: async (ms) => { slept.push(ms); clock += ms; },
-      now: () => clock,
+      sleep: async (ms) => { slept.push(ms); },
     });
   }
 
@@ -56,7 +54,6 @@ describe('NoneServiceManager', () => {
     pings = 0;
     reachable = [true];
     sent = [];
-    clock = 1_000;
     slept = [];
     childOutput = '';
     spawnError = null;
@@ -78,7 +75,7 @@ describe('NoneServiceManager', () => {
     expect(pings).toBe(0);
   });
 
-  it('start lance node <script> start détaché, sortie vers daemon-stdout.log, puis unref ; succès dès que la socket répond', async () => {
+  it('start lance node <script> start détaché, sortie vers daemon-stdout.log, puis unref, sans attendre la socket', async () => {
     childOutput = 'hello\n';
     await manager().start();
     expect(spawned).toHaveLength(1);
@@ -94,8 +91,9 @@ describe('NoneServiceManager', () => {
     expect(s!.unrefs).toBe(1);
     expect(await readFile(detachedLogPath(paths.logsDir), 'utf8')).toBe('hello\n');
     expect((await stat(detachedLogPath(paths.logsDir))).mode & 0o777).toBe(0o600);
-    expect(pings).toBe(1);
-    expect(slept).toEqual([]);
+    // L'attente de la socket appartient à l'appelant (UI, CLI) : ici, rien d'autre que la grâce du spawn.
+    expect(pings).toBe(0);
+    expect(slept).toEqual([250]);
   });
 
   it('start ouvre le log en ajout : un démarrage précédent n’est pas écrasé', async () => {
@@ -105,32 +103,21 @@ describe('NoneServiceManager', () => {
     expect(await readFile(detachedLogPath(paths.logsDir), 'utf8')).toBe('ancien\nnouveau\n');
   });
 
-  it('start réussit quand la socket répond au troisième essai, 250 ms entre deux', async () => {
-    reachable = [false, false, true];
-    await manager().start();
-    expect(pings).toBe(3);
-    expect(slept).toEqual([250, 250]);
-  });
-
-  it('start échoue après 30 s sans réponse, avec les dernières lignes du log', async () => {
+  it('start rend la main sans attendre la socket : une socket muette n’est plus un échec ici', async () => {
     reachable = [false];
-    childOutput = Array.from({ length: 25 }, (_, i) => `ligne ${i + 1}`).join('\n') + '\n';
-    const logPath = detachedLogPath(paths.logsDir);
-    const err = await manager().start().then(() => null, (e: Error) => e);
-    expect(err?.message).toBe(
-      `le daemon n'a pas répondu en 30 s ; dernières lignes de ${logPath} :\n…(5 lignes coupées)\n${Array.from({ length: 20 }, (_, i) => `ligne ${i + 6}`).join('\n')}`,
-    );
-    // Même budget que l'attente de l'UI après `start()` : un démarrage lent mais abouti n'est pas un échec.
-    expect(slept.reduce((a, b) => a + b, 0)).toBe(30_000);
-    expect(pings).toBe(121); // 0, 250, …, 30000 ms
+    await expect(manager().start()).resolves.toBeUndefined();
+    // Aucune sonde, et une seule attente : celle de la grâce du spawn. Le budget d'attente est unique,
+    // côté appelant — cumulés, les deux dépassaient l'abandon de la page (45 s).
+    expect(pings).toBe(0);
+    expect(slept).toEqual([250]);
   });
 
-  it('start échoue aussitôt quand le spawn échoue (exécutable introuvable…), sans attendre la socket', async () => {
+  it('start échoue quand le spawn échoue (exécutable introuvable…), sans attendre la socket', async () => {
     reachable = [false];
     spawnError = new Error('spawn /usr/bin/node ENOENT');
     await expect(manager().start()).rejects.toThrow('impossible de lancer le daemon : spawn /usr/bin/node ENOENT');
     expect(pings).toBe(0);
-    expect(slept).toEqual([]);
+    expect(slept).toEqual([250]);
   });
 
   it('stop envoie stop sur la socket quand un daemon vivant tient le verrou', async () => {

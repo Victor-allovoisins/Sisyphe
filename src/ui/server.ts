@@ -9,9 +9,10 @@ import { UiInputError, type UiData } from './data.js';
  * Page unique embarquée : tout est inline, aucune ressource externe, aucun `eval`. `frame-ancestors 'none'`
  * interdit l'encadrement : sans lui, un site tiers afficherait cette page dans une iframe invisible et ferait
  * cliquer la victime sur Pause ou Poll — des actions sans confirmation, dont les requêtes partiraient de la
- * page elle-même et passeraient donc toutes les gardes anti-CSRF.
+ * page elle-même et passeraient donc toutes les gardes anti-CSRF. `form-action 'self'` est explicite : cette
+ * directive ne retombe pas sur `default-src`, sans elle un formulaire injecté posterait vers l'extérieur.
  */
-const CSP = "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; frame-ancestors 'none'";
+const CSP = "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; frame-ancestors 'none'; form-action 'self'";
 const SECURITY_HEADERS: Record<string, string> = {
   'Content-Security-Policy': CSP,
   'X-Content-Type-Options': 'nosniff',

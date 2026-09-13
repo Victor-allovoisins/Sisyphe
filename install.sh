@@ -445,11 +445,19 @@ step "Configuration"
 config="${SISYPHE_HOME:-$HOME/.sisyphe}/config.yml"
 if [ "$NO_SETUP" = 1 ]; then
 	printf '  ignorée (--no-setup)\n'
-elif [ -f "$config" ]; then
-	printf '  configuration déjà présente : %s\n' "$config"
-	printf '  (réécrire le service : sisyphe setup --reinstall-service)\n'
 elif [ "$DRY_RUN" != 1 ] && ! have sisyphe; then
 	printf '  sisyphe introuvable sur le PATH : ouvrir un nouveau terminal puis lancer « sisyphe setup »\n'
+elif [ -f "$config" ]; then
+	# Mise à jour : rien à redemander, mais le service posé par une version
+	# antérieure doit être réécrit — sinon l ancien agent (RunAtLoad true,
+	# KeepAlive inconditionnel) survit à la mise à jour et contredit tout ce
+	# qu affichent « sisyphe service status » et l interface. La commande est
+	# idempotente et ne démarre rien.
+	printf '  configuration déjà présente : %s\n' "$config"
+	if ! run sisyphe setup --reinstall-service; then
+		# Le build est déjà en place : ne pas faire échouer l installation pour ça.
+		printf '  réinstallation du service impossible : relancer « sisyphe setup --reinstall-service »\n'
+	fi
 else
 	run sisyphe setup
 fi

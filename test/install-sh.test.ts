@@ -232,6 +232,33 @@ describe('install.sh', () => {
     expect(r.commands).toEqual(['npm ci', 'npm run build', 'npm link', 'sisyphe setup']);
   });
 
+  it('configuration déjà présente : le service est réécrit, sans rien redemander', async () => {
+    const home = await tempDir('sisyphe-inst-home-');
+    await mkdir(join(home, '.sisyphe'), { recursive: true });
+    await writeFile(join(home, '.sisyphe', 'config.yml'), 'repos: []\n');
+    const r = await runInstall({ os: 'darwin', fakes: allPresent, home });
+    expect(r.exitCode).toBe(0);
+    // Sans cette réécriture, l'agent launchd d'une version antérieure survit à la mise à jour.
+    expect(r.commands).toEqual(['npm ci', 'npm run build', 'npm link', 'sisyphe setup --reinstall-service']);
+    expect(r.stdout).toContain('configuration déjà présente');
+  });
+
+  it('réinstallation du service en échec : l installation n échoue pas, la commande est rappelée', async () => {
+    const dir = await tempDir('sisyphe-inst-clone-');
+    const script = join(dir, 'install.sh');
+    await copyFile(SCRIPT, script);
+    await chmod(script, 0o755);
+    const home = await tempDir('sisyphe-inst-home-');
+    await mkdir(join(home, '.sisyphe'), { recursive: true });
+    await writeFile(join(home, '.sisyphe', 'config.yml'), 'repos: []\n');
+    const log = join(await tempDir('sisyphe-inst-log-'), 'exec.log');
+    const fakes = { ...tracingFakes(log), sisyphe: `${trace('sisyphe', log)}\nexit 1` };
+    const r = await runInstall({ os: 'darwin', fakes, script, home, dryRun: false });
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain('relancer « sisyphe setup --reinstall-service »');
+    expect(await readLog(log)).toContain('sisyphe|2|setup --reinstall-service');
+  });
+
   it('--no-setup et --no-pull sont respectés', async () => {
     const fakes: Fakes = { ...allPresent, git: 'case "$1" in remote) echo origin ;; esac' };
     const r = await runInstall({ os: 'darwin', fakes, args: ['--no-setup', '--no-pull'] });

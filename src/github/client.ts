@@ -25,9 +25,23 @@ export function hasWriteAccess(permission: string | undefined): boolean {
 
 type LabelEvent = { event: string; label?: { name?: string | null } | null; actor?: { login: string } | null };
 
-export function lastLabeler(events: LabelEvent[], label: string): string | null {
+/** Les logins GitHub sont insensibles à la casse : `Sisyphe[bot]` et `sisyphe[bot]` sont le même compte. */
+function sameLogin(a: string | null | undefined, b: string | null | undefined): boolean {
+  return !!a && !!b && a.toLowerCase() === b.toLowerCase();
+}
+
+/**
+ * Dernier compte à avoir posé `label`. `ignoreLogin` — notre propre App — est sauté : un label reposé par
+ * Sisyphe lui-même (job créé depuis l'interface, relance) ne doit jamais passer pour le demandeur, sans quoi
+ * le poll refuserait l'issue et accuserait publiquement notre bot de ne pas avoir les droits d'écriture.
+ */
+export function lastLabeler(events: LabelEvent[], label: string, ignoreLogin?: string | null): string | null {
   let login: string | null = null;
-  for (const e of events) if (e.event === 'labeled' && e.label?.name === label) login = e.actor?.login ?? null;
+  for (const e of events) {
+    if (e.event !== 'labeled' || e.label?.name !== label) continue;
+    if (sameLogin(e.actor?.login, ignoreLogin)) continue;
+    login = e.actor?.login ?? null;
+  }
   return login;
 }
 
@@ -40,6 +54,7 @@ const status = (err: unknown) => (err as { status?: number }).status;
 export class GitHubIssueSource implements IssueSource {
   private readonly app: App;
   private octokitPromise: Promise<Octokit> | null = null;
+  private appSlugPromise: Promise<string> | null = null;
   private readonly defaultBranches = new Map<string, string>();
 
   constructor(private readonly cfg: GitHubClientConfig) {
@@ -60,11 +75,38 @@ export class GitHubIssueSource implements IssueSource {
     return withRetry(async () => fn(await this.octokit()), { ...this.cfg.retry, ...opts });
   }
 
+  /**
+   * Slug de l'App (`sisyphe`), lu une fois puis mémorisé : il nomme l'App dans `doctor` et, suffixé de
+   * `[bot]`, désigne notre propre compte dans les événements d'issue. Un slug absent lève plutôt que de
+   * rendre une valeur de repli : une comparaison qui ne peut rien reconnaître ferait accuser un tiers.
+   * Un échec n'est pas mémorisé — l'appel suivant réessaie.
+   */
+  private appSlug(): Promise<string> {
+    this.appSlugPromise ??= withRetry(() => this.app.octokit.request('GET /app'), this.cfg.retry)
+      .then((r) => {
+        const slug = (r.data as { slug?: string }).slug;
+        if (!slug) throw new Error("GET /app n'a pas renvoyé le slug de l'App");
+        return slug;
+      })
+      .catch((err: unknown) => {
+        this.appSlugPromise = null;
+        throw err;
+      });
+    return this.appSlugPromise;
+  }
+
+  /** Login de notre propre App tel qu'il apparaît comme acteur d'un événement d'issue. */
+  private async appLogin(): Promise<string> {
+    return `${await this.appSlug()}[bot]`;
+  }
+
   /** Vérifie l'authentification de l'App et l'accès à l'installation. Utilisé par `doctor`. */
   async checkAccess(): Promise<{ appSlug: string; repos: string[] }> {
-    const app = await withRetry(() => this.app.octokit.request('GET /app'));
-    const repos = await this.call((o) => o.paginate(o.rest.apps.listReposAccessibleToInstallation, { per_page: 100 }));
-    return { appSlug: (app.data as { slug?: string }).slug ?? '?', repos: repos.map((r) => r.full_name) };
+    const [appSlug, repos] = await Promise.all([
+      this.appSlug(),
+      this.call((o) => o.paginate(o.rest.apps.listReposAccessibleToInstallation, { per_page: 100 })),
+    ]);
+    return { appSlug, repos: repos.map((r) => r.full_name) };
   }
 
   async getFileContent(repo: RepoRef, path: string, ref?: string): Promise<string | null> {
@@ -115,12 +157,19 @@ export class GitHubIssueSource implements IssueSource {
   }
 
   async canTrigger(ref: IssueRef): Promise<TriggerCheck> {
-    const events = await this.call((o) =>
-      o.paginate(o.rest.issues.listEvents, { owner: ref.repo.owner, repo: ref.repo.name, issue_number: ref.number, per_page: 100 }),
-    );
-    let login = lastLabeler(events as unknown as LabelEvent[], this.cfg.triggerLabel);
-    // Aucun événement `labeled` retrouvé (historique tronqué, label posé à la création…) : si le label
-    // trigger est bien présent, on retombe sur l'auteur de l'issue plutôt que de refuser sans raison.
+    // Notre propre login est indispensable pour ne pas nous prendre nous-mêmes pour le demandeur (label
+    // reposé par `enqueue`/`retry`). Introuvable : on lève, `poll` ignore l'issue et réessaiera — jamais
+    // un refus, qui ferait retirer le label et publier une accusation sur le repo du client.
+    const [events, self] = await Promise.all([
+      this.call((o) =>
+        o.paginate(o.rest.issues.listEvents, { owner: ref.repo.owner, repo: ref.repo.name, issue_number: ref.number, per_page: 100 }),
+      ),
+      this.appLogin(),
+    ]);
+    let login = lastLabeler(events as unknown as LabelEvent[], this.cfg.triggerLabel, self);
+    // Aucun événement `labeled` retrouvé (historique tronqué, label posé à la création, label posé par
+    // nous seuls…) : si le label trigger est bien présent, on retombe sur l'auteur de l'issue plutôt que
+    // de refuser sans raison.
     if (!login) {
       const issue = await this.call((o) => o.rest.issues.get({ owner: ref.repo.owner, repo: ref.repo.name, issue_number: ref.number }));
       if (labelNames(issue.data.labels).includes(this.cfg.triggerLabel)) login = issue.data.user?.login ?? null;

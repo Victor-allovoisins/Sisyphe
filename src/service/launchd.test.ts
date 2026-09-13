@@ -5,7 +5,9 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { dataPaths } from '../config/paths.js';
 import type { Exec, ExecResult } from './exec.js';
-import { LAUNCHD_LABEL, LaunchdServiceManager, enabledPath, parseLaunchctlPrint, plistPath, renderPlist } from './launchd.js';
+import {
+  LAUNCHD_LABEL, LaunchdServiceManager, enabledPath, isStaleLaunchAgentPlist, parseLaunchctlPrint, plistPath, renderPlist,
+} from './launchd.js';
 import type { ServiceContext } from './types.js';
 
 describe('renderPlist', () => {
@@ -37,6 +39,19 @@ describe('renderPlist', () => {
       '<key>KeepAlive</key>\n  <dict>\n    <key>PathState</key>\n    <dict>\n      <key>/Users/v/.sisyphe/enabled</key><true/>\n    </dict>\n  </dict>',
     );
     expect(p).not.toContain('<key>KeepAlive</key><true/>');
+  });
+
+  it('isStaleLaunchAgentPlist : le plist courant n’est jamais obsolète, celui de la version antérieure l’est', () => {
+    const fresh = renderPlist({ ...input, env: {} });
+    expect(isStaleLaunchAgentPlist(fresh)).toBe(false);
+    // Agent de l'ancien setup : RunAtLoad true et KeepAlive inconditionnel.
+    const legacy = fresh
+      .replace('<key>RunAtLoad</key><false/>', '<key>RunAtLoad</key><true/>')
+      .replace(/ {2}<key>KeepAlive<\/key>\n {2}<dict>[\s\S]*?<\/dict>\n {2}<\/dict>/, '  <key>KeepAlive</key><true/>');
+    expect(isStaleLaunchAgentPlist(legacy)).toBe(true);
+    // Chacun des deux défauts suffit à son tour.
+    expect(isStaleLaunchAgentPlist(fresh.replace('<key>RunAtLoad</key><false/>', '<key>RunAtLoad</key>\n  <true/>'))).toBe(true);
+    expect(isStaleLaunchAgentPlist(fresh.replace('<key>PathState</key>', '<key>OtherJobEnabled</key>'))).toBe(true);
   });
 
   it('rend env tel quel (le PATH du daemon est composé par defaultServiceContext) et redirige stdout vers /dev/null', () => {
@@ -192,6 +207,20 @@ describe('LaunchdServiceManager', () => {
   it('start : un kickstart en échec remonte la sortie launchctl et retire enabled (un install() ultérieur ne doit pas démarrer)', async () => {
     replies = { kickstart: [fail('Could not find service')] };
     await expect(manager().start()).rejects.toThrow("Impossible de démarrer l'agent launchd : Could not find service");
+    expect(await exists(enabledPath(join(root, 'data')))).toBe(false);
+  });
+
+  it('start : un kickstart en échec avec un daemon vivant garde enabled (ne pas couper le boot d’un daemon en vie)', async () => {
+    await writeFile(join(root, 'data', 'daemon.lock'), String(process.pid));
+    replies = { kickstart: [fail('Service is already loaded')] };
+    await expect(manager().start()).rejects.toThrow("Impossible de démarrer l'agent launchd");
+    expect(await exists(enabledPath(join(root, 'data')))).toBe(true);
+  });
+
+  it('start : un verrou périmé ne protège pas enabled', async () => {
+    await writeFile(join(root, 'data', 'daemon.lock'), String(2 ** 22 - 1));
+    replies = { kickstart: [fail('Could not find service')] };
+    await expect(manager().start()).rejects.toThrow("Impossible de démarrer l'agent launchd");
     expect(await exists(enabledPath(join(root, 'data')))).toBe(false);
   });
 

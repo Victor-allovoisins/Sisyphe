@@ -21,6 +21,18 @@ describe('client helpers', () => {
     expect(lastLabeler(events, 'sisyphe')).toBe('carol');
     expect(lastLabeler(events, 'absent')).toBeNull();
   });
+
+  it('lastLabeler saute nos propres poses de label et garde le dernier humain', () => {
+    const human = { event: 'labeled', label: { name: 'sisyphe' }, actor: { login: 'carol' } };
+    const self = { event: 'labeled', label: { name: 'sisyphe' }, actor: { login: 'sisyphe[bot]' } };
+    expect(lastLabeler([human, self], 'sisyphe', 'sisyphe[bot]')).toBe('carol');
+    // Casse GitHub non significative : `Sisyphe[bot]` est le même compte.
+    expect(lastLabeler([human, { ...self, actor: { login: 'Sisyphe[bot]' } }], 'sisyphe', 'sisyphe[bot]')).toBe('carol');
+    // Nous seuls avons posé le label : personne, donc repli sur l'auteur côté canTrigger.
+    expect(lastLabeler([self], 'sisyphe', 'sisyphe[bot]')).toBeNull();
+    // Les autres bots restent des poseurs de label comme les autres (ils seront refusés plus loin).
+    expect(lastLabeler([{ ...self, actor: { login: 'dependabot[bot]' } }], 'sisyphe', 'sisyphe[bot]')).toBe('dependabot[bot]');
+  });
   it('labelNames accepte chaînes et objets', () => {
     expect(labelNames(['a', { name: 'b' }, { name: undefined }])).toEqual(['a', 'b']);
   });
@@ -34,10 +46,17 @@ const repo: RepoRef = { owner: 'acme', name: 'demo', full: 'acme/demo' };
 
 /** Le client réel se valide en Task 25 ; ici on remplace juste l'Octokit interne par un stub minimal. */
 function makeClient(): GitHubIssueSource {
-  return new GitHubIssueSource({
+  const src = new GitHubIssueSource({
     appId: 1, installationId: 1, privateKey: 'x', triggerLabel: 'sisyphe',
     retry: { sleep: async () => undefined, baseDelayMs: 0 },
   });
+  // Le slug de l'App est normalement lu par `GET /app` (JWT signé, réseau) : ici on le pré-remplit.
+  injectAppSlug(src, 'sisyphe');
+  return src;
+}
+
+function injectAppSlug(src: GitHubIssueSource, slug: string | Promise<string>): void {
+  (src as unknown as { appSlugPromise: Promise<string> }).appSlugPromise = Promise.resolve(slug);
 }
 
 function inject(src: GitHubIssueSource, stub: unknown): void {
@@ -57,6 +76,53 @@ describe('GitHubIssueSource (Octokit factice)', () => {
     });
     const r = await src.canTrigger({ repo, number: 1 });
     expect(r).toEqual({ ok: true, login: 'alice' });
+  });
+
+  it('canTrigger : label posé par notre propre App seule → repli sur l’auteur, jamais un refus', async () => {
+    const src = makeClient();
+    inject(src, {
+      rest: {
+        issues: { get: async () => ({ data: { labels: ['sisyphe'], user: { login: 'alice' } } }) },
+        repos: { getCollaboratorPermissionLevel: async () => ({ data: { permission: 'write' } }) },
+      },
+      paginate: async () => [{ event: 'labeled', label: { name: 'sisyphe' }, actor: { login: 'sisyphe[bot]' } }],
+      graphql: async () => ({}),
+    });
+    expect(await src.canTrigger({ repo, number: 1 })).toEqual({ ok: true, login: 'alice' });
+  });
+
+  it('canTrigger : un humain puis notre App → c’est l’humain qui compte, droits vérifiés sur lui', async () => {
+    const src = makeClient();
+    let asked: string | undefined;
+    inject(src, {
+      rest: {
+        issues: { get: async () => ({ data: { labels: ['sisyphe'], user: { login: 'alice' } } }) },
+        repos: {
+          getCollaboratorPermissionLevel: async ({ username }: { username: string }) => {
+            asked = username;
+            return { data: { permission: 'write' } };
+          },
+        },
+      },
+      paginate: async () => [
+        { event: 'labeled', label: { name: 'sisyphe' }, actor: { login: 'bob' } },
+        { event: 'labeled', label: { name: 'sisyphe' }, actor: { login: 'sisyphe[bot]' } },
+      ],
+      graphql: async () => ({}),
+    });
+    expect(await src.canTrigger({ repo, number: 1 })).toEqual({ ok: true, login: 'bob' });
+    expect(asked).toBe('bob');
+  });
+
+  it('canTrigger : slug de l’App illisible → rejet (transitoire), jamais un refus', async () => {
+    const src = makeClient();
+    injectAppSlug(src, Promise.reject(new Error('GET /app a échoué')));
+    inject(src, {
+      rest: { issues: {}, repos: {} },
+      paginate: async () => [{ event: 'labeled', label: { name: 'sisyphe' }, actor: { login: 'sisyphe[bot]' } }],
+      graphql: async () => ({}),
+    });
+    await expect(src.canTrigger({ repo, number: 1 })).rejects.toThrow('GET /app a échoué');
   });
 
   it('canTrigger : labeler bot → ok false', async () => {

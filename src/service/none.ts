@@ -1,24 +1,20 @@
 import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process';
 import { closeSync, openSync } from 'node:fs';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { readLock } from '../daemon/lock.js';
 import type { ActionSource } from '../store/actions.js';
-import { tail } from '../util/text.js';
 import type { ServiceContext, ServiceManager, ServiceStatus } from './types.js';
 
 export const NO_SERVICE_MESSAGE = 'aucun service géré sur cette plateforme';
 
 /**
- * Attente maximale de la socket de contrôle après le spawn, et pas entre deux essais. Chaque `isReachable()`
- * peut lui-même durer jusqu'au délai du ping (2 s). Même budget que l'attente de l'UI après `start()` : le
- * prologue du daemon interroge GitHub repo par repo, et un démarrage lent mais abouti n'est pas un échec.
+ * Temps laissé à Node pour signaler un spawn impossible (exécutable introuvable ou non exécutable), qu'il
+ * ne rapporte que par un événement. Au-delà, le daemon est lancé : c'est à l'appelant d'attendre la socket,
+ * lui seul connaît son budget — deux attentes en série dépassaient l'abandon de la page (45 s).
  */
-const START_TIMEOUT_MS = 30_000;
-const START_POLL_MS = 250;
-/** Lignes du log rapportées quand le daemon ne répond pas à temps. */
-const LOG_TAIL_LINES = 20;
+const SPAWN_ERROR_GRACE_MS = 250;
 
 /** Sous-ensemble structurel de `child_process.spawn` : un test passe un faux qui n'exécute rien. */
 export type Spawn = (
@@ -30,8 +26,6 @@ export type Spawn = (
 export interface NoneServiceManagerOptions {
   spawn?: Spawn;
   sleep?: (ms: number) => Promise<void>;
-  /** Horloge en ms, injectable pour borner l'attente sans attendre réellement. */
-  now?: () => number;
 }
 
 /** Fichier où le daemon détaché écrit stdout/stderr ; distinct du log pino (`logsDir/daemon.log`) écrit par le daemon lui-même. */
@@ -46,7 +40,6 @@ export function detachedLogPath(logsDir: string): string {
 export class NoneServiceManager implements ServiceManager {
   private readonly spawn: Spawn;
   private readonly sleep: (ms: number) => Promise<void>;
-  private readonly now: () => number;
 
   constructor(
     private readonly ctx: ServiceContext,
@@ -54,7 +47,6 @@ export class NoneServiceManager implements ServiceManager {
   ) {
     this.spawn = opts.spawn ?? nodeSpawn;
     this.sleep = opts.sleep ?? ((ms) => delay(ms));
-    this.now = opts.now ?? Date.now;
   }
 
   async status(): Promise<ServiceStatus> {
@@ -74,8 +66,13 @@ export class NoneServiceManager implements ServiceManager {
     throw new Error(NO_SERVICE_MESSAGE);
   }
 
+  /**
+   * Lance le daemon détaché puis rend la main : vérifier qu'il répond appartient à l'appelant, qui seul
+   * sait combien de temps il peut attendre (l'interface a son propre budget, et le log du daemon détaché
+   * lui reste accessible pour dire pourquoi un démarrage n'a pas abouti).
+   */
   async start(): Promise<void> {
-    const { paths, nodePath, scriptPath, env, client } = this.ctx;
+    const { paths, nodePath, scriptPath, env } = this.ctx;
     const lock = await readLock(paths);
     if (lock?.alive) throw new Error(`daemon déjà démarré (pid ${lock.pid})`);
     await mkdir(paths.logsDir, { recursive: true, mode: 0o700 });
@@ -96,15 +93,8 @@ export class NoneServiceManager implements ServiceManager {
     } finally {
       closeSync(fd);
     }
-    const deadline = this.now() + START_TIMEOUT_MS;
-    while (true) {
-      if (spawnError) throw new Error(`impossible de lancer le daemon : ${spawnError.message}`);
-      if (await client.isReachable()) return;
-      if (this.now() >= deadline) break;
-      await this.sleep(START_POLL_MS);
-    }
-    const log = await readFile(logPath, 'utf8').catch(() => '');
-    throw new Error(`le daemon n'a pas répondu en ${START_TIMEOUT_MS / 1000} s ; dernières lignes de ${logPath} :\n${tail(log.trimEnd(), LOG_TAIL_LINES)}`);
+    await this.sleep(SPAWN_ERROR_GRACE_MS);
+    if (spawnError) throw new Error(`impossible de lancer le daemon : ${spawnError.message}`);
   }
 
   /** Idempotent : sans daemon vivant derrière le verrou, rien à arrêter — pas d'erreur « injoignable ». */

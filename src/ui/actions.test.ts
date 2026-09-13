@@ -82,6 +82,22 @@ describe('runAction : traduction des résultats', () => {
     expect(res).toEqual({ status: 502, body: { error: 'daemon injoignable (ENOENT)' } });
   });
 
+  it('délai client dépassé → 502 qui dit que l’action a pu être appliquée quand même', async () => {
+    const client = fakeClient({
+      send: vi.fn<ActionClient['send']>(() =>
+        // Rien n'annule la commande côté daemon : elle peut aboutir après coup et apparaître dans le journal.
+        Promise.reject(new DaemonUnreachableError('le daemon ne répond pas (30000 ms)', { timedOut: true })),
+      ),
+    });
+
+    const res = await runAction('poll', {}, await deps({ client }));
+
+    expect(res).toEqual({
+      status: 502,
+      body: { error: "Le daemon n'a pas répondu à temps ; l'action a peut-être été appliquée, vérifier le journal." },
+    });
+  });
+
   it('panne quelconque → 500 sans stack', async () => {
     const client = fakeClient({ send: vi.fn<ActionClient['send']>(() => Promise.reject(new Error('réponse illisible du daemon'))) });
 

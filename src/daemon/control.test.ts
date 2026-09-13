@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { REPO, makeHarness, repoRef } from '../../test/helpers/harness.js';
 import { ControlClient } from './control-client.js';
-import { startControlServer, type ControlTarget } from './control.js';
+import { MAX_SOCKET_PATH_BYTES, SocketPathTooLongError, startControlServer, type ControlTarget } from './control.js';
 import type { DaemonStatus } from './control-types.js';
 import { Daemon, type DaemonOptions } from './daemon.js';
 
@@ -91,6 +91,17 @@ describe('socket de contrôle : cycle de vie', () => {
     const res = await client.send<DaemonStatus>('ping');
     expect(res).toMatchObject({ ok: true, result: { pid: process.pid, paused: false, running: 0, queued: 0 } });
     expect((await stat(h.paths.controlSocketPath)).mode & 0o777).toBe(0o600);
+  });
+
+  it('chemin de socket trop long : refus nommé au démarrage, qui dit quoi raccourcir', async () => {
+    const h = await makeHarness({ steps: [], issues: [] });
+    const path = join(h.root, 'x'.repeat(MAX_SOCKET_PATH_BYTES), 'control.sock');
+    const err = await startControlServer({ path, daemon: {} as ControlTarget, actions: h.deps.actions, log: h.deps.log }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SocketPathTooLongError);
+    expect((err as Error).message).toContain('SISYPHE_HOME');
+    expect((err as Error).message).toContain(String(MAX_SOCKET_PATH_BYTES));
+    // Rien n'est créé au passage : la limite est vérifiée avant d'ouvrir quoi que ce soit.
+    await expect(stat(path)).rejects.toThrow();
   });
 
   it('une socket périmée est remplacée au démarrage', async () => {

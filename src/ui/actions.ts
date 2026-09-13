@@ -28,6 +28,11 @@ const POLL_MS = 250;
 const LOG_TAIL_LINES = 20;
 /** Le `ping` de l'overview est mémorisé : le snapshot SSE tombe toutes les 2 s et plusieurs clients l'écoutent. */
 const PING_TTL_MS = 1_000;
+/**
+ * Délai client dépassé : la commande est bien partie et rien ne l'annule côté daemon — elle peut très bien
+ * s'exécuter ensuite et apparaître dans le journal. Ne jamais laisser croire qu'il ne s'est rien passé.
+ */
+const TIMEOUT_MESSAGE = "Le daemon n'a pas répondu à temps ; l'action a peut-être été appliquée, vérifier le journal.";
 
 /** Les actions offertes par l'interface : celles de la socket de contrôle, plus `start` (service seul). */
 export const UI_ACTIONS = ['cancel', 'retry', 'enqueue', 'poll', 'pause', 'resume', 'stop', 'start'] as const satisfies readonly ActionName[];
@@ -179,7 +184,7 @@ export async function runAction(name: string, body: unknown, deps: RunActionDeps
     // Refus métier du daemon (job terminal, repo hors config...) : c'est son message qui est relayé.
     return result.ok ? ok(result.result) : fail(409, result.error);
   } catch (err) {
-    if (err instanceof DaemonUnreachableError) return fail(502, err.message);
+    if (err instanceof DaemonUnreachableError) return fail(502, err.timedOut ? TIMEOUT_MESSAGE : err.message);
     // Jamais de stack sur le réseau, même en local.
     return fail(500, messageOf(err));
   }

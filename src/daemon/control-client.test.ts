@@ -46,6 +46,26 @@ describe('ControlClient', () => {
     expect(await client.isReachable()).toBe(false);
   });
 
+  it('erreur de connexion inconnue (chemin trop long → EINVAL) → injoignable, sans divulguer le chemin', async () => {
+    // Ni ENOENT ni ECONNREFUSED : avec une liste blanche de codes, ce cas devenait une panne interne (500)
+    // dont le message contenait le chemin de la socket.
+    const tooLong = join(root, 'x'.repeat(200), 'control.sock');
+    const err = await new ControlClient(tooLong).send('poll').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(DaemonUnreachableError);
+    expect((err as Error).message).not.toContain(root);
+    expect((err as DaemonUnreachableError).timedOut).toBe(false);
+    expect(await new ControlClient(tooLong).isReachable()).toBe(false);
+  });
+
+  it('délai dépassé : timedOut, pour que l’appelant sache que la commande a pu être exécutée', async () => {
+    await fakeServer(() => undefined);
+    const err = await new ControlClient(path, { timeoutMs: 50 }).send('poll').catch((e: unknown) => e);
+    expect((err as DaemonUnreachableError).timedOut).toBe(true);
+    // Socket absente : rien n'est parti, ce n'est pas un délai dépassé.
+    const absent = await new ControlClient(join(root, 'absente.sock')).send('poll').catch((e: unknown) => e);
+    expect((absent as DaemonUnreachableError).timedOut).toBe(false);
+  });
+
   it('serveur muet → DaemonUnreachableError après le délai injecté : celui des commandes, ou celui de ping', async () => {
     await fakeServer(() => undefined);
     const client = new ControlClient(path, { timeoutMs: 100, pingTimeoutMs: 150 });

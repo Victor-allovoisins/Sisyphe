@@ -29,6 +29,33 @@ export interface ControlServer {
   close(): Promise<void>;
 }
 
+/**
+ * `sun_path` (adresse d'une socket UNIX) fait 104 octets NUL compris sur macOS/BSD, 108 sur Linux : le
+ * chemin utilisable s'arrête donc à 103 octets. On s'aligne sur la limite la plus basse, la même partout.
+ */
+export const MAX_SOCKET_PATH_BYTES = 103;
+
+/** Chemin de socket trop long : le daemon ne peut pas ouvrir sa socket de contrôle, et rien ne la joindra. */
+export class SocketPathTooLongError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SocketPathTooLongError';
+  }
+}
+
+/**
+ * Refuse un chemin de socket que le système ne saura pas ouvrir (EINVAL au listen comme au connect).
+ * Sans ce garde, le daemon échoue à chaque démarrage et le service le relance toutes les 30 s sans fin.
+ */
+export function assertSocketPathLength(path: string): void {
+  const bytes = Buffer.byteLength(path, 'utf8');
+  if (bytes <= MAX_SOCKET_PATH_BYTES) return;
+  throw new SocketPathTooLongError(
+    `Chemin de la socket de contrôle trop long : ${bytes} octets pour ${MAX_SOCKET_PATH_BYTES} au maximum (${path}). ` +
+      'Raccourcir la racine des données : SISYPHE_HOME, ou `dataDir` dans config.yml.',
+  );
+}
+
 class RequestTooLongError extends Error {}
 
 function messageOf(err: unknown): string {
@@ -45,6 +72,7 @@ function closeServer(server: Server): Promise<void> {
  * qu'aucun autre daemon ne tourne) et remplacé. Le fichier passe en 0600 : seul le compte local commande.
  */
 export async function startControlServer(opts: ControlServerOptions): Promise<ControlServer> {
+  assertSocketPathLength(opts.path);
   const log = opts.log.child({ component: 'control' });
   const sockets = new Set<Socket>();
   // allowHalfOpen : un client qui ferme son côté émission sitôt sa ligne envoyée (`nc -N`, scripts) doit

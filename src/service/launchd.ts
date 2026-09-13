@@ -2,6 +2,7 @@ import { mkdir, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { readLock } from '../daemon/lock.js';
 import { EXIT_NOT_FOUND, type Exec } from './exec.js';
 import { write0600 } from './files.js';
 import type { ActionSource } from '../store/actions.js';
@@ -71,6 +72,19 @@ ${envXml}
 </dict>
 </plist>
 `;
+}
+
+/** Message unique de l'agent obsolète : doctor le rapporte, `setup --reinstall-service` le répare. */
+export const STALE_PLIST_MESSAGE = 'agent launchd obsolète : relancer `sisyphe setup --reinstall-service`';
+
+/**
+ * Plist écrit par une version antérieure : `RunAtLoad` à vrai (le daemon repart au boot quoi qu'affiche
+ * « au boot : non », qui ne lit que le fichier `enabled`) ou `KeepAlive` inconditionnel — sans `PathState`,
+ * launchd relance le daemon ~30 s après chaque arrêt. Un tel agent n'est jamais réécrit de lui-même :
+ * une mise à jour laisse l'ancien en place tant que `setup --reinstall-service` n'est pas passé.
+ */
+export function isStaleLaunchAgentPlist(plist: string): boolean {
+  return /<key>RunAtLoad<\/key>\s*<true\s*\/>/.test(plist) || !/<key>PathState<\/key>/.test(plist);
 }
 
 export interface LaunchctlPrint {
@@ -184,7 +198,10 @@ export class LaunchdServiceManager implements ServiceManager {
     const r = await this.ctx.exec('launchctl', ['kickstart', this.target]);
     if (r.exitCode !== 0) {
       // Sans ce retrait, un install() ultérieur démarrerait le daemon via PathState : install() ne démarre pas.
-      await rm(this.enabled, { force: true });
+      // Mais un daemon vivant garde son `enabled` : un kickstart refusé pendant sa grâce d'arrêt (30 s)
+      // couperait sinon le redémarrage au boot d'un daemon bien en vie, sans que personne le demande.
+      const lock = await readLock(this.ctx.paths);
+      if (!lock?.alive) await rm(this.enabled, { force: true });
       throw new Error(`Impossible de démarrer l'agent launchd : ${r.stderr || `code ${r.exitCode}`}. L'agent est-il installé (sisyphe setup) ?`);
     }
   }

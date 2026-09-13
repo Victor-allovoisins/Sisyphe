@@ -108,6 +108,9 @@ describe('startUiServer', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('text/html');
     expect(res.headers.get('content-security-policy')).toContain("default-src 'self'");
+    // `frame-ancestors` et `form-action` ne retombent pas sur `default-src` : les deux sont explicites.
+    expect(res.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
+    expect(res.headers.get('content-security-policy')).toContain("form-action 'self'");
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
     expect(res.headers.get('cache-control')).toBe('no-store');
     expect(await res.text()).toBe(PAGE);

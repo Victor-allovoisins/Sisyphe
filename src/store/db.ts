@@ -141,7 +141,7 @@ export function openDatabase(path: string): DatabaseSync {
  */
 export function openDatabaseReadOnly(path: string): DatabaseSync {
   if (!existsSync(path)) {
-    throw new Error(`Aucune base Sisyphe à ${path} : lancer \`sisyphe start\` une fois pour la créer.`);
+    throw new Error(`Aucune base Sisyphe à ${path} : elle est créée par \`sisyphe setup\`, par \`sisyphe ui\` ou au premier démarrage du daemon.`);
   }
   return new DatabaseSync(path, { readOnly: true });
 }

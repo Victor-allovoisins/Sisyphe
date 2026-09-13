@@ -1,9 +1,19 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { stringify } from 'yaml';
 import { parseMachineConfig, type MachineConfig } from '../../config/machine.js';
 import { REPO_CONFIG_FILENAME } from '../../config/repo.js';
+import { renderPlist } from '../../service/launchd.js';
 import type { ServiceStatus } from '../../service/index.js';
 import { buildChecks, parseAuthStatus, type DoctorGitHub, type DoctorService } from './doctor.js';
+
+/** Répertoires de fixtures (plists), effacés à la fin. */
+const tempDirs: string[] = [];
+afterAll(async () => {
+  for (const d of tempDirs.splice(0)) await rm(d, { recursive: true, force: true });
+});
 
 const installedStatus: ServiceStatus = {
   kind: 'launchd', installed: true, running: true, pid: 321, enabledAtBoot: true, detail: 'state = running',
@@ -172,11 +182,29 @@ describe('buildChecks — GitHub App', () => {
 
 // Le vrai binaire `claude` n'est jamais lancé par les tests : seule la lecture de sa sortie est exercée.
 describe('check « service »', () => {
-  const checkOf = (service: DoctorService) => {
-    const c = buildChecks({ env: {}, platform: 'darwin', service }).find((x) => x.name === 'service');
+  // `plistPath` est toujours fourni : le check ne doit jamais lire le vrai ~/Library/LaunchAgents de la machine.
+  const checkOf = (service: DoctorService, plist = join(tmpdir(), 'sisyphe-plist-absent.plist')) => {
+    const c = buildChecks({ env: {}, platform: 'darwin', service, plistPath: plist }).find((x) => x.name === 'service');
     if (!c) throw new Error('check absent');
     return c;
   };
+
+  const plistFixture = async (content: string): Promise<string> => {
+    const dir = await mkdtemp(join(tmpdir(), 'sisyphe-doctor-'));
+    tempDirs.push(dir);
+    const p = join(dir, 'com.sisyphe.daemon.plist');
+    await writeFile(p, content);
+    return p;
+  };
+
+  const freshPlist = renderPlist({
+    label: 'com.sisyphe.daemon', nodePath: '/usr/bin/node', scriptPath: '/x/dist/cli/index.js',
+    dataDir: '/data', logsDir: '/data/logs', env: {},
+  });
+  // Ce que posait la version antérieure : redémarrage au chargement et KeepAlive inconditionnel.
+  const legacyPlist = freshPlist
+    .replace('<key>RunAtLoad</key><false/>', '<key>RunAtLoad</key><true/>')
+    .replace(/ {2}<key>KeepAlive<\/key>\n {2}<dict>[\s\S]*?<\/dict>\n {2}<\/dict>/, '  <key>KeepAlive</key><true/>');
 
   it('installé : ok, avec l’état du daemon et le redémarrage au boot', async () => {
     await expect(checkOf(fakeService()).run()).resolves.toBe('launchd, actif (pid 321), au boot : oui · state = running');
@@ -191,6 +219,25 @@ describe('check « service »', () => {
   it('plateforme sans service géré : avertissement sans conseil de réinstallation', async () => {
     const result = await checkOf(fakeService({ kind: 'none', installed: false, detail: 'daemon arrêté' })).run();
     expect(result).toEqual({ warn: true, message: 'aucun service géré sur cette plateforme (daemon arrêté)' });
+  });
+
+  it('plist d’une version antérieure : échec bloquant, pas un avertissement', async () => {
+    const check = checkOf(fakeService(), await plistFixture(legacyPlist));
+    expect(check.warn).toBeUndefined();
+    await expect(check.run()).rejects.toThrow('agent launchd obsolète : relancer `sisyphe setup --reinstall-service`');
+    // Sans PathState non plus, même quand RunAtLoad est déjà corrigé.
+    const halfFixed = await plistFixture(legacyPlist.replace('<key>RunAtLoad</key><true/>', '<key>RunAtLoad</key><false/>'));
+    await expect(checkOf(fakeService(), halfFixed).run()).rejects.toThrow('agent launchd obsolète');
+  });
+
+  it('plist courant : aucun verdict d’obsolescence ; plist illisible non plus', async () => {
+    await expect(checkOf(fakeService(), await plistFixture(freshPlist)).run()).resolves.toContain('launchd, actif');
+    await expect(checkOf(fakeService()).run()).resolves.toContain('launchd, actif');
+  });
+
+  it('systemd : le plist n’est jamais lu', async () => {
+    const check = checkOf(fakeService({ kind: 'systemd' }), await plistFixture(legacyPlist));
+    await expect(check.run()).resolves.toContain('systemd, actif');
   });
 });
 

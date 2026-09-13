@@ -30,6 +30,33 @@ describe('pollOnce', () => {
     expect(store.listActive()).toHaveLength(1);
   });
 
+  it('label reposé par notre propre App : ni commentaire ni retrait de label, la relance a lieu', async () => {
+    const source = new FakeIssueSource();
+    source.permissions.alice = 'write';
+    source.addIssue(repo, { number: 9, title: 'relancée', author: 'alice' });
+    // Ce que fait `enqueue`/`retry` depuis l'interface : c'est l'App qui pose le label trigger.
+    await source.addTriggerLabel({ repo, number: 9 });
+    const store = new JobStore(openDatabase(':memory:'));
+    const deps = { source, store, machine, log: pino({ level: 'silent' }) };
+
+    const created = await pollOnce(deps);
+    expect(created.map((j) => j.issueNumber)).toEqual([9]);
+    expect(source.labelsOf({ repo, number: 9 })).toEqual(['sisyphe']);
+    expect(source.commentsOf({ repo, number: 9 })).toEqual([]);
+    expect(source.calls).not.toContain('removeTriggerLabel');
+  });
+
+  it("canTrigger transitoire (slug de l'App illisible…) : issue ignorée, ni commentaire ni retrait", async () => {
+    const source = new FakeIssueSource();
+    source.addIssue(repo, { number: 10, title: 'transitoire' });
+    source.canTrigger = async () => { throw new Error('GET /app a échoué'); };
+    const store = new JobStore(openDatabase(':memory:'));
+
+    await expect(pollOnce({ source, store, machine, log: pino({ level: 'silent' }) })).resolves.toEqual([]);
+    expect(source.labelsOf({ repo, number: 10 })).toEqual(['sisyphe']);
+    expect(source.commentsOf({ repo, number: 10 })).toEqual([]);
+  });
+
   it('survit à une erreur de listing', async () => {
     const source = new FakeIssueSource();
     source.listCandidates = async () => { throw new Error('rate limit'); };
