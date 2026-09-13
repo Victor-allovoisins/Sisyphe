@@ -119,7 +119,7 @@ Clone jetable de ce repo dans un `mktemp -d`, script copié depuis l'arbre de tr
 
 | Étape | Résultat |
 |---|---|
-| `install.sh --dry-run --no-setup` (arbre modifié) | git, node v26, gitleaks, claude déjà présents ; `mise à jour ignorée : arbre de travail modifié` ; `npm ci`, `npm run build`, `npm link` affichés ; `claude : session active` |
+| `install.sh --dry-run --no-setup` (arbre modifié) | git, node v26, gitleaks, claude déjà présents ; `mise à jour ignorée : arbre de travail modifié` ; `npm ci`, `npm run build`, `npm link` affichés (depuis, `--dry-run` n'interroge plus `claude auth status` et se contente de conseiller `claude login`) |
 | idem, arbre propre et distant présent | `git pull --ff-only` apparaît avant `npm ci` |
 | `npm ci` puis `npm run build` en réel dans le clone | build vert, `dist/cli/index.js --version` → `0.1.0` |
 | `sisyphe service status` | `kind: launchd`, `installed: false` (l'agent avait été déchargé lors d'une validation précédente) |

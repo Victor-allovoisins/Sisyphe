@@ -6,6 +6,12 @@ Daemon qui prend les issues GitHub labellisées `sisyphe`, les fait trier puis i
 - Plan : `docs/superpowers/plans/2026-09-08-sisyphe.md`
 - Validation : `docs/playground.md`
 
+## GitHub App (à faire avant l'installation)
+
+Une App GitHub `sisyphe[bot]`, permissions Contents (read & write), Issues (read & write), Pull requests (read & write), Metadata (read), installée uniquement sur les repos cibles (spec §9). Marche à suivre complète : `docs/playground.md` §1.
+
+À faire d'abord : l'installation se termine par un `sisyphe setup` interactif qui réclame l'App ID, l'Installation ID et le chemin de la clé privée `.pem`. Sans ces trois valeurs sous la main, lancer `./install.sh --no-setup`, créer l'App, puis `sisyphe setup`.
+
 ## Installation
 
 ```bash
@@ -13,16 +19,23 @@ git clone git@github.com:ILokYou/sisyphe.git ~/sisyphe
 ~/sisyphe/install.sh
 ```
 
-`install.sh` (POSIX `sh`, macOS et Ubuntu) installe ce qui manque — `git`, Node ≥ 24, `gitleaks`, la CLI Claude Code —, compile le clone, pose le lien global `sisyphe`, puis lance `sisyphe setup`. Options : `--dry-run` (affiche chaque commande sans rien exécuter), `--no-setup`, `--no-pull`. Le script s'arrête à la première erreur en nommant l'étape fautive.
+Le repo est privé : le clone suppose une clé SSH enregistrée sur GitHub (`ssh -T git@github.com` doit répondre) et un compte membre de l'organisation `ILokYou` avec accès au repo.
 
-Le seul `sudo` est celui d'`apt-get` sur Ubuntu (git, puis Node par le dépôt NodeSource) : gitleaks est posé dans `~/.local/bin` après vérification de sa somme de contrôle, et npm bascule sur un préfixe utilisateur (`~/.local`) si le préfixe global n'est pas accessible en écriture. Aucune installation npm sous `sudo`.
+`install.sh` (POSIX `sh`, macOS et Ubuntu) installe ce qui manque — `git`, Node ≥ 24, `gitleaks`, la CLI Claude Code —, compile le clone, pose le lien global `sisyphe`, puis lance `sisyphe setup`. Options : `--dry-run` (affiche chaque commande sans rien exécuter), `--no-setup`, `--no-pull`. Le script s'arrête à la première erreur en nommant l'étape fautive, et revérifie après coup chaque outil qu'il vient d'installer.
+
+Le seul `sudo` est celui d'`apt-get` sur Ubuntu (`git`, `curl`, `ca-certificates`, puis Node par le dépôt NodeSource) : gitleaks est posé dans `~/.local/bin`, et npm bascule sur un préfixe utilisateur (`~/.local`) si le préfixe global n'est pas accessible en écriture. Aucune installation npm sous `sudo`. La version de gitleaks est épinglée dans le script et son archive vérifiée avec le `checksums.txt` de la même release : cela garantit l'intégrité du téléchargement, pas son authenticité — les deux fichiers viennent du même canal non signé.
 
 Prérequis par système :
 
 - **macOS** : Homebrew (le script s'arrête avec la commande officielle s'il manque). Pour un repo cible iOS, en plus et hors périmètre du script : Xcode installé et ouvert une fois, un simulateur, et `brew install xcodegen` — ces outils-là sont vérifiés par le repo cible via son `sisyphe.yml`.
 - **Ubuntu** (ou dérivé Debian) : rien de plus, le script se charge du reste.
 
-À la fin, le script rappelle les deux dernières étapes : `claude login` si la session Claude Code n'est pas ouverte, puis `sisyphe ui`.
+`sisyphe setup` demande le backend agent, écrit dans la config machine sous `agentBackend` :
+
+- `cli` : la CLI Claude Code installée localement (`claude -p`), donc l'abonnement claude.ai. C'est la réponse proposée par défaut à la question de `sisyphe setup` (le défaut du schéma, pour une config écrite à la main, reste `sdk`). Prérequis : `claude auth status --json` renvoie `loggedIn: true`. Le sandbox n'est pas supporté par ce backend.
+- `sdk` : le Agent SDK, qui exige une clé API Anthropic (console) dans `ANTHROPIC_API_KEY` — `export ANTHROPIC_API_KEY=sk-ant-...` avant `sisyphe setup`.
+
+À la fin, le script rappelle les dernières étapes : `claude login` si la session Claude Code n'est pas ouverte, `exec $SHELL -l` pour recharger le `PATH` du terminal courant, puis `sisyphe ui`.
 
 Les données vivent sous `~/.sisyphe` (redéfinissable via `SISYPHE_HOME`).
 
@@ -34,16 +47,7 @@ Relancer le même script :
 ~/sisyphe/install.sh
 ```
 
-Il fait `git pull --ff-only` (seulement si le clone a un dépôt distant et un arbre de travail propre), rebuild, et ne rejoue pas `sisyphe setup` quand la config existe déjà. Si l'unité de service a changé d'une version à l'autre : `sisyphe setup --reinstall-service`.
-
-## GitHub App
-
-Une App GitHub `sisyphe[bot]`, permissions Contents (read & write), Issues (read & write), Pull requests (read & write), Metadata (read), installée uniquement sur les repos cibles (spec §9). Marche à suivre complète : `docs/playground.md` §1.
-
-`sisyphe setup` demande le backend agent, écrit dans la config machine sous `agentBackend` :
-
-- `cli` : la CLI Claude Code installée localement (`claude -p`), donc l'abonnement claude.ai. C'est la réponse proposée par défaut à la question de `sisyphe setup` (le défaut du schéma, pour une config écrite à la main, reste `sdk`). Prérequis : `claude auth status --json` renvoie `loggedIn: true`. Le sandbox n'est pas supporté par ce backend.
-- `sdk` : le Agent SDK, qui exige une clé API Anthropic (console) dans `ANTHROPIC_API_KEY` — `export ANTHROPIC_API_KEY=sk-ant-...` avant `sisyphe setup`.
+Il fait `git pull --ff-only` (seulement si le clone a un dépôt distant et un arbre de travail propre ; un pull impossible — branche sans suivi distant, historique divergent — ne fait pas échouer l'installation, le build se fait sur l'état local), rebuild, et ne rejoue pas `sisyphe setup` quand la config existe déjà. Si l'unité de service a changé d'une version à l'autre : `sisyphe setup --reinstall-service`.
 
 ## Service
 
