@@ -33,18 +33,19 @@ Le daemon ouvre une **socket UNIX de contrôle** et exécute lui-même toutes le
 
 ### 2.3 Démarrage et arrêt du daemon depuis l'UI
 
-Remplacé le 2026-09-10 par `2026-09-10-sisyphe-install-service-design.md` §3 à §5 : Démarrer et Arrêter passent par le `ServiceManager` (launchd, systemd, ou lancement détaché quand aucun service n'est installé), pour que le daemon survive à l'interface et revienne au boot dans l'état choisi. Après `start()`, l'UI attend jusqu'à 5 s que la socket réponde ; sinon `ok: false` avec la fin du log du service.
+Remplacé le 2026-09-10 par `2026-09-10-sisyphe-install-service-design.md` §3 à §5 : Démarrer et Arrêter passent par le `ServiceManager` (launchd, systemd, ou lancement détaché quand aucun service n'est installé), pour que le daemon survive à l'interface et revienne au boot dans l'état choisi. Après `start()`, l'UI attend jusqu'à 30 s que la socket réponde (le prologue du daemon interroge GitHub) ; sinon `ok: false` avec la fin du log du service. Après `stop()`, elle vérifie pendant 5 s que la socket ne répond plus et refuse si le daemon tient toujours : plusieurs gestionnaires ignorent volontairement le code de retour de leur commande d'arrêt.
 
 ### 2.4 Données
 
 - Migration 2 (append-only dans `src/store/db.ts`) : table `actions (id INTEGER PRIMARY KEY, at TEXT NOT NULL, action TEXT NOT NULL, source TEXT NOT NULL CHECK (source IN ('ui','cli')), job_id TEXT, repo TEXT, issue_number INTEGER, outcome TEXT NOT NULL CHECK (outcome IN ('ok','error')), error TEXT)` avec un index sur `at` et un sur `job_id`. `ActionStore` : `record(...)`, `listRecent(limit)`, `listForJob(jobId)`.
 - La base ouverte par l'UI reste `readOnly` : elle lit `actions` comme le reste.
-- Le champ `source` est fourni par l'appelant dans la requête (`{ cmd, source: 'ui' | 'cli' }`), défaut `cli`.
+- Le champ `source` est fourni par l'appelant dans la requête (`{ cmd, source: 'ui' | 'cli' }`), défaut `cli` ; `ServiceManager.stop(source)` le transmet aussi.
+- Deux angles morts assumés du journal, parce que l'interface n'a qu'une connexion en lecture et que démarrer un daemon ne passe par aucune socket : un démarrage est enregistré par le daemon lui-même à son ouverture (`start`, source `cli`), sans savoir qui l'a demandé, et un démarrage qui n'aboutit pas n'est enregistré nulle part ; sous systemd, l'arrêt passe par `systemctl` et non par la socket, donc il n'est pas journalisé (launchd et le repli détaché le sont, avec la bonne source).
 
 ### 2.5 API HTTP (`src/ui/server.ts`)
 
 - `POST /api/actions/<name>` avec `name ∈ cancel | retry | enqueue | poll | pause | resume | stop | start`, corps JSON (`{ jobId }`, `{ repo, issueNumber }` ou `{}`), réponse `200 { ok: true, result }`, `400` arguments invalides, `403` en-têtes anti-CSRF absents ou mode `--read-only`, `409` refus métier (`ok: false` du daemon, message relayé), `502` daemon injoignable (`DaemonUnreachableError`), `500` autre erreur sans stack.
-- Anti-CSRF (Host déjà vérifié en v1) : `Content-Type: application/json` obligatoire, en-tête `X-Sisyphe-Action: 1` obligatoire (un formulaire HTML ne peut envoyer ni l'un ni l'autre sans CORS préalable), et si `Origin` est présent il doit valoir `http://127.0.0.1:<port>`, `http://localhost:<port>` ou `http://[::1]:<port>`. Corps limité à 16 Ko.
+- Anti-CSRF (Host déjà vérifié en v1, et `frame-ancestors 'none'` dans la CSP : sans lui un clic détourné déclencherait Pause ou Poll, qui n'ont pas de confirmation) : `Content-Type: application/json` obligatoire, en-tête `X-Sisyphe-Action: 1` obligatoire (un formulaire HTML ne peut envoyer ni l'un ni l'autre sans CORS préalable), et si `Origin` est présent il doit valoir `http://127.0.0.1:<port>`, `http://localhost:<port>` ou `http://[::1]:<port>`. Corps limité à 16 Ko.
 - `GET /api/overview` gagne `daemon.paused: boolean | null` (null si injoignable), `control: { reachable: boolean }`, `readOnly: boolean`, `recentActions: Action[]` (20 dernières) et `service: ServiceStatus` (remplace `launchd`). `GET /api/jobs/:id` gagne `actions: Action[]`.
 - Les autres GET et le SSE sont inchangés ; le `ping` de l'overview est mémorisé 1 s pour ne pas ouvrir une connexion par requête SSE.
 - `sisyphe ui --read-only` : `readOnly: true` dans l'overview, tout POST → 403, aucun bouton affiché.
