@@ -80,7 +80,7 @@ L'environnement transmis au daemon est construit une seule fois, par `defaultSer
 
 ### 3.4 none
 
-Aucun service installé (`install()` lève « plateforme sans service géré ») : `start()` lance `sisyphe start` détaché (`spawn(process.execPath, [<dist>/cli/index.js, 'start'], { detached: true, stdio: ['ignore', fd, fd], env: ctx.env })` : le même environnement réduit que le plist et l'unité, jamais celui du shell de l'UI ;, `fd` = `<logsDir>/daemon-stdout.log` en ajout, `unref()`) puis attend jusqu'à 5 s que la socket réponde ; `stop()` = `client.send('stop')` ; `status()` = `readLock` (`running`, `pid`), `enabledAtBoot: false`.
+Aucun service installé (`install()` lève « plateforme sans service géré ») : `start()` lance `sisyphe start` détaché (`spawn(process.execPath, [<dist>/cli/index.js, 'start'], { detached: true, stdio: ['ignore', fd, fd], env: ctx.env })`, avec `fd` = `<logsDir>/daemon-stdout.log` ouvert en ajout, puis `unref()`) ; l'environnement transmis est celui de `ctx.env`, réduit comme dans le plist et l'unité, jamais celui du shell de l'interface. `start()` rend la main dès que le lancement a réussi, après une brève grâce qui laisse remonter une erreur de `spawn` : l'attente de la socket appartient à l'appelant, sinon les deux budgets se cumulent et dépassent le délai du navigateur. `stop()` = `client.send('stop', source)` ; `status()` = `readLock` (`running`, `pid`), `enabledAtBoot: false`.
 
 ## 4. Commandes CLI
 
@@ -121,3 +121,11 @@ Aucun service installé (`install()` lève « plateforme sans service géré »)
 ## 8. Ordre de réalisation
 
 UI v2 tâches 2 et 3 (commandes du daemon, socket) → ce plan → UI v2 tâches 4 et 5 amendées (le contrôleur d'actions utilise `ServiceManager`).
+
+## 9. Règles apprises en revue (à ne pas régresser)
+
+- **Ne jamais accuser notre propre robot.** L'App pose elle-même le label déclencheur quand un job vient de l'interface ; `canTrigger` doit ignorer ses propres événements de label et retomber sur le dernier humain, puis sur l'auteur de l'issue. Sans cela, retirer un label de statut pour relancer déclenche un commentaire public accusant `sisyphe[bot]` et retire le label. Les autres robots restent refusés.
+- **Un agent launchd d'une version antérieure doit être détecté.** `doctor` lit le plist installé et échoue sur `RunAtLoad true` ou l'absence de `PathState` : sinon l'interface affiche « au boot : non » alors que le daemon revient à chaque démarrage, et Arrêter ne tient pas. `install.sh` relance `sisyphe setup --reinstall-service` quand une config existe.
+- **Les budgets d'attente ne se cumulent pas.** Un seul niveau attend la socket (l'appelant), sinon le total dépasse le délai d'abandon du navigateur et l'utilisateur voit un faux échec au lieu du journal du service.
+- **Toute erreur avant la connexion à la socket vaut « daemon injoignable ».** Ne pas lister les codes connus : un `EINVAL` (chemin de socket trop long) devenait une 500 qui divulguait le chemin. La longueur du chemin est vérifiée au démarrage et par `doctor`.
+- **Un artefact généré se valide avec son vrai parseur.** Le plist passe par `plutil -lint` dans les tests ; l'unité systemd doit passer `systemd-analyze verify` lors de la validation Ubuntu. Deux revues avaient approuvé une unité que systemd aurait rejetée.
