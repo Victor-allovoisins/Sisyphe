@@ -35,8 +35,8 @@ async function getJson(url: string): Promise<{ res: Response; body: JsonBody }> 
   return { res, body: (await res.json()) as JsonBody };
 }
 
-/** `fetch` impose l'en-tête Host ; ces tests-là ont justement besoin de le choisir. */
-function rawRequest(port: number, path: string, opts: { method?: string; headers?: Record<string, string> } = {}) {
+/** `fetch` impose l'en-tête Host et normalise le chemin ; ces tests-là ont justement besoin de les choisir. */
+function rawRequest(port: number, path: string, opts: { method?: string; headers?: Record<string, string>; body?: string } = {}) {
   return new Promise<{ status: number; body: string }>((resolve, reject) => {
     const req = httpRequest(
       { host: '127.0.0.1', port, path, method: opts.method ?? 'GET', headers: opts.headers ?? { host: `127.0.0.1:${port}` } },
@@ -50,7 +50,7 @@ function rawRequest(port: number, path: string, opts: { method?: string; headers
       },
     );
     req.on('error', reject);
-    req.end();
+    req.end(opts.body);
   });
 }
 
@@ -424,6 +424,36 @@ describe('POST /api/actions/<nom>', () => {
 
     expect(res.status).toBe(200);
     expect(calls).toEqual([{ name: 'poll', body: {} }]);
+  });
+
+  it('un Host étranger est refusé avant tout le reste, même avec les bons en-têtes (DNS rebinding)', async () => {
+    const { actions, calls } = recorder({ status: 200, body: { ok: true, result: null } });
+    const { server } = await startTestServer({ actions });
+
+    const res = await rawRequest(server.port, '/api/actions/stop', {
+      method: 'POST',
+      headers: { ...ACTION_HEADERS, host: 'sisyphe.attaquant.example' },
+      body: '{}',
+    });
+
+    expect(res.status).toBe(403);
+    expect(JSON.parse(res.body).error).toBe('Hôte non autorisé');
+    expect(calls).toEqual([]);
+  });
+
+  it('un nom d’action mal encodé répond 400, pas 500', async () => {
+    const { actions, calls } = recorder({ status: 200, body: { ok: true, result: null } });
+    const { server } = await startTestServer({ actions });
+
+    const res = await rawRequest(server.port, '/api/actions/%zz', {
+      method: 'POST',
+      headers: { ...ACTION_HEADERS, host: `127.0.0.1:${server.port}` },
+      body: '{}',
+    });
+
+    expect(res.status).toBe(400);
+    expect(JSON.parse(res.body).error).toContain('mal encodé');
+    expect(calls).toEqual([]);
   });
 
   it('sur cette route, les autres méthodes restent en 405 avec Allow: GET, POST', async () => {

@@ -112,16 +112,17 @@ describe('NoneServiceManager', () => {
     expect(slept).toEqual([250, 250]);
   });
 
-  it('start échoue après 5 s sans réponse, avec les dernières lignes du log', async () => {
+  it('start échoue après 30 s sans réponse, avec les dernières lignes du log', async () => {
     reachable = [false];
     childOutput = Array.from({ length: 25 }, (_, i) => `ligne ${i + 1}`).join('\n') + '\n';
     const logPath = detachedLogPath(paths.logsDir);
     const err = await manager().start().then(() => null, (e: Error) => e);
     expect(err?.message).toBe(
-      `le daemon n'a pas répondu en 5 s ; dernières lignes de ${logPath} :\n…(5 lignes coupées)\n${Array.from({ length: 20 }, (_, i) => `ligne ${i + 6}`).join('\n')}`,
+      `le daemon n'a pas répondu en 30 s ; dernières lignes de ${logPath} :\n…(5 lignes coupées)\n${Array.from({ length: 20 }, (_, i) => `ligne ${i + 6}`).join('\n')}`,
     );
-    expect(slept.reduce((a, b) => a + b, 0)).toBe(5_000);
-    expect(pings).toBe(21); // 0, 250, …, 5000 ms
+    // Même budget que l'attente de l'UI après `start()` : un démarrage lent mais abouti n'est pas un échec.
+    expect(slept.reduce((a, b) => a + b, 0)).toBe(30_000);
+    expect(pings).toBe(121); // 0, 250, …, 30000 ms
   });
 
   it('start échoue aussitôt quand le spawn échoue (exécutable introuvable…), sans attendre la socket', async () => {

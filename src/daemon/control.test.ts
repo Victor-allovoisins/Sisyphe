@@ -214,9 +214,11 @@ describe('socket de contrôle : commandes', () => {
 
     expect(await client.send<DaemonStatus>('pause', {}, 'ui')).toMatchObject({ ok: true, result: { paused: true } });
     expect(await client.send<DaemonStatus>('resume', {}, 'ui')).toMatchObject({ ok: true, result: { paused: false } });
+    // `start` est journalisé par le daemon lui-même à l'ouverture de la socket : le cycle de vie est visible.
     expect(h.actions.listRecent(10).map((a) => [a.action, a.source, a.outcome])).toEqual([
       ['resume', 'ui', 'ok'],
       ['pause', 'ui', 'ok'],
+      ['start', 'cli', 'ok'],
     ]);
   });
 

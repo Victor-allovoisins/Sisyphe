@@ -1,4 +1,6 @@
 import type { DataPaths } from '../config/paths.js';
+import type { ControlArgs } from '../daemon/control-types.js';
+import type { ActionSource } from '../store/actions.js';
 import type { Exec } from './exec.js';
 
 export type ServiceKind = 'launchd' | 'systemd' | 'none';
@@ -21,14 +23,17 @@ export interface ServiceManager {
   install(): Promise<{ warnings: string[] }>;
   /** Active au boot et démarre maintenant. */
   start(): Promise<void>;
-  /** Arrête maintenant et désactive au boot. */
-  stop(): Promise<void>;
+  /** Arrête maintenant et désactive au boot ; `source` dit qui commande, pour le journal des actions. */
+  stop(source?: ActionSource): Promise<void>;
   uninstall(): Promise<void>;
 }
 
-/** Sous-ensemble structurel de `ControlClient` : un test passe un faux sans socket. */
+/**
+ * Sous-ensemble structurel de `ControlClient` : un test passe un faux sans socket. Les paramètres suivent
+ * l'ordre de `ControlClient.send` (les arguments avant la source) pour rester compatibles avec lui.
+ */
 export interface ServiceClient {
-  send(cmd: 'stop'): Promise<unknown>;
+  send(cmd: 'stop', args?: ControlArgs, source?: ActionSource): Promise<unknown>;
   isReachable(): Promise<boolean>;
 }
 

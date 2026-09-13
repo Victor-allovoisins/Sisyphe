@@ -5,8 +5,13 @@ import type { JobState } from '../store/types.js';
 import type { ActionResponse } from './actions.js';
 import { UiInputError, type UiData } from './data.js';
 
-/** Page unique embarquée : tout est inline, aucune ressource externe, aucun `eval`. */
-const CSP = "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'";
+/**
+ * Page unique embarquée : tout est inline, aucune ressource externe, aucun `eval`. `frame-ancestors 'none'`
+ * interdit l'encadrement : sans lui, un site tiers afficherait cette page dans une iframe invisible et ferait
+ * cliquer la victime sur Pause ou Poll — des actions sans confirmation, dont les requêtes partiraient de la
+ * page elle-même et passeraient donc toutes les gardes anti-CSRF.
+ */
+const CSP = "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; frame-ancestors 'none'";
 const SECURITY_HEADERS: Record<string, string> = {
   'Content-Security-Policy': CSP,
   'X-Content-Type-Options': 'nosniff',

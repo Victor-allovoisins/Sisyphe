@@ -20,8 +20,10 @@ import type { UiControl } from './data.js';
 
 /** `start` rend la main dès que le service est lancé ; le daemon, lui, interroge GitHub avant de répondre. */
 const START_TIMEOUT_MS = 30_000;
+/** `doStop()` ferme la socket avant sa grâce de 30 s : un daemon qui répond encore au-delà n'a pas pris l'ordre. */
+const STOP_TIMEOUT_MS = 5_000;
 /** Chaque `ping` a déjà 2 s de délai à lui : cet intervalle ne sert qu'à ne pas marteler une socket absente. */
-const START_POLL_MS = 250;
+const POLL_MS = 250;
 /** Fin du log du service montrée quand le démarrage n'aboutit pas. */
 const LOG_TAIL_LINES = 20;
 /** Le `ping` de l'overview est mémorisé : le snapshot SSE tombe toutes les 2 s et plusieurs clients l'écoutent. */
@@ -43,7 +45,7 @@ export interface ActionClient {
 /** Sous-ensemble du `ServiceManager` : démarrer, arrêter, et le `kind` pour retrouver le bon log. */
 export interface ActionService {
   start(): Promise<void>;
-  stop(): Promise<void>;
+  stop(source?: ActionSource): Promise<void>;
   status(): Promise<ServiceStatus>;
 }
 
@@ -86,6 +88,8 @@ const BODY_SCHEMAS = {
 const ok = (result: unknown): ActionResponse => ({ status: 200, body: { ok: true, result } });
 const fail = (status: number, error: string): ActionResponse => ({ status, body: { error } });
 
+const messageOf = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
 function issuesOf(error: z.ZodError): string {
   return error.issues.map((i) => (i.path.length ? `${i.path.join('.')} : ${i.message}` : i.message)).join(' ; ');
 }
@@ -104,23 +108,46 @@ export async function serviceLogTail(kind: ServiceKind, logsDir: string, exec: E
   return text === null ? '' : tail(text, LOG_TAIL_LINES).trim();
 }
 
+/** Attend que la socket de contrôle atteigne l'état voulu ; faux si elle ne l'a pas atteint dans le budget. */
+async function waitForSocket(deps: RunActionDeps, reachable: boolean, budgetMs: number): Promise<boolean> {
+  const sleep = deps.sleep ?? ((ms: number) => delay(ms));
+  const now = deps.now ?? (() => Date.now());
+  const deadline = now() + budgetMs;
+  for (;;) {
+    if ((await deps.client.isReachable()) === reachable) return true;
+    if (now() >= deadline) return false;
+    await sleep(POLL_MS);
+  }
+}
+
 /**
  * Démarre le service puis attend que la socket réponde. Le prologue du daemon interroge GitHub avant
  * d'ouvrir la socket : sans cette attente, l'interface annoncerait un échec sur un démarrage qui aboutit.
  */
 async function startDaemon(deps: RunActionDeps): Promise<ActionResponse> {
-  const sleep = deps.sleep ?? ((ms: number) => delay(ms));
-  const now = deps.now ?? (() => Date.now());
-  await deps.service.start();
-  const deadline = now() + START_TIMEOUT_MS;
-  for (;;) {
-    if (await deps.client.isReachable()) return ok(null);
-    if (now() >= deadline) break;
-    await sleep(START_POLL_MS);
+  try {
+    await deps.service.start();
+  } catch (err) {
+    // Daemon déjà démarré, plateforme sans service, exécutable introuvable : le message dit lequel, et
+    // aucun de ces cas n'est une panne de l'interface — c'est le résultat de l'action.
+    return fail(409, messageOf(err));
   }
+  if (await waitForSocket(deps, true, START_TIMEOUT_MS)) return ok(null);
   const log = await startFailureLog(deps);
   const seconds = Math.round(START_TIMEOUT_MS / 1000);
   return fail(409, `Le daemon n'a pas répondu dans les ${seconds} s suivant le démarrage du service.${log ? `\n${log}` : ''}`);
+}
+
+/**
+ * Arrête le service puis vérifie que le daemon a bien lâché la socket : `launchctl kill` ne dit pas s'il a
+ * abouti, et l'arrêt par la socket est acquitté avant d'être exécuté. Sans cette vérification, un daemon
+ * coincé derrière sa porte de sérialisation rendrait une confirmation verte en continuant de tourner.
+ */
+async function stopDaemon(deps: RunActionDeps): Promise<ActionResponse> {
+  await deps.service.stop('ui');
+  if (await waitForSocket(deps, false, STOP_TIMEOUT_MS)) return ok(null);
+  const seconds = Math.round(STOP_TIMEOUT_MS / 1000);
+  return fail(409, `Le daemon répond toujours ${seconds} s après la demande d'arrêt ; voir \`sisyphe service status\`.`);
 }
 
 /**
@@ -147,17 +174,14 @@ export async function runAction(name: string, body: unknown, deps: RunActionDeps
   if (!parsed.success) return fail(400, `Arguments invalides : ${issuesOf(parsed.error)}`);
   try {
     if (action === 'start') return await startDaemon(deps);
-    if (action === 'stop') {
-      await deps.service.stop();
-      return ok(null);
-    }
+    if (action === 'stop') return await stopDaemon(deps);
     const result = await deps.client.send(action, parsed.data, 'ui');
     // Refus métier du daemon (job terminal, repo hors config...) : c'est son message qui est relayé.
     return result.ok ? ok(result.result) : fail(409, result.error);
   } catch (err) {
     if (err instanceof DaemonUnreachableError) return fail(502, err.message);
     // Jamais de stack sur le réseau, même en local.
-    return fail(500, err instanceof Error ? err.message : String(err));
+    return fail(500, messageOf(err));
   }
 }
 
@@ -168,16 +192,24 @@ export async function runAction(name: string, body: unknown, deps: RunActionDeps
 export function createControlProbe(client: ActionClient, opts: { ttlMs?: number; now?: () => number } = {}): UiControl {
   const ttlMs = opts.ttlMs ?? PING_TTL_MS;
   const now = opts.now ?? (() => Date.now());
-  let cached: { at: number; status: Promise<DaemonStatus | null> } | null = null;
+  let cached: { at: number; status: DaemonStatus | null } | null = null;
+  let inFlight: Promise<DaemonStatus | null> | null = null;
   return {
-    ping() {
-      const at = now();
-      if (!cached || at - cached.at > ttlMs) cached = { at, status: probe(client) };
-      const pending = cached;
-      return pending.status.catch((err: unknown) => {
-        if (cached === pending) cached = null;
-        throw err;
-      });
+    async ping() {
+      // Une sonde à la fois : un `ping` sans réponse dure jusqu'à 2 s, plus que le TTL, et chaque tic du
+      // SSE en ouvrirait une de plus. Les appelants simultanés partagent celle qui est déjà en vol.
+      if (inFlight) return inFlight;
+      if (cached && now() - cached.at <= ttlMs) return cached.status;
+      inFlight = probe(client);
+      try {
+        const status = await inFlight;
+        // Horodaté à la fin, pas au début : sinon une sonde plus lente que le TTL naîtrait déjà périmée.
+        cached = { at: now(), status };
+        return status;
+      } finally {
+        // Un échec n'est pas mémorisé : la sonde suivante réessaie.
+        inFlight = null;
+      }
     },
   };
 }

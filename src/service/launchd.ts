@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { EXIT_NOT_FOUND, type Exec } from './exec.js';
 import { write0600 } from './files.js';
+import type { ActionSource } from '../store/actions.js';
 import type { ServiceContext, ServiceManager, ServiceStatus } from './types.js';
 
 export const LAUNCHD_LABEL = 'com.sisyphe.daemon';
@@ -194,11 +195,11 @@ export class LaunchdServiceManager implements ServiceManager {
    * sa porte) : SIGTERM via launchd, sans se soucier du code de retour — un job qui ne tourne plus n'a
    * rien à recevoir.
    */
-  async stop(): Promise<void> {
+  async stop(source: ActionSource = 'cli'): Promise<void> {
     await rm(this.enabled, { force: true });
     if (await this.ctx.client.isReachable()) {
       try {
-        await this.ctx.client.send('stop');
+        await this.ctx.client.send('stop', {}, source);
         return;
       } catch {
         // SIGTERM ci-dessous.

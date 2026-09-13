@@ -84,6 +84,9 @@ export class Daemon {
         await this.closeControl();
         return;
       }
+      // Le démarrage n'arrive jamais par une commande : sans cette ligne, « Dernières actions » montrerait
+      // les arrêts sans les démarrages. `cli` parce que c'est le process lui-même, quel que soit ce qui l'a lancé.
+      this.journal({ action: 'start', source: 'cli', outcome: 'ok' });
     }
     await reconcile(this.d);
     await this.ensureLabels();

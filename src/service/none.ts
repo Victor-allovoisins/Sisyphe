@@ -4,6 +4,7 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { readLock } from '../daemon/lock.js';
+import type { ActionSource } from '../store/actions.js';
 import { tail } from '../util/text.js';
 import type { ServiceContext, ServiceManager, ServiceStatus } from './types.js';
 
@@ -11,9 +12,10 @@ export const NO_SERVICE_MESSAGE = 'aucun service géré sur cette plateforme';
 
 /**
  * Attente maximale de la socket de contrôle après le spawn, et pas entre deux essais. Chaque `isReachable()`
- * peut lui-même durer jusqu'au délai du ping (2 s) : le pire cas réel est donc ≈ 5 s + 2 s.
+ * peut lui-même durer jusqu'au délai du ping (2 s). Même budget que l'attente de l'UI après `start()` : le
+ * prologue du daemon interroge GitHub repo par repo, et un démarrage lent mais abouti n'est pas un échec.
  */
-const START_TIMEOUT_MS = 5_000;
+const START_TIMEOUT_MS = 30_000;
 const START_POLL_MS = 250;
 /** Lignes du log rapportées quand le daemon ne répond pas à temps. */
 const LOG_TAIL_LINES = 20;
@@ -106,9 +108,9 @@ export class NoneServiceManager implements ServiceManager {
   }
 
   /** Idempotent : sans daemon vivant derrière le verrou, rien à arrêter — pas d'erreur « injoignable ». */
-  async stop(): Promise<void> {
+  async stop(source: ActionSource = 'cli'): Promise<void> {
     const lock = await readLock(this.ctx.paths);
     if (!lock?.alive) return;
-    await this.ctx.client.send('stop');
+    await this.ctx.client.send('stop', {}, source);
   }
 }

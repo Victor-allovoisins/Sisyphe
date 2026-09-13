@@ -1,10 +1,12 @@
 import { open, readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { Logger } from 'pino';
 import { summarizeTranscript } from '../cli/format.js';
 import type { ServiceStatus } from '../service/index.js';
 import { AmbiguousJobPrefixError, findJob } from '../cli/resolve-job.js';
 import type { AgentBackend, MachineConfig } from '../config/machine.js';
 import { jobDir, type DataPaths } from '../config/paths.js';
+import { DaemonUnreachableError } from '../daemon/control-client.js';
 import type { DaemonStatus } from '../daemon/control-types.js';
 import { readLock } from '../daemon/lock.js';
 import type { ActionRow, ActionStore } from '../store/actions.js';
@@ -67,6 +69,7 @@ export interface UiDataDeps {
   control: UiControl;
   /** `sisyphe ui --read-only` : l'information remonte à la page pour qu'elle n'affiche aucun bouton. */
   readOnly: boolean;
+  log?: Logger;
   now?: () => Date;
 }
 
@@ -261,6 +264,21 @@ export function createUiData(deps: UiDataDeps): UiData {
     }
   }
 
+  /**
+   * Sonde du daemon, jamais au prix du tableau de bord : une réponse illisible sur la socket ferait tomber
+   * l'overview — donc la page et le flux SSE — pour une information d'appoint. Le daemon est alors montré
+   * injoignable, ce qu'il est en pratique.
+   */
+  async function daemonStatus(): Promise<DaemonStatus | null> {
+    try {
+      return await deps.control.ping();
+    } catch (err) {
+      // L'injoignabilité est un état normal, pas un incident : seul le reste mérite une ligne de log.
+      if (!(err instanceof DaemonUnreachableError)) deps.log?.warn({ err }, 'sonde du daemon illisible');
+      return null;
+    }
+  }
+
   async function feedFor(jobId: string): Promise<string[]> {
     const dir = jobDir(paths, jobId);
     const newest = await newestTranscript(dir, await listDir(dir));
@@ -274,7 +292,7 @@ export function createUiData(deps: UiDataDeps): UiData {
     const at = now();
     const lock = await readLock(paths);
     // Une seule sonde pour les deux informations : le daemon répond-il, et est-il en pause.
-    const status = await deps.control.ping();
+    const status = await daemonStatus();
     const byState = store.countByState();
     const activeJobs = store.listActive();
     const spentTodayUsd = phases.costSince(startOfLocalDay(at));
