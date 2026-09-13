@@ -27,6 +27,11 @@ export function enabledPath(dataDir: string): string {
   return join(dataDir, 'enabled');
 }
 
+/** Sortie d'erreur du job launchd, déclarée dans le plist : c'est là qu'atterrit un démarrage qui échoue. */
+export function launchdErrLogPath(logsDir: string): string {
+  return join(logsDir, 'launchd.err.log');
+}
+
 export function renderPlist(i: PlistInput): string {
   // `env` est rendu tel quel : c'est `defaultServiceContext` qui compose l'environnement du daemon (dont le
   // PATH préfixé par le répertoire du node), identique pour le plist, l'unité systemd et le spawn détaché.
@@ -52,7 +57,7 @@ ${envXml}
   </dict>
   <key>WorkingDirectory</key><string>${esc(i.dataDir)}</string>
   <key>StandardOutPath</key><string>/dev/null</string>
-  <key>StandardErrorPath</key><string>${esc(i.logsDir)}/launchd.err.log</string>
+  <key>StandardErrorPath</key><string>${esc(launchdErrLogPath(i.logsDir))}</string>
   <key>RunAtLoad</key><false/>
   <key>KeepAlive</key>
   <dict>

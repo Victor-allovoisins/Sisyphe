@@ -35,9 +35,10 @@ program
   .action(reportCommand);
 program
   .command('ui')
-  .description('Interface web locale en lecture seule (127.0.0.1)')
+  .description('Interface web locale (127.0.0.1)')
   .option('--port <n>', 'port d’écoute', String(DEFAULT_UI_PORT))
-  .action((opts: { port?: string }) => uiCommand(opts));
+  .option('--read-only', 'observer sans agir : aucune action acceptée')
+  .action((opts: { port?: string; readOnly?: boolean }) => uiCommand(opts));
 program
   .command('cancel')
   .description("Annule un job actif : via le daemon s'il tourne, sinon en retirant le label trigger")

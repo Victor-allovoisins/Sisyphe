@@ -8,7 +8,7 @@ import { dataPaths } from '../../config/paths.js';
 import { SCHEMA_VERSION, openDatabase } from '../../store/db.js';
 import { JobStore } from '../../store/jobs.js';
 import { DEFAULT_UI_PORT } from '../../ui/server.js';
-import { openUiDatabase, parsePort, startUi, uiCommand } from './ui.js';
+import { openUiDatabase, parsePort, startUi, startupMessage, uiCommand } from './ui.js';
 
 /** Port libre au moment du test : `parsePort` refuse 0, qui est pourtant le port éphémère habituel. */
 function freePort(): Promise<number> {
@@ -45,6 +45,13 @@ describe('parsePort', () => {
     for (const bad of ['0', '70000', '-1', 'abc', '80.5']) {
       expect(() => parsePort(bad)).toThrow(/Port invalide/);
     }
+  });
+});
+
+describe('startupMessage', () => {
+  it('annonce l’URL, et « lecture seule » seulement avec l’option', () => {
+    expect(startupMessage('127.0.0.1', 7777, false)).toBe('Sisyphe UI : http://127.0.0.1:7777');
+    expect(startupMessage('127.0.0.1', 7777, true)).toBe('Sisyphe UI (lecture seule) : http://127.0.0.1:7777');
   });
 });
 
@@ -125,6 +132,25 @@ describe('startUi', () => {
       const res = await fetch(`http://${ui.server.host}:${ui.server.port}/`);
       expect(res.status).toBe(200);
       await res.text();
+    } finally {
+      await ui.close();
+    }
+  });
+
+  // Câblage seulement : ni launchctl ni socket de contrôle ne sont sollicités (aucun appel à /api/overview).
+  it('--read-only : le contrôleur d’actions n’est pas branché, tout POST est refusé', async () => {
+    await writeConfig();
+
+    const ui = await startUi({ port: String(await freePort()), readOnly: true });
+
+    try {
+      const res = await fetch(`http://${ui.server.host}:${ui.server.port}/api/actions/poll`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-sisyphe-action': '1' },
+        body: '{}',
+      });
+      expect(res.status).toBe(403);
+      expect(((await res.json()) as { error: string }).error).toContain('lecture seule');
     } finally {
       await ui.close();
     }

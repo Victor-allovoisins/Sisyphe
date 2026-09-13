@@ -6,12 +6,13 @@ import type { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 import { parseMachineConfig } from '../config/machine.js';
 import { dataPaths } from '../config/paths.js';
+import { ActionStore } from '../store/actions.js';
 import { openDatabase } from '../store/db.js';
 import { JobStore } from '../store/jobs.js';
 import { PhaseStore } from '../store/phases.js';
 import { emptyFlags, type JobState } from '../store/types.js';
 import { createUiData } from './data.js';
-import { startUiServer, type UiServer } from './server.js';
+import { startUiServer, type ActionRunner, type UiServer } from './server.js';
 
 const PAGE = '<!doctype html><title>Sisyphe test</title>';
 
@@ -53,23 +54,45 @@ function rawRequest(port: number, path: string, opts: { method?: string; headers
   });
 }
 
-async function startTestServer(port = 0): Promise<{ server: UiServer; db: DatabaseSync; base: string }> {
+/** En-têtes anti-CSRF complets ; chaque test qui en retire un vérifie le refus. */
+const ACTION_HEADERS: Record<string, string> = { 'content-type': 'application/json', 'x-sisyphe-action': '1' };
+
+interface TestServerOptions {
+  port?: number;
+  /** Absent : l'interface est en lecture seule et refuse tout POST. */
+  actions?: ActionRunner;
+  paused?: boolean | null;
+  readOnly?: boolean;
+}
+
+async function startTestServer(opts: TestServerOptions = {}): Promise<{ server: UiServer; db: DatabaseSync; actions: ActionStore; base: string }> {
   const root = await mkdtemp(join(tmpdir(), 'sisyphe-srv-'));
   const paths = dataPaths(root);
   const db = openDatabase(':memory:');
+  const actions = new ActionStore(db);
   const machine = parseMachineConfig(
     `github:\n  appId: 1\n  installationId: 1\n  privateKeyPath: /dev/null\nrepos:\n  - acme/demo\ndataDir: ${root}\n`,
   );
+  const paused = opts.paused ?? null;
   const data = createUiData({
     store: new JobStore(db),
     phases: new PhaseStore(db),
     paths,
     machine,
     service: { status: async () => ({ kind: 'launchd' as const, installed: true, running: true, pid: 42, enabledAtBoot: true, detail: 'state = running' }) },
+    actions,
+    // Sonde factice : aucun test n'ouvre la socket de contrôle.
+    control: { ping: async () => (paused === null ? null : { pid: 7, paused, running: 0, queued: 0, startedAt: '2026-09-13T08:00:00.000Z' }) },
+    readOnly: opts.readOnly ?? false,
   });
-  const server = await startUiServer({ data, page: PAGE, port, intervalMs: 50 });
+  const server = await startUiServer({ data, page: PAGE, port: opts.port ?? 0, intervalMs: 50, actions: opts.actions });
   servers.push(server);
-  return { server, db, base: `http://127.0.0.1:${server.port}` };
+  return { server, db, actions, base: `http://127.0.0.1:${server.port}` };
+}
+
+/** POST d'action avec les en-têtes complets par défaut ; `headers` les remplace entièrement. */
+function postAction(base: string, name: string, init: { headers?: Record<string, string>; body?: string } = {}): Promise<Response> {
+  return fetch(`${base}/api/actions/${name}`, { method: 'POST', headers: init.headers ?? ACTION_HEADERS, body: init.body ?? '{}' });
 }
 
 afterEach(async () => {
@@ -104,7 +127,7 @@ describe('startUiServer', () => {
 
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toBe('application/json; charset=utf-8');
-    expect(body.daemon).toEqual({ running: false, pid: null });
+    expect(body.daemon).toEqual({ running: false, pid: null, paused: null });
     expect(body.counts.active).toBe(1);
     expect(body.active[0].id).toBe('ov1');
   });
@@ -272,6 +295,149 @@ describe('startUiServer', () => {
   it('un port déjà pris est refusé avec un message clair', async () => {
     const { server } = await startTestServer();
 
-    await expect(startTestServer(server.port)).rejects.toThrow(/déjà utilisé/);
+    await expect(startTestServer({ port: server.port })).rejects.toThrow(/déjà utilisé/);
+  });
+
+  it("l'overview publie la pause, la joignabilité, le mode et les dernières actions", async () => {
+    const { base, actions } = await startTestServer({ paused: true, readOnly: true });
+    actions.record({ action: 'pause', source: 'ui', outcome: 'ok' });
+
+    const { body } = await getJson(`${base}/api/overview`);
+
+    expect(body.daemon.paused).toBe(true);
+    expect(body.control).toEqual({ reachable: true });
+    expect(body.readOnly).toBe(true);
+    expect(body.recentActions).toHaveLength(1);
+    expect(body.recentActions[0].action).toBe('pause');
+  });
+});
+
+describe('POST /api/actions/<nom>', () => {
+  /** Contrôleur factice : le serveur n'a pas à savoir ce qu'une action fait, seulement à la router. */
+  function recorder(response: { status: number; body: unknown }) {
+    const calls: Array<{ name: string; body: unknown }> = [];
+    const actions: ActionRunner = async (name, body) => {
+      calls.push({ name, body });
+      return response as Awaited<ReturnType<ActionRunner>>;
+    };
+    return { actions, calls };
+  }
+
+  it('relaie le nom et le corps au contrôleur, et rend son statut', async () => {
+    const { actions, calls } = recorder({ status: 200, body: { ok: true, result: { id: 'abc' } } });
+    const { base } = await startTestServer({ actions });
+
+    const res = await postAction(base, 'cancel', { body: JSON.stringify({ jobId: 'abc' }) });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, result: { id: 'abc' } });
+    expect(calls).toEqual([{ name: 'cancel', body: { jobId: 'abc' } }]);
+  });
+
+  it('relaie un refus métier en 409 et un daemon injoignable en 502', async () => {
+    const refused = await startTestServer({ actions: recorder({ status: 409, body: { error: 'job déjà terminé' } }).actions });
+    const unreachable = await startTestServer({ actions: recorder({ status: 502, body: { error: 'daemon injoignable' } }).actions });
+
+    const r409 = await postAction(refused.base, 'cancel', { body: JSON.stringify({ jobId: 'abc' }) });
+    expect(r409.status).toBe(409);
+    expect(((await r409.json()) as JsonBody).error).toBe('job déjà terminé');
+
+    const r502 = await postAction(unreachable.base, 'poll');
+    expect(r502.status).toBe(502);
+    expect(((await r502.json()) as JsonBody).error).toBe('daemon injoignable');
+  });
+
+  it('sans en-tête anti-CSRF, rien n’atteint le contrôleur', async () => {
+    const { actions, calls } = recorder({ status: 200, body: { ok: true, result: null } });
+    const { base } = await startTestServer({ actions });
+
+    const sansJeton = await postAction(base, 'poll', { headers: { 'content-type': 'application/json' } });
+    expect(sansJeton.status).toBe(403);
+
+    const jetonFaux = await postAction(base, 'poll', { headers: { ...ACTION_HEADERS, 'x-sisyphe-action': '0' } });
+    expect(jetonFaux.status).toBe(403);
+
+    const sansType = await postAction(base, 'poll', { headers: { 'x-sisyphe-action': '1' } });
+    expect(sansType.status).toBe(403);
+
+    const typeFormulaire = await postAction(base, 'poll', {
+      headers: { ...ACTION_HEADERS, 'content-type': 'application/x-www-form-urlencoded' },
+    });
+    expect(typeFormulaire.status).toBe(403);
+
+    expect(calls).toEqual([]);
+  });
+
+  it('une Origin étrangère est refusée, une origine locale passe, y compris avec un paramètre de type', async () => {
+    const { actions, calls } = recorder({ status: 200, body: { ok: true, result: null } });
+    const { base, server } = await startTestServer({ actions });
+
+    const etrangere = await postAction(base, 'poll', { headers: { ...ACTION_HEADERS, origin: 'http://attaquant.example' } });
+    expect(etrangere.status).toBe(403);
+    expect(((await etrangere.json()) as JsonBody).error).toContain('attaquant.example');
+
+    // Origine locale sur un autre port : c'est une autre application, pas celle-ci.
+    const autrePort = await postAction(base, 'poll', { headers: { ...ACTION_HEADERS, origin: `http://127.0.0.1:${server.port + 1}` } });
+    expect(autrePort.status).toBe(403);
+
+    // Une page ouverte dans un bac à sable envoie `Origin: null` : ce n'est pas cette interface.
+    expect((await postAction(base, 'poll', { headers: { ...ACTION_HEADERS, origin: 'null' } })).status).toBe(403);
+
+    for (const origin of [`http://127.0.0.1:${server.port}`, `http://localhost:${server.port}`, `http://[::1]:${server.port}`]) {
+      expect((await postAction(base, 'poll', { headers: { ...ACTION_HEADERS, origin } })).status, origin).toBe(200);
+    }
+    // Le vrai navigateur envoie `application/json;charset=UTF-8` : le paramètre ne doit pas gêner.
+    const avecCharset = await postAction(base, 'poll', { headers: { ...ACTION_HEADERS, 'content-type': 'application/json;charset=UTF-8' } });
+    expect(avecCharset.status).toBe(200);
+
+    expect(calls).toHaveLength(4);
+  });
+
+  it('en lecture seule, toute action est refusée en 403', async () => {
+    const { base } = await startTestServer({ readOnly: true });
+
+    const res = await postAction(base, 'stop');
+
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as JsonBody).error).toContain('lecture seule');
+  });
+
+  it('corps illisible → 400, corps trop gros → 413, sans appeler le contrôleur', async () => {
+    const { actions, calls } = recorder({ status: 200, body: { ok: true, result: null } });
+    const { base } = await startTestServer({ actions });
+
+    const casse = await postAction(base, 'cancel', { body: '{ jobId: ' });
+    expect(casse.status).toBe(400);
+    expect(((await casse.json()) as JsonBody).error).toContain('JSON');
+
+    const enorme = await postAction(base, 'enqueue', { body: JSON.stringify({ repo: 'a/b'.padEnd(20_000, '!'), issueNumber: 1 }) });
+    expect(enorme.status).toBe(413);
+
+    expect(calls).toEqual([]);
+  });
+
+  it('corps vide : les actions sans argument passent quand même', async () => {
+    const { actions, calls } = recorder({ status: 200, body: { ok: true, result: null } });
+    const { base } = await startTestServer({ actions });
+
+    const res = await fetch(`${base}/api/actions/poll`, { method: 'POST', headers: ACTION_HEADERS });
+
+    expect(res.status).toBe(200);
+    expect(calls).toEqual([{ name: 'poll', body: {} }]);
+  });
+
+  it('sur cette route, les autres méthodes restent en 405 avec Allow: GET, POST', async () => {
+    const { base, server } = await startTestServer({ actions: recorder({ status: 200, body: { ok: true, result: null } }).actions });
+
+    const put = await fetch(`${base}/api/actions/poll`, { method: 'PUT', headers: ACTION_HEADERS, body: '{}' });
+    expect(put.status).toBe(405);
+    expect(put.headers.get('allow')).toBe('GET, POST');
+
+    // GET sur la route des actions : aucune action ne se déclenche, c'est une route inconnue.
+    expect((await fetch(`${base}/api/actions/poll`)).status).toBe(404);
+
+    // Ailleurs, POST reste interdit.
+    const post = await rawRequest(server.port, '/api/jobs', { method: 'POST' });
+    expect(post.status).toBe(405);
   });
 });

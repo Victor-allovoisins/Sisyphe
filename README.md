@@ -68,11 +68,11 @@ Un fichier `sisyphe.yml` à la racine de la branche par défaut (exemple iOS : `
 
 ## Commandes
 
-`sisyphe start [--once]`, `status`, `logs <jobId> [--phase triage|implement|setup|verify] [--raw]`, `report [--since 30d] [--repo owner/repo]`, `ui [--port 7777]`, `cancel <jobId>`, `doctor`, `setup [--reinstall-service]`, `service <status|start|stop|uninstall>`.
+`sisyphe start [--once]`, `status`, `logs <jobId> [--phase triage|implement|setup|verify] [--raw]`, `report [--since 30d] [--repo owner/repo]`, `ui [--port 7777] [--read-only]`, `cancel <jobId>`, `doctor`, `setup [--reinstall-service]`, `service <status|start|stop|uninstall>`.
 
 ### Interface web
 
-`sisyphe ui` sert une page locale sur `http://127.0.0.1:7777` : tableau de bord temps réel (daemon, service, budget du jour, jobs actifs et fil des actions de l'agent), historique des jobs avec panneau de détail (phases, transcript résumé, sorties de vérification, diff, secrets détectés) et KPIs par période. La page crée et migre sa base au besoin, puis l'ouvre en `readOnly` : elle n'écrit rien d'autre et ne fait aucun appel réseau. Les seules actions prévues sont Démarrer et Arrêter, qui passent par le service (UI v2). Captures : `docs/ui/`.
+`sisyphe ui` sert une page locale sur `http://127.0.0.1:7777` : tableau de bord temps réel (daemon, service, budget du jour, jobs actifs et fil des actions de l'agent), historique des jobs avec panneau de détail (phases, transcript résumé, sorties de vérification, diff, secrets détectés) et KPIs par période. La page crée et migre sa base au besoin, puis l'ouvre en `readOnly` : elle n'écrit rien d'autre et ne fait aucun appel réseau. Les actions (annuler, relancer, créer un job, poll, pause, reprise, démarrer, arrêter) passent par `POST /api/actions/<nom>`, réservé au navigateur local (en-tête `X-Sisyphe-Action`, `Content-Type` JSON et `Origin` vérifiée) ; Démarrer et Arrêter passent par le service, jamais par la seule socket. `--read-only` refuse toute action. Captures : `docs/ui/`.
 
 ## Développement
 

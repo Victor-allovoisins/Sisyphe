@@ -5,7 +5,9 @@ import type { ServiceStatus } from '../service/index.js';
 import { AmbiguousJobPrefixError, findJob } from '../cli/resolve-job.js';
 import type { AgentBackend, MachineConfig } from '../config/machine.js';
 import { jobDir, type DataPaths } from '../config/paths.js';
+import type { DaemonStatus } from '../daemon/control-types.js';
 import { readLock } from '../daemon/lock.js';
+import type { ActionRow, ActionStore } from '../store/actions.js';
 import { startOfLocalDay } from '../jobs/scheduler.js';
 import { buildReport, parseSince, type ReportStats } from '../report/report.js';
 import type { JobStore } from '../store/jobs.js';
@@ -30,6 +32,8 @@ const FEED_SOURCE_LINES = 400;
 const FEED_TAIL_BYTES = 256 * 1024;
 /** L'état du service change rarement ; le snapshot SSE, lui, tombe toutes les 2 s : sans ce cache, un `launchctl print` par tic. */
 const SERVICE_TTL_MS = 5_000;
+/** Dernières actions (UI et CLI confondues) affichées sur le tableau de bord. */
+const RECENT_ACTIONS = 20;
 const TRANSCRIPT_RE = /^transcript-([a-z]+)-(\d+)\.jsonl$/;
 const VERIFY_RE = /^(setup\.log|verify-.+\.log)$/;
 
@@ -46,6 +50,11 @@ export interface UiService {
   status(): Promise<ServiceStatus>;
 }
 
+/** Sonde du daemon par la socket de contrôle ; `null` = injoignable. L'implémentation réelle mémorise 1 s. */
+export interface UiControl {
+  ping(): Promise<DaemonStatus | null>;
+}
+
 export interface UiDataDeps {
   store: JobStore;
   phases: PhaseStore;
@@ -53,6 +62,11 @@ export interface UiDataDeps {
   machine: MachineConfig;
   /** Gestionnaire de service de la plateforme ; son `status()` est mémorisé quelques secondes. */
   service: UiService;
+  /** Journal des actions, lu seulement : c'est le daemon qui l'écrit. */
+  actions: ActionStore;
+  control: UiControl;
+  /** `sisyphe ui --read-only` : l'information remonte à la page pour qu'elle n'affiche aucun bouton. */
+  readOnly: boolean;
   now?: () => Date;
 }
 
@@ -81,7 +95,11 @@ export interface ActiveJob extends Job {
 
 export interface Overview {
   now: string;
-  daemon: { running: boolean; pid: number | null };
+  /** `paused` vient de la socket de contrôle : `null` quand le daemon ne répond pas. */
+  daemon: { running: boolean; pid: number | null; paused: boolean | null };
+  control: { reachable: boolean };
+  readOnly: boolean;
+  recentActions: ActionRow[];
   service: ServiceStatus;
   budget: { spentTodayUsd: number; dailyBudgetUsd: number; ratio: number };
   backend: AgentBackend;
@@ -123,6 +141,7 @@ export interface JobDetail {
   verify: VerifyLog[];
   diff: DiffStat | null;
   secrets: SecretRow[];
+  actions: ActionRow[];
 }
 
 export interface DayStat {
@@ -254,6 +273,8 @@ export function createUiData(deps: UiDataDeps): UiData {
   async function overview(): Promise<Overview> {
     const at = now();
     const lock = await readLock(paths);
+    // Une seule sonde pour les deux informations : le daemon répond-il, et est-il en pause.
+    const status = await deps.control.ping();
     const byState = store.countByState();
     const activeJobs = store.listActive();
     const spentTodayUsd = phases.costSince(startOfLocalDay(at));
@@ -271,7 +292,10 @@ export function createUiData(deps: UiDataDeps): UiData {
     );
     return {
       now: at.toISOString(),
-      daemon: { running: lock?.alive ?? false, pid: lock?.pid ?? null },
+      daemon: { running: lock?.alive ?? false, pid: lock?.pid ?? null, paused: status?.paused ?? null },
+      control: { reachable: status !== null },
+      readOnly: deps.readOnly,
+      recentActions: deps.actions.listRecent(RECENT_ACTIONS),
       service: await serviceStatus(),
       budget: {
         spentTodayUsd,
@@ -343,6 +367,7 @@ export function createUiData(deps: UiDataDeps): UiData {
       verify,
       diff: patch === null ? null : diffStat(patch),
       secrets,
+      actions: deps.actions.listForJob(job.id),
     };
   }
 
