@@ -4,7 +4,9 @@ import { join } from 'node:path';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { stringify } from 'yaml';
 import { parseMachineConfig, type MachineConfig } from '../../config/machine.js';
+import { dataPaths, type DataPaths } from '../../config/paths.js';
 import { REPO_CONFIG_FILENAME } from '../../config/repo.js';
+import { MAX_SOCKET_PATH_BYTES } from '../../daemon/control.js';
 import { renderPlist } from '../../service/launchd.js';
 import type { ServiceStatus } from '../../service/index.js';
 import { buildChecks, parseAuthStatus, type DoctorGitHub, type DoctorService } from './doctor.js';
@@ -22,6 +24,11 @@ const installedStatus: ServiceStatus = {
 /** Service factice : la suite n'appelle jamais `launchctl` ni `systemctl`. */
 function fakeService(status: Partial<ServiceStatus> = {}): DoctorService {
   return { status: async () => ({ ...installedStatus, ...status }) };
+}
+
+/** Chemins factices : seuls `root` et `controlSocketPath` comptent pour les checks exercés ici. */
+function fakePaths(root: string): DataPaths {
+  return { ...dataPaths(root), root };
 }
 
 function machineWith(repos: string[], extra: Record<string, unknown> = {}): MachineConfig {
@@ -95,13 +102,13 @@ describe('buildChecks — composition de la liste', () => {
     expect(names).not.toContain('claude (CLI)');
   });
 
-  it('ajoute le check espace disque seulement si des paths sont fournis', () => {
-    expect(buildChecks({ env: {} }).map((c) => c.name)).not.toContain('espace disque');
-    const names = buildChecks({
-      env: {},
-      paths: { root: '/tmp/x', dbPath: '', mirrorsDir: '', workDir: '', cacheDir: '', jobsDir: '', logsDir: '', controlSocketPath: '' },
-    }).map((c) => c.name);
+  it('ajoute les checks espace disque et socket de contrôle seulement si des paths sont fournis', () => {
+    const withoutPaths = buildChecks({ env: {} }).map((c) => c.name);
+    expect(withoutPaths).not.toContain('espace disque');
+    expect(withoutPaths).not.toContain('socket de contrôle');
+    const names = buildChecks({ env: {}, paths: fakePaths('/tmp/x') }).map((c) => c.name);
     expect(names).toContain('espace disque');
+    expect(names).toContain('socket de contrôle');
   });
 
   it("ajoute GitHub App et un check par repo seulement si machine ET github sont fournis", () => {
@@ -177,6 +184,31 @@ describe('buildChecks — GitHub App', () => {
     const github = fakeGithub(async () => null, { appSlug: 'my-app', repos: ['acme/one'] });
     const r = await run(buildChecks({ env: {}, machine, github }), 'GitHub App');
     expect(r).toEqual({ ok: true, detail: 'my-app, accès à 1 repo(s)' });
+  });
+});
+
+describe('check « socket de contrôle »', () => {
+  const runSocketCheck = (root: string) => run(buildChecks({ env: {}, paths: fakePaths(root) }), 'socket de contrôle');
+
+  it('racine courte : ok, avec la longueur et la limite', async () => {
+    const r = await runSocketCheck('/tmp/x');
+    expect(r).toEqual({ ok: true, detail: `${'/tmp/x/control.sock'.length} octets sur ${MAX_SOCKET_PATH_BYTES}` });
+  });
+
+  it('racine trop profonde : échec bloquant qui dit quoi raccourcir', async () => {
+    // Le daemon ne pourrait pas ouvrir sa socket ; sans ce check, on ne l'apprendrait qu'au démarrage.
+    const r = await runSocketCheck(`/tmp/${'x'.repeat(MAX_SOCKET_PATH_BYTES)}`);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.message).toContain('SISYPHE_HOME');
+      expect(r.message).toContain(`${MAX_SOCKET_PATH_BYTES} au maximum`);
+      expect(r.message).toContain('dataDir');
+    }
+  });
+
+  it('le check est bloquant : un chemin impossible n’est pas un simple avertissement', () => {
+    const c = buildChecks({ env: {}, paths: fakePaths('/tmp/x') }).find((x) => x.name === 'socket de contrôle');
+    expect(c?.warn).toBeUndefined();
   });
 });
 

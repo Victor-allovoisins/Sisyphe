@@ -5,6 +5,7 @@ import { createApp, machineConfigPath, type App } from '../../app.js';
 import { loadMachineConfig, MachineConfigError, type MachineConfig } from '../../config/machine.js';
 import { dataPaths, type DataPaths } from '../../config/paths.js';
 import { REPO_CONFIG_FILENAME, parseRepoConfig } from '../../config/repo.js';
+import { assertSocketPathLength, MAX_SOCKET_PATH_BYTES } from '../../daemon/control.js';
 import { parseRepo, type RepoRef } from '../../github/source.js';
 import { isStaleLaunchAgentPlist, plistPath, STALE_PLIST_MESSAGE } from '../../service/launchd.js';
 import type { ServiceStatus } from '../../service/index.js';
@@ -180,6 +181,15 @@ export function buildChecks(input: BuildChecksInput): Check[] {
   const { paths } = input;
   if (paths) {
     checks.push({ name: 'espace disque', warn: true, run: () => checkDiskSpace(paths.root) });
+    // Une racine de données trop profonde rend la socket de contrôle impossible à ouvrir. Sans ce check,
+    // on ne l'apprend qu'au démarrage du daemon — que le service relance ensuite toutes les 30 s, sans fin.
+    checks.push({
+      name: 'socket de contrôle',
+      run: async () => {
+        assertSocketPathLength(paths.controlSocketPath);
+        return `${Buffer.byteLength(paths.controlSocketPath, 'utf8')} octets sur ${MAX_SOCKET_PATH_BYTES}`;
+      },
+    });
   }
 
   const { service } = input;

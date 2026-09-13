@@ -112,6 +112,28 @@ describe('serviceCommand', () => {
     expect(logs.join('\n')).toContain('pid : -');
   });
 
+  it('daemon détaché encore absent au bout du délai : « démarrage en cours ou échoué », avec où regarder', async () => {
+    const { manager } = fakeManager({ kind: 'none', running: false, stuck: true });
+
+    await serviceCommand('start', { createManager: async () => manager, settleMs: 30 });
+
+    // `running` ne reflète que le verrou : un faux tout court ne dit pas si ça traîne ou si c'est mort.
+    expect(logs.join('\n')).toContain('running : false');
+    expect(logs.join('\n')).toContain('Démarrage en cours ou échoué');
+    expect(logs.join('\n')).toContain(join(dir, 'logs', 'daemon-stdout.log'));
+  });
+
+  it('aucune note quand le daemon détaché démarre, ni pour un service géré qui ne bascule pas', async () => {
+    await serviceCommand('start', { createManager: async () => fakeManager({ kind: 'none', running: false }).manager });
+    expect(logs.join('\n')).toContain('running : true');
+    expect(logs.join('\n')).not.toContain('Démarrage en cours');
+
+    logs = [];
+    await serviceCommand('start', { createManager: async () => fakeManager({ running: false, stuck: true }).manager, settleMs: 30 });
+    expect(logs.join('\n')).toContain('running : false');
+    expect(logs.join('\n')).not.toContain('Démarrage en cours'); // launchd : c'est `launchctl print` qui parle
+  });
+
   it('daemon qui ne bascule pas : l’attente s’arrête au délai et affiche l’état réel', async () => {
     const { manager, calls } = fakeManager({ running: true, stuck: true });
 

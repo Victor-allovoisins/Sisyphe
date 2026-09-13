@@ -2,6 +2,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { loadMachineConfig, type MachineConfig } from '../../config/machine.js';
 import { dataPaths, machineConfigPath, type DataPaths } from '../../config/paths.js';
 import { ControlClient } from '../../daemon/control-client.js';
+import { detachedLogPath } from '../../service/none.js';
 import { createServiceManager, defaultServiceContext, type ServiceContext, type ServiceManager, type ServiceStatus } from '../../service/index.js';
 
 export const SERVICE_ACTIONS = ['status', 'start', 'stop', 'uninstall'] as const;
@@ -95,7 +96,7 @@ export interface ServiceCommandOptions extends ServiceManagerOptions {
  */
 export async function serviceCommand(rawAction: string, opts: ServiceCommandOptions = {}): Promise<void> {
   const action = parseServiceAction(rawAction);
-  const { manager } = await loadServiceTarget(opts);
+  const { manager, paths } = await loadServiceTarget(opts);
   const settleMs = opts.settleMs ?? SETTLE_MS;
   if (action === 'uninstall') {
     // Plateforme sans service géré : rien n'a été installé, ce n'est pas une erreur.
@@ -113,5 +114,15 @@ export async function serviceCommand(rawAction: string, opts: ServiceCommandOpti
   }
   if (action === 'start') await manager.start();
   else await manager.stop();
-  console.log(formatStatus(await settledStatus(manager, action === 'start', settleMs)));
+  const settled = await settledStatus(manager, action === 'start', settleMs);
+  console.log(formatStatus(settled));
+  // Daemon détaché : `start()` rend la main dès le spawn (l'attente de la socket appartient à l'appelant)
+  // et `running` ne reflète que le verrou, posé au démarrage de Node. Encore faux au bout du délai, il ne
+  // dit pas si le démarrage traîne ou s'il a échoué : c'est le log du daemon qui tranche, pas nous.
+  if (action === 'start' && settled.kind === 'none' && !settled.running) {
+    console.log(
+      "Démarrage en cours ou échoué : le daemon détaché n'a pas encore pris son verrou." +
+        `\nVoir ${detachedLogPath(paths.logsDir)}, puis \`sisyphe service status\`.`,
+    );
+  }
 }
