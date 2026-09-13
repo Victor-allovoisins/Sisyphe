@@ -28,13 +28,13 @@ Contexte : POC sur le Mac de Victor, destiné à prouver la faisabilité et à j
 - `config` : chargement et validation (zod) de la config machine `~/.sisyphe/config.yml` et de la config repo `sisyphe.yml`. Applique les défauts.
 - `github` : client GitHub App (Octokit) : issues, labels, commentaires, permissions, PR. Implémente l'interface `IssueSource`.
 - `git` : miroir bare par repo, worktree par job, branches, squash, push, diff. Appelle le binaire `git` via `execa`.
-- `store` : SQLite via `node:sqlite`, tables `jobs` et `phases`, migrations versionnées.
+- `store` : SQLite via `node:sqlite`, tables `jobs`, `phases` et `actions` (journal des actions UI et CLI), migrations versionnées.
 - `jobs` : machine à états, scheduler, réconciliation au démarrage.
 - `agent` : `AgentRunner` qui enveloppe le SDK, prompts de triage et d'implémentation, schémas JSON de sortie, hooks de sécurité.
 - `verify` : exécution de build, test, lint ; scan de secrets (gitleaks) ; détection des chemins protégés ; taille du diff.
 - `deliver` : squash, commit, push, rendu du body de PR, création de la PR, labels et commentaires finaux.
-- `daemon` : boucle de poll, gestion de la concurrence, `caffeinate`, arrêt propre, suivi des PR.
-- `cli` : `sisyphe setup | doctor | start | status | logs | report | cancel`.
+- `daemon` : boucle de poll, gestion de la concurrence, `caffeinate`, arrêt propre, suivi des PR, et la socket de contrôle UNIX `<dataDir>/control.sock` (0600) par laquelle l'interface et la CLI lui demandent d'agir — le daemon reste le seul écrivain de la base.
+- `cli` : `sisyphe setup | doctor | start | status | logs | report | ui | cancel | service`.
 - `report` : agrégation des KPI depuis SQLite, rendu markdown.
 
 ### 3.2 Dépendances externes
@@ -294,14 +294,15 @@ Logs du daemon : pino JSON sur stdout et dans `~/.sisyphe/logs/daemon-YYYY-MM-DD
 
 ## 7. CLI
 
-- `sisyphe setup` : interactif. Valide chaque réponse avant d'écrire quoi que ce soit (repos au format owner/repo, identifiants entiers, clé privée lisible, clé API non vide, jamais affichée), fusionne avec un `config.yml` existant (les réglages non demandés sont conservés), écrit `config.yml` en 0600, exécute les vérifications de `doctor` et, seulement si elles passent, écrit `~/Library/LaunchAgents/com.sisyphe.daemon.plist` en 0600 (KeepAlive, RunAtLoad, ThrottleInterval 30 s, PATH préfixé par le dossier du node courant, variables d'env dont la clé API, stdout vers /dev/null car pino écrit déjà le fichier quotidien, stderr vers `logs/`) puis `launchctl bootout` + `bootstrap gui/$UID`. Refuse de s'installer si le CLI n'est pas exécuté depuis le build (`dist/cli/index.js`). Compromis assumé pour le POC : la clé API est dans le plist (0600) et visible via `launchctl print` par les processus de l'utilisateur ; un fichier d'env ou le trousseau est une évolution possible.
-- `sisyphe doctor` : vérifie node ≥ 24, git, gitleaks, la présence de la clé API et sa validité (appel minimal à l'API des modèles), la config machine, l'accès de la GitHub App à chaque repo, la présence et la validité de `sisyphe.yml` sur la branche par défaut de chaque repo, la présence sur le PATH du premier mot de chaque commande déclarée ; en avertissement (n'échoue pas) : `caffeinate` absent, moins de 10 Go libres, agent launchd non chargé ou dont le dernier code de sortie est non nul. Sortie : une ligne par vérification (✅ ⚠️ ❌), code de retour non nul si une vérification bloquante échoue.
+- `sisyphe setup` : interactif. Valide chaque réponse avant d'écrire quoi que ce soit (repos au format owner/repo, identifiants entiers, clé privée lisible, clé API non vide, jamais affichée), fusionne avec un `config.yml` existant (les réglages non demandés sont conservés), écrit `config.yml` en 0600, crée les dossiers de données et la base, exécute les vérifications de `doctor` et, seulement si elles passent, **installe le service sans le démarrer** via `src/service/` (plist launchd, unité systemd, ou message d'aide sur une plateforme sans service géré) ; `--reinstall-service` réécrit l'unité sans reposer les questions. Refuse de s'installer si le CLI n'est pas exécuté depuis le build (`dist/cli/index.js`). Détail du service, du fichier `enabled` et des permissions : `2026-09-10-sisyphe-install-service-design.md` §3 et §4, qui remplace la description launchd de la v1. Compromis assumé pour le POC, avec le backend `sdk` uniquement : la clé API est recopiée dans le plist ou l'unité (0600) et visible par les processus du même utilisateur ; le backend `cli`, désormais le défaut, n'écrit aucun secret.
+- `sisyphe doctor` : vérifie node ≥ 24, git, gitleaks, la clé API et sa validité pour le backend `sdk` ou `claude auth status` pour le backend `cli`, la config machine, l'accès de la GitHub App à chaque repo, la présence et la validité de `sisyphe.yml` sur la branche par défaut de chaque repo, la présence sur le PATH du premier mot de chaque commande déclarée, la longueur du chemin de la socket de contrôle, et l'état du service ; il **échoue** sur un agent launchd d'une version antérieure (`RunAtLoad true` ou absence de `PathState`), qui ferait mentir l'état « au boot » et empêcherait un arrêt de tenir. En avertissement seulement : `caffeinate` absent (macOS), moins de 10 Go libres, service non installé, `linger` désactivé (Linux). Chaque échec de prérequis cite la commande d'installation de la plateforme. Sortie : une ligne par vérification (✅ ⚠️ ❌), code de retour non nul si une vérification bloquante échoue.
 - `sisyphe start [--once]` : lance le daemon au premier plan (c'est ce que launchd exécute). `--once` fait un cycle de poll, traite les jobs trouvés jusqu'au bout, puis quitte. Utile pour les tests et la démo.
 - `sisyphe status` : jobs actifs et les 20 derniers, avec état, coût, durée, lien PR.
 - `sisyphe logs <jobId> [--phase <name>] [--raw]` : par défaut un résumé lisible du transcript (outils appelés, fichiers touchés, commandes lancées) ; `--raw` affiche les fichiers bruts.
 - `sisyphe report [--since 30d] [--repo <owner/repo>]` : markdown avec nombre de jobs, répartition par état final, taux de PR ouvertes, taux de PR mergées, coût total et médian, coût par PR mergée, durée médiane (cumulée sur les runs requeués), nombre de tentatives moyen, cinq derniers échecs avec raison.
-- `sisyphe ui [--port <n>]` : interface web locale en lecture seule sur `127.0.0.1` (tableau de bord temps réel, jobs, KPIs) — spec dédiée `docs/superpowers/specs/2026-09-09-sisyphe-ui-design.md`.
-- `sisyphe cancel <jobId>` : annule un job actif.
+- `sisyphe ui [--port <n>] [--read-only]` : interface web locale sur `127.0.0.1` (tableau de bord temps réel, jobs, KPIs). La base reste ouverte en lecture seule ; les actions (annuler, relancer, créer un job, poll, pause, reprise, arrêter) sont relayées au daemon par la socket de contrôle `<dataDir>/control.sock`, Démarrer et Arrêter par le gestionnaire de service, et `--read-only` n'affiche aucun bouton. Specs dédiées : `docs/superpowers/specs/2026-09-09-sisyphe-ui-design.md` (v1, lecture) et `2026-09-09-sisyphe-ui-actions-design.md` (v2, actions).
+- `sisyphe cancel <jobId>` : annule un job actif — par la socket de contrôle si le daemon répond (annulation immédiate et journalisée), sinon par retrait du label comme avant.
+- `sisyphe service <status|start|stop|uninstall>` : pilote le service utilisateur qui héberge le daemon (launchd sur macOS, systemd `--user` sur Ubuntu). `sisyphe setup --reinstall-service` réécrit l'unité sans rejouer les questions. Détail : `docs/superpowers/specs/2026-09-10-sisyphe-install-service-design.md` §3 et §4.
 
 ## 8. Gestion d'erreurs
 
@@ -321,6 +322,7 @@ Logs du daemon : pino JSON sur stdout et dans `~/.sisyphe/logs/daemon-YYYY-MM-DD
 - **Périmètre de l'agent** : liste blanche d'outils (`tools`), `git push` et `git remote` interdits, outils web interdits, hooks et MCP des settings du repo cible désactivés, hook qui bloque les écritures hors worktree, dans `.git`, sur les chemins protégés de base et déclarés ; sandbox macOS optionnel. Le token GitHub ne passe que sur la ligne de commande de `fetch`/`push`, jamais pendant qu'un agent tourne.
 - **Secrets** : gitleaks sur chaque diff avant push, bloquant. Limite connue : la clé API Anthropic est présente dans l'environnement du processus agent, donc lisible par un `Bash` de l'agent. Acceptable pour le POC sur une machine de confiance ; le sandbox réseau la rend inutilisable vers l'extérieur. Les commandes du repo et l'agent tournent avec les credential helpers git désactivés (`credential.helper` vide via `GIT_CONFIG_*`), sans prompt (`GIT_TERMINAL_PROMPT=0`) et sans `SSH_AUTH_SOCK` : un `git push` depuis le worktree échoue au lieu d'utiliser les identifiants du développeur.
 - **Chemins protégés** : déclarés par repo, un diff qui les touche force la PR en draft avec alerte.
+- **Service** : le daemon tourne en service utilisateur (plist launchd ou unité systemd `--user`, 0600, dans le compte de l'utilisateur) ; `install.sh` n'emploie `sudo` que pour `apt-get` sur Ubuntu (git et Node), tout le reste s'installe dans le compte. Avec `agentBackend: sdk`, la clé API est recopiée dans l'unité : après rotation, relancer `sisyphe setup --reinstall-service`.
 
 ## 10. Tests
 
@@ -331,8 +333,8 @@ Logs du daemon : pino JSON sur stdout et dans `~/.sisyphe/logs/daemon-YYYY-MM-DD
 ## 11. Installation sur un Mac neuf
 
 1. Xcode depuis l'App Store, ouvrir une fois, accepter la licence, installer un simulateur iPhone. Étape manuelle, hors Sisyphe.
-2. Homebrew, puis `brew install node git gitleaks xcodegen` (Node 24 ou plus).
-3. `npm install -g sisyphe` (ou clone du repo et `npm link` pendant le POC).
+2. Homebrew, puis `brew install xcodegen` (outil propre aux repos iOS).
+3. `git clone … && ./install.sh` : le script pose git, Node ≥ 24, gitleaks et la CLI Claude Code, compile et lie le clone (`2026-09-10-sisyphe-install-service-design.md` §2 ; il vaut aussi pour Ubuntu).
 4. Créer la GitHub App une fois pour l'organisation, l'installer sur les repos, télécharger la clé privée.
 5. `sisyphe setup`, puis `sisyphe doctor` jusqu'au vert.
 6. Ajouter `sisyphe.yml` sur la branche de base du repo cible, créer les labels `sisyphe`, `sisyphe:in-progress`, `sisyphe:blocked`, `sisyphe:done`, `sisyphe:failed` (le daemon les crée s'ils manquent).

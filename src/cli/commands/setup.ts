@@ -1,21 +1,22 @@
 import { realpathSync } from 'node:fs';
 import { chmod, readFile, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { stringify } from 'yaml';
 import { createApp, type App } from '../../app.js';
 import { MachineConfigError, parseMachineConfig, type AgentBackend, type MachineConfig } from '../../config/machine.js';
-import { dataPaths, defaultDataDir, ensureDataDirs, expandHome, machineConfigPath } from '../../config/paths.js';
+import { dataPaths, defaultDataDir, ensureDataDirs, expandHome, machineConfigPath, type DataPaths } from '../../config/paths.js';
 import { parseRepo } from '../../github/source.js';
+import { openDatabase } from '../../store/db.js';
+import type { ServiceManager } from '../../service/index.js';
 import { buildChecks } from './doctor.js';
 import { runChecks, which } from '../checks.js';
-import { LAUNCHD_LABEL, installLaunchAgent, plistPath, renderPlist } from '../launchd.js';
+import { NONE_SERVICE_HINT, loadServiceTarget, serviceManagerFor, type CreateManager } from './service.js';
 
 /** Réponse affichée par défaut quand ANTHROPIC_API_KEY est déjà dans l'environnement : la clé elle-même n'est jamais affichée à l'écran. */
 export const ENV_KEY_PLACEHOLDER = "[valeur de l'environnement]";
 
-/** Le garde-fou de setup n'installe le LaunchAgent que si l'entrée résolue est bien le fichier buildé. */
+/** Le garde-fou de setup n'installe le service que si l'entrée résolue est bien le fichier buildé. */
 export function isBuiltEntry(path: string): boolean {
   return path.endsWith('.js');
 }
@@ -62,16 +63,6 @@ export function validateBackend(s: string): string | null {
   return s === 'cli' || s === 'sdk' ? null : 'Répondre cli ou sdk.';
 }
 
-/**
- * PATH du plist launchd : launchd n'hérite d'aucun shell (nvm/mise, homebrew...). Le node courant en
- * tête, puis le dossier du `claude` résolu s'il est connu (il vit souvent dans ~/.local/bin, absent
- * des chemins système), puis le socle habituel. Dédoublonné pour rester lisible.
- */
-export function buildPlistPath(nodeExecPath: string, claudeBin?: string): string {
-  const dirs = [dirname(nodeExecPath), ...(claudeBin ? [dirname(claudeBin)] : []), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin'];
-  return [...new Set(dirs)].join(':');
-}
-
 export async function validatePrivateKeyPath(p: string): Promise<string | null> {
   try {
     await readFile(expandHome(p), 'utf8');
@@ -109,7 +100,72 @@ export function buildRawConfig(answers: SetupAnswers, existing?: MachineConfig):
   };
 }
 
-export async function setupCommand(): Promise<void> {
+/** Ce qui reste à faire après setup : le daemon n'est jamais démarré par l'installation. */
+const START_HINT = 'Lancer `sisyphe ui` puis Démarrer, ou `sisyphe service start`.';
+
+/** Dossiers de données puis base : l'ouverture en écriture joue les migrations, la fermeture suit aussitôt. */
+export async function prepareData(paths: DataPaths): Promise<void> {
+  await ensureDataDirs(paths);
+  openDatabase(paths.dbPath).close();
+}
+
+/** Refuse d'aller plus loin quand la CLI ne tourne pas depuis le build : un service pointant sur un script `tsx` ne démarrerait jamais. */
+export function assertBuiltEntry(): void {
+  const entry = resolveEntryPath(process.argv[1] ?? '');
+  if (!isBuiltEntry(entry)) throw new Error(`Installer le service depuis le build : node dist/cli/index.js setup (entrée = ${entry}).`);
+}
+
+/**
+ * Installe (ou réinstalle) le service sans rien démarrer, après avoir vérifié que le daemon aura de quoi
+ * travailler, et affiche ses avertissements non bloquants (linger systemd…). Renvoie `false` sur une
+ * plateforme sans service géré : il n'y a rien à installer, et ce n'est pas une erreur.
+ */
+export async function installService(
+  machine: Pick<MachineConfig, 'agentBackend'>,
+  manager: ServiceManager,
+  apiKey?: string,
+): Promise<boolean> {
+  // Backend `cli` : la session claude.ai remplace la clé API, mais `claude` doit être joignable depuis le
+  // PATH que le service transmettra au daemon — sinon chaque job échouerait.
+  if (machine.agentBackend === 'cli') {
+    try {
+      await which('claude');
+    } catch {
+      throw new Error('claude introuvable sur le PATH : installer Claude Code puis relancer setup.');
+    }
+  }
+  // Backend `sdk` : la clé vient de la question de setup ou de l'environnement. Absente — cas de
+  // `--reinstall-service` lancé depuis un shell sans clé — le service serait installé muet.
+  if (machine.agentBackend === 'sdk' && !(apiKey || process.env.ANTHROPIC_API_KEY)) {
+    throw new Error("ANTHROPIC_API_KEY absente de l'environnement : le service serait installé sans clé. La définir puis relancer.");
+  }
+  if ((await manager.status()).kind === 'none') {
+    console.log(NONE_SERVICE_HINT);
+    return false;
+  }
+  const { warnings } = await manager.install();
+  for (const w of warnings) console.log(`⚠️ ${w}`);
+  return true;
+}
+
+export interface SetupOptions {
+  /** Ne rejoue pas les questions : recharge la config et réinstalle seulement le service. */
+  reinstallService?: boolean;
+}
+
+export async function setupCommand(opts: SetupOptions = {}, deps: { createManager?: CreateManager } = {}): Promise<void> {
+  // En tête des deux branches : échouer en une seconde plutôt qu'après tout l'entretien.
+  assertBuiltEntry();
+
+  if (opts.reinstallService) {
+    const { machine, paths, manager } = await loadServiceTarget({ createManager: deps.createManager });
+    // Les dossiers et la base d'abord : le plist et l'unité référencent `logsDir` et la racine des données,
+    // et c'est cette commande que doctor conseille pour réparer une installation.
+    await prepareData(paths);
+    if (await installService(machine, manager)) console.log(`Service réinstallé, daemon non démarré.\n${START_HINT}`);
+    return;
+  }
+
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const ask = async (question: string, def?: string): Promise<string> => {
     const answer = (await rl.question(def ? `${question} [${def}] : ` : `${question} : `)).trim();
@@ -171,7 +227,7 @@ export async function setupCommand(): Promise<void> {
     if (agentBackend === 'sdk') {
       const envKey = process.env.ANTHROPIC_API_KEY;
       const apiKeyAnswer = await askValidated(
-        'ANTHROPIC_API_KEY (stockée uniquement dans le plist launchd)',
+        'ANTHROPIC_API_KEY (transmise au service, jamais écrite dans config.yml)',
         validateApiKey,
         envKey ? ENV_KEY_PLACEHOLDER : undefined,
       );
@@ -201,17 +257,14 @@ export async function setupCommand(): Promise<void> {
     } catch (err) {
       initError = err;
     }
-    // La clé n'est pas forcément exportée dans l'environnement de cette session (c'est justement ce que
-    // setup vient de recueillir) : on l'injecte pour que le check et la sonde API portent sur la bonne
-    // valeur. Backend `cli` : aucune clé, ce sont les checks `claude` qui s'appliquent.
+    // La clé recueillie n'est pas forcément exportée dans cette session : on la donne aux checks sans la
+    // poser dans `process.env`, que tout enfant (`which`, `claude --version`…) hériterait.
     const checkEnv = agentBackend === 'sdk' ? { ...process.env, ANTHROPIC_API_KEY: apiKey } : process.env;
-    // « agent launchd » est forcément non chargé à ce stade (on ne l'a pas encore installé) : ce check
-    // n'a de sens que pour `sisyphe doctor` une fois le daemon en place, pas pour le pré-vol de setup.
+    // Le service est forcément absent à ce stade (on ne l'a pas encore installé) : ce check n'a de sens
+    // que pour `sisyphe doctor` une fois le daemon en place, pas pour le pré-vol de setup.
     // `machine` (fraîchement parsée) plutôt que seulement `app?.machine` : si createApp a échoué après la
     // config (client GitHub…), le pré-vol doit quand même vérifier le bon backend, pas retomber sur `sdk`.
-    const checks = buildChecks({ machine: app?.machine ?? machine, github: app?.github, env: checkEnv, paths: app?.paths }).filter(
-      (c) => c.name !== 'agent launchd',
-    );
+    const checks = buildChecks({ machine: app?.machine ?? machine, github: app?.github, env: checkEnv, paths: app?.paths });
     if (initError && !(initError instanceof MachineConfigError)) {
       const err = initError;
       checks.push({ name: 'initialisation', run: async () => { throw err; } });
@@ -223,46 +276,12 @@ export async function setupCommand(): Promise<void> {
       return;
     }
 
-    if (process.platform === 'darwin') {
-      const argv1 = resolveEntryPath(process.argv[1]);
-      if (!isBuiltEntry(argv1)) {
-        console.log(`Lancer setup depuis le build : node dist/cli/index.js setup (argv[1] = ${argv1})`);
-        return;
-      }
-      // Backend `cli` : pas de clé dans le plist, mais `claude` doit être sur le PATH du daemon et HOME
-      // doit pointer sur le vrai home (la session claude.ai vit dans ~/.claude). Un `claude` introuvable
-      // est une erreur : un plist sans son dossier donnerait un daemon qui échoue à chaque job.
-      let claudeBin: string | undefined;
-      if (agentBackend === 'cli') {
-        try {
-          claudeBin = await which('claude');
-        } catch {
-          throw new Error('claude introuvable sur le PATH : installer Claude Code puis relancer setup.');
-        }
-      }
-      const plist = renderPlist({
-        label: LAUNCHD_LABEL,
-        nodePath: process.execPath,
-        scriptPath: argv1,
-        dataDir: paths.root,
-        logsDir: paths.logsDir,
-        env: {
-          ...(agentBackend === 'sdk' ? { ANTHROPIC_API_KEY: apiKey } : {}),
-          PATH: buildPlistPath(process.execPath, claudeBin),
-          HOME: homedir(),
-          SISYPHE_HOME: paths.root,
-        },
-      });
-      await installLaunchAgent(plist);
-      console.log(`Daemon installé et démarré : ${plistPath()}\nLogs : ${paths.logsDir}`);
-    } else {
-      console.log(
-        agentBackend === 'sdk'
-          ? "Pas macOS : lancez `sisyphe start` sous le superviseur de votre choix, avec ANTHROPIC_API_KEY dans l'environnement."
-          : 'Pas macOS : lancez `sisyphe start` sous le superviseur de votre choix, avec `claude` sur le PATH et HOME pointant sur la session claude.ai.',
-      );
+    await prepareData(paths);
+    const manager = await serviceManagerFor(paths, machine, { createManager: deps.createManager, apiKey });
+    if (await installService(machine, manager, apiKey)) {
+      console.log(`Service installé, daemon non démarré. Logs : ${paths.logsDir}`);
+      console.log(`${START_HINT} Vérifier l'installation avec \`sisyphe doctor\`.`);
     }
-    console.log('Vérifiez maintenant avec `sisyphe doctor`.');
   } finally {
     rl.close();
   }

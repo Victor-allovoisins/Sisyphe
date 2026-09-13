@@ -18,6 +18,7 @@ import {
 import { deliver } from '../deliver/deliver.js';
 import type { Git } from '../git/git.js';
 import { issueRefOf, type IssueSource } from '../github/source.js';
+import type { ActionStore } from '../store/actions.js';
 import type { JobPatch, JobStore } from '../store/jobs.js';
 import type { PhaseFinish, PhaseStore } from '../store/phases.js';
 import { isTerminal, type Job, type JobFlags, type JobState, type PhaseName } from '../store/types.js';
@@ -29,6 +30,8 @@ import { branchName } from './slug.js';
 export interface PipelineDeps {
   store: JobStore;
   phases: PhaseStore;
+  /** Journal des commandes (UI, CLI) : écrit par le daemon, lu par l'UI. */
+  actions: ActionStore;
   source: IssueSource;
   agent: AgentRunner;
   git: Git;

@@ -2,6 +2,8 @@
 
 Validé le 2026-09-09 avec Victor. Complète la spec `2026-09-08-sisyphe-design.md`.
 
+> **v2 : voir `2026-09-09-sisyphe-ui-actions-design.md`.** L'interface n'est plus en lecture seule : boutons d'action, formulaire de création de job et journal des actions s'ajoutent à tout ce qui est décrit ici, qui reste valable. La lecture seule décrite ci-dessous est désormais le mode `sisyphe ui --read-only`.
+
 ## 1. Objectif
 
 Voir d'un coup d'œil ce que fait Sisyphe : jobs en cours et fil des actions de l'agent, historique des jobs, KPIs de coût et de durée, état du système. Utile au quotidien pour Victor et lisible en réunion. Lecture seule : aucune action sur les jobs ni sur GitHub depuis l'interface (v2 éventuelle).

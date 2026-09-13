@@ -35,8 +35,24 @@ describe('FakeIssueSource', () => {
     expect((await s.findPullRequest(repo, 'feature/issue-7-x'))?.number).toBe(100);
     s.permissions.carol = 'maintain';
     s.addIssue(repo, { number: 3, title: 'c', labeledBy: 'carol' });
-    s.addIssue(repo, { number: 4, title: 'd', labeledBy: null });
+    // Aucun événement `labeled` : repli sur l'auteur tant que le label trigger est là, comme le client réel.
+    s.addIssue(repo, { number: 4, title: 'd', labeledBy: null, author: 'carol' });
+    s.addIssue(repo, { number: 5, title: 'e', labeledBy: null, labels: [] });
     expect((await s.canTrigger({ repo, number: 3 })).ok).toBe(true);
-    expect(await s.canTrigger({ repo, number: 4 })).toEqual({ ok: false, login: null });
+    expect(await s.canTrigger({ repo, number: 4 })).toEqual({ ok: true, login: 'carol' });
+    expect(await s.canTrigger({ repo, number: 5 })).toEqual({ ok: false, login: null });
+  });
+
+  it('addTriggerLabel repose le label trigger et attribue sisyphe[bot], idempotent', async () => {
+    const s = new FakeIssueSource('sisyphe');
+    s.permissions.alice = 'write';
+    s.addIssue(repo, { number: 1, title: 'a', labels: [], author: 'alice' });
+    await s.addTriggerLabel({ repo, number: 1 });
+    expect(s.labelsOf({ repo, number: 1 })).toEqual(['sisyphe']);
+    expect(s.calls).toEqual(['addTriggerLabel']);
+    // Notre propre pose de label ne fait pas de nous le demandeur : repli sur l'auteur, jamais un refus.
+    expect(await s.canTrigger({ repo, number: 1 })).toEqual({ ok: true, login: 'alice' });
+    await s.addTriggerLabel({ repo, number: 1 });
+    expect(s.labelsOf({ repo, number: 1 })).toEqual(['sisyphe']);
   });
 });

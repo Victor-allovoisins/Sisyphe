@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { firstWord, runChecks, which } from './checks.js';
+import { describe, expect, it, vi } from 'vitest';
+import { firstWord, installHint, runChecks, which, whichOrHint } from './checks.js';
 
 describe('checks', () => {
   it('firstWord', () => {
@@ -38,5 +38,24 @@ describe('checks', () => {
   it('which : réussit sur un binaire présent, lève sur un binaire absent', async () => {
     await expect(which('sh')).resolves.toContain('sh');
     await expect(which('binaire-inexistant-xyz')).rejects.toThrow('introuvable sur le PATH');
+  });
+  it('installHint : la commande de la plateforme, rien ailleurs ni pour un outil inconnu', () => {
+    expect(installHint('gitleaks', 'darwin')).toBe('brew install gitleaks');
+    expect(installHint('gitleaks', 'linux')).toBe('https://github.com/gitleaks/gitleaks/releases');
+    expect(installHint('claude', 'linux')).toBe('npm install -g @anthropic-ai/claude-code');
+    expect(installHint('gitleaks', 'freebsd')).toBeNull();
+    expect(installHint('xcodebuild', 'darwin')).toBeNull();
+  });
+  it('whichOrHint : l’échec cite la consigne d’installation, ou reste brut sans consigne connue', async () => {
+    await expect(whichOrHint('sh', 'darwin')).resolves.toContain('sh');
+    // PATH vidé : plus aucun binaire joignable, `git` échoue à coup sûr.
+    vi.stubEnv('PATH', '/sisyphe-aucun-binaire');
+    try {
+      await expect(whichOrHint('git', 'darwin')).rejects.toThrow('git introuvable sur le PATH — installer : brew install git');
+      await expect(whichOrHint('git', 'linux')).rejects.toThrow('sudo apt-get install -y git');
+      await expect(whichOrHint('xcodebuild', 'darwin')).rejects.toThrow(/^xcodebuild introuvable sur le PATH$/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

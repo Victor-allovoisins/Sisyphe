@@ -54,3 +54,42 @@ export async function which(bin: string): Promise<string> {
   if (r.exitCode !== 0) throw new Error(`${bin} introuvable sur le PATH`);
   return r.stdout.trim();
 }
+
+/**
+ * Comment installer chaque prérequis, par plateforme. gitleaks n'est pas dans les dépôts Ubuntu : c'est le
+ * lien de la release qui sert de consigne. Aucun paquet Homebrew ni apt pour la CLI Claude : npm dans les deux cas.
+ */
+const INSTALL_HINTS: Record<string, { darwin: string; linux: string }> = {
+  node: {
+    darwin: 'brew install node',
+    linux: 'curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash - && sudo apt-get install -y nodejs',
+  },
+  git: { darwin: 'brew install git', linux: 'sudo apt-get install -y git' },
+  gitleaks: { darwin: 'brew install gitleaks', linux: 'https://github.com/gitleaks/gitleaks/releases' },
+  claude: { darwin: 'npm install -g @anthropic-ai/claude-code', linux: 'npm install -g @anthropic-ai/claude-code' },
+};
+
+/** Commande d'installation de l'outil sur cette plateforme, `null` quand on n'a rien de sûr à conseiller. */
+export function installHint(bin: string, platform: NodeJS.Platform): string | null {
+  const hints = INSTALL_HINTS[bin];
+  if (!hints) return null;
+  if (platform === 'darwin') return hints.darwin;
+  if (platform === 'linux') return hints.linux;
+  return null;
+}
+
+/** `which`, mais l'échec cite la commande d'installation de la plateforme quand on en connaît une. */
+export async function whichOrHint(bin: string, platform: NodeJS.Platform): Promise<string> {
+  try {
+    return await which(bin);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return withHint(message, bin, platform);
+  }
+}
+
+/** Relève un message d'échec avec la consigne d'installation ; lève toujours. */
+export function withHint(message: string, bin: string, platform: NodeJS.Platform): never {
+  const hint = installHint(bin, platform);
+  throw new Error(hint ? `${message} — installer : ${hint}` : message);
+}

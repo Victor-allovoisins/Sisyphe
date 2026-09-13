@@ -41,6 +41,8 @@ export class FakeIssueSource implements IssueSource {
   readonly permissions: Record<string, 'admin' | 'write' | 'maintain' | 'read'> = {};
   readonly calls: string[] = [];
   readonly labelsEnsured: string[] = [];
+  /** Login de l'App Sisyphe : ses propres poses de label ne désignent aucun demandeur. */
+  readonly selfLogin = 'sisyphe[bot]';
   defaultBranch = 'main';
   remoteUrl = 'file:///dev/null';
   private nextPr = 100;
@@ -94,8 +96,15 @@ export class FakeIssueSource implements IssueSource {
     return { ...issue, labels: [...issue.labels], comments: [...issue.comments] };
   }
 
+  /**
+   * Comme le client réel : nos propres poses de label ne désignent personne, on retombe alors sur l'auteur
+   * de l'issue tant que le label trigger est présent. Sans cela, un job créé depuis l'interface verrait son
+   * issue refusée — label retiré et accusation publiée contre notre propre bot.
+   */
   async canTrigger(ref: IssueRef): Promise<TriggerCheck> {
-    const login = this.stored(ref).labeledBy;
+    const issue = this.stored(ref);
+    const labeledBy = issue.labeledBy === this.selfLogin ? null : issue.labeledBy;
+    const login = labeledBy ?? (issue.labels.includes(this.triggerLabel) ? issue.author : null);
     const p = login ? this.permissions[login] : undefined;
     return { ok: p === 'admin' || p === 'write' || p === 'maintain', login };
   }
@@ -104,6 +113,14 @@ export class FakeIssueSource implements IssueSource {
     this.calls.push('removeTriggerLabel');
     const i = this.stored(ref);
     i.labels = i.labels.filter((l) => l !== this.triggerLabel);
+  }
+
+  /** `sisyphe[bot]` : reflète ce que verrait `canTrigger` si le label était réellement reposé par l'App. */
+  async addTriggerLabel(ref: IssueRef): Promise<void> {
+    this.calls.push('addTriggerLabel');
+    const i = this.stored(ref);
+    if (!i.labels.includes(this.triggerLabel)) i.labels.push(this.triggerLabel);
+    i.labeledBy = this.selfLogin;
   }
 
   async setStatus(ref: IssueRef, status: StatusLabel | null): Promise<void> {

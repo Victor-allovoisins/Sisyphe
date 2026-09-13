@@ -1,12 +1,18 @@
+import { DatabaseSync } from 'node:sqlite';
 import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { stringify } from 'yaml';
 import { parseMachineConfig } from '../../config/machine.js';
+import { dataPaths } from '../../config/paths.js';
+import type { ServiceManager, ServiceStatus } from '../../service/index.js';
+
+type ServiceManagerKind = ServiceStatus['kind'];
+import { SCHEMA_VERSION } from '../../store/db.js';
 import {
-  buildPlistPath, buildRawConfig, isBuiltEntry, parseReposAnswer, resolveEntryPath, validateApiKey, validateBackend,
-  validateId, validatePrivateKeyPath, validateRepos,
+  assertBuiltEntry, buildRawConfig, installService, isBuiltEntry, parseReposAnswer, prepareData, resolveEntryPath,
+  setupCommand, validateApiKey, validateBackend, validateId, validatePrivateKeyPath, validateRepos,
 } from './setup.js';
 
 describe('isBuiltEntry', () => {
@@ -66,18 +72,6 @@ describe('validateBackend', () => {
     expect(validateBackend('sdk')).toBeNull();
     expect(validateBackend('')).not.toBeNull();
     expect(validateBackend('bedrock')).not.toBeNull();
-  });
-});
-
-describe('buildPlistPath', () => {
-  it('met le node courant en tête, puis le dossier de claude, sans doublon', () => {
-    const p = buildPlistPath('/usr/local/n/bin/node', '/Users/x/.local/bin/claude');
-    expect(p.split(':')[0]).toBe('/usr/local/n/bin');
-    expect(p.split(':')[1]).toBe('/Users/x/.local/bin');
-    expect(p).toContain('/opt/homebrew/bin');
-    expect(p.split(':').filter((d) => d === '/opt/homebrew/bin')).toHaveLength(1);
-    expect(buildPlistPath('/opt/homebrew/bin/node').split(':').filter((d) => d === '/opt/homebrew/bin')).toHaveLength(1);
-    expect(buildPlistPath('/usr/local/n/bin/node')).not.toContain('undefined');
   });
 });
 
@@ -170,5 +164,191 @@ describe('buildRawConfig', () => {
     expect(merged.triggerLabel).toBe('sisyphe');
     expect(merged.dataDir).toBe('/d');
     expect(merged.agentBackend).toBe('cli');
+  });
+});
+
+/** Entrée d'un binaire buildé : `installService` et `setupCommand` refusent tout ce qui n'est pas `.js`. */
+const BUILT_ENTRY = '/opt/sisyphe/dist/cli/index.js';
+
+/** Gestionnaire factice : la suite n'installe jamais un vrai agent launchd ni une vraie unité systemd. */
+function fakeManager(opts: { warnings?: string[]; kind?: ServiceManagerKind } = {}): { manager: ServiceManager; calls: string[] } {
+  const calls: string[] = [];
+  const kind = opts.kind ?? 'launchd';
+  return {
+    calls,
+    manager: {
+      status: async () => {
+        calls.push('status');
+        return { kind, installed: kind !== 'none', running: false, pid: null, enabledAtBoot: false, detail: '' };
+      },
+      install: async () => {
+        calls.push('install');
+        return { warnings: opts.warnings ?? [] };
+      },
+      start: async () => {
+        calls.push('start');
+      },
+      stop: async () => {
+        calls.push('stop');
+      },
+      uninstall: async () => {
+        calls.push('uninstall');
+      },
+    },
+  };
+}
+
+const userVersionOf = (path: string): number => {
+  const db = new DatabaseSync(path, { readOnly: true });
+  try {
+    return (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
+  } finally {
+    db.close();
+  }
+};
+
+describe('prepareData', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'sisyphe-prepare-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('crée les dossiers et une base migrée à la version attendue, puis referme', async () => {
+    const paths = dataPaths(join(dir, 'data'));
+
+    await prepareData(paths);
+
+    expect(userVersionOf(paths.dbPath)).toBe(SCHEMA_VERSION);
+    // La connexion de prepareData est bien fermée : sinon l'écriture ci-dessous heurterait un verrou.
+    const again = new DatabaseSync(paths.dbPath);
+    again.exec('PRAGMA user_version');
+    again.close();
+  });
+});
+
+describe('assertBuiltEntry', () => {
+  let argv1: string;
+  beforeEach(() => {
+    argv1 = process.argv[1];
+  });
+  afterEach(() => {
+    process.argv[1] = argv1;
+  });
+
+  it('accepte le fichier buildé, refuse un script tsx (un service pointant dessus ne démarrerait jamais)', () => {
+    process.argv[1] = BUILT_ENTRY;
+    expect(() => assertBuiltEntry()).not.toThrow();
+    process.argv[1] = '/opt/sisyphe/src/cli/index.ts';
+    expect(() => assertBuiltEntry()).toThrow('Installer le service depuis le build');
+  });
+});
+
+describe('installService', () => {
+  let logs: string[];
+
+  beforeEach(() => {
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test'); // backend sdk : sans clé, installService refuse (test dédié plus bas)
+    logs = [];
+    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      logs.push(args.join(' '));
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it('installe le service et affiche ses avertissements, sans jamais le démarrer', async () => {
+    const { manager, calls } = fakeManager({ warnings: ['`sudo loginctl enable-linger v` à lancer une fois'] });
+
+    expect(await installService({ agentBackend: 'sdk' }, manager)).toBe(true);
+
+    expect(calls).toEqual(['status', 'install']);
+    expect(calls).not.toContain('start');
+    expect(logs.join('\n')).toContain('enable-linger');
+  });
+
+  it('plateforme sans service géré : consigne pour le daemon détaché, aucune installation, aucune erreur', async () => {
+    const { manager, calls } = fakeManager({ kind: 'none' });
+
+    expect(await installService({ agentBackend: 'sdk' }, manager)).toBe(false);
+
+    expect(calls).toEqual(['status']);
+    expect(logs.join('\n')).toContain('Aucun service géré sur cette plateforme');
+  });
+
+  it('backend sdk sans clé : refuse plutôt que d’installer un service muet ; la clé répondue suffit', async () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', '');
+    const { manager, calls } = fakeManager();
+
+    await expect(installService({ agentBackend: 'sdk' }, manager)).rejects.toThrow('ANTHROPIC_API_KEY absente');
+    expect(calls).toEqual([]);
+
+    // Clé recueillie par setup : elle voyage en paramètre, pas par `process.env`.
+    expect(await installService({ agentBackend: 'sdk' }, manager, 'sk-repondue')).toBe(true);
+  });
+});
+
+describe('setupCommand --reinstall-service', () => {
+  let dir: string;
+  let logs: string[];
+  let argv1: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'sisyphe-reinstall-'));
+    await writeFile(
+      join(dir, 'config.yml'),
+      `github:\n  appId: 1\n  installationId: 2\n  privateKeyPath: /dev/null\nrepos:\n  - acme/demo\ndataDir: ${dir}\n`,
+    );
+    vi.stubEnv('SISYPHE_HOME', dir);
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test'); // la config du test retombe sur le backend sdk par défaut
+    argv1 = process.argv[1];
+    process.argv[1] = BUILT_ENTRY; // sinon le garde-fou d'entrée dépend du lanceur de vitest
+    logs = [];
+    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      logs.push(args.join(' '));
+    });
+  });
+  afterEach(async () => {
+    process.argv[1] = argv1;
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('repart de la config existante, ne pose aucune question, prépare les données et installe', async () => {
+    const { manager, calls } = fakeManager();
+    const question = vi.spyOn(process.stdin, 'on'); // une question brancherait un écouteur sur stdin
+
+    await setupCommand({ reinstallService: true }, { createManager: async () => manager });
+
+    expect(calls).toEqual(['status', 'install']);
+    expect(question).not.toHaveBeenCalled();
+    // Dossiers et base créés avant l'installation : le plist et l'unité référencent logsDir et la racine.
+    expect(userVersionOf(join(dir, 'sisyphe.db'))).toBe(SCHEMA_VERSION);
+    expect(logs.join('\n')).toContain('sisyphe service start');
+  });
+
+  it('entrée non buildée : refus immédiat, sans lire la config ni construire de gestionnaire', async () => {
+    process.argv[1] = '/opt/sisyphe/src/cli/index.ts';
+    const { manager, calls } = fakeManager();
+
+    await expect(setupCommand({ reinstallService: true }, { createManager: async () => manager })).rejects.toThrow(
+      'Installer le service depuis le build',
+    );
+
+    expect(calls).toEqual([]);
+  });
+
+  it('sans config, le message de config absente remonte plutôt qu’une réinstallation à vide', async () => {
+    await rm(join(dir, 'config.yml'));
+    const { manager, calls } = fakeManager();
+
+    await expect(setupCommand({ reinstallService: true }, { createManager: async () => manager })).rejects.toThrow('Config machine absente');
+
+    expect(calls).toEqual([]);
   });
 });

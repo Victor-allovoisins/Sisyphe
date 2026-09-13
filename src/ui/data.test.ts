@@ -10,7 +10,8 @@ import { JobStore } from '../store/jobs.js';
 import { PhaseStore } from '../store/phases.js';
 import { emptyFlags, type JobState } from '../store/types.js';
 import { AmbiguousJobPrefixError } from '../cli/resolve-job.js';
-import { createUiData, UiInputError, type LaunchdProbe } from './data.js';
+import { ActionStore } from '../store/actions.js';
+import { createUiData, UiInputError, type UiControl, type UiService } from './data.js';
 
 /** Pid hors de l'espace des pid macOS (max 99998) : `process.kill(pid, 0)` échoue toujours en ESRCH. */
 const DEAD_PID = 999_999;
@@ -54,32 +55,85 @@ function insertPhase(db: DatabaseSync, p: { jobId: string; name?: string; attemp
   ).run(p.jobId, p.name ?? 'implement', p.attempt ?? 1, p.costUsd ?? 0, p.startedAt ?? new Date().toISOString(), p.finishedAt ?? null);
 }
 
-const okLaunchd: LaunchdProbe = async () => ({ loaded: true, lastExitCode: 0, detail: 'state = running' });
+/** Service factice : jamais de `launchctl` ni de `systemctl` réel dans la suite. */
+const okService: UiService = {
+  status: async () => ({ kind: 'launchd', installed: true, running: true, pid: 42, enabledAtBoot: true, detail: 'state = running' }),
+};
 
-async function makeUi(opts: { launchd?: LaunchdProbe; now?: () => Date; dailyBudgetUsd?: number } = {}) {
+/** Daemon arrêté : la sonde de la socket de contrôle ne trouve personne. */
+const offline: UiControl = { ping: async () => null };
+
+/** Daemon qui répond, en pause ou non. */
+const online = (paused: boolean): UiControl => ({
+  ping: async () => ({ pid: 7, paused, running: 1, queued: 2, startedAt: '2026-09-13T08:00:00.000Z' }),
+});
+
+async function makeUi(
+  opts: { service?: UiService; control?: UiControl; readOnly?: boolean; now?: () => Date; dailyBudgetUsd?: number } = {},
+) {
   const root = await mkdtemp(join(tmpdir(), 'sisyphe-ui-'));
   const paths = dataPaths(root);
   const db = openDatabase(':memory:');
   const store = new JobStore(db);
   const phases = new PhaseStore(db);
+  const actions = new ActionStore(db);
   const machine = parseMachineConfig(
     `github:\n  appId: 1\n  installationId: 1\n  privateKeyPath: /dev/null\nrepos:\n  - acme/demo\n  - acme/other\ndataDir: ${root}\ndailyBudgetUsd: ${opts.dailyBudgetUsd ?? 20}\n`,
   );
-  const data = createUiData({ store, phases, paths, machine, launchd: opts.launchd ?? okLaunchd, now: opts.now });
-  return { root, paths, db, store, phases, machine, data };
+  const data = createUiData({
+    store,
+    phases,
+    paths,
+    machine,
+    service: opts.service ?? okService,
+    actions,
+    control: opts.control ?? offline,
+    readOnly: opts.readOnly ?? false,
+    now: opts.now,
+  });
+  return { root, paths, db, store, phases, actions, machine, data };
 }
 
 describe('overview', () => {
   it("daemon.running est faux sans fichier de verrou, vrai avec le pid courant, faux avec un pid mort", async () => {
     const ui = await makeUi();
 
-    expect((await ui.data.overview()).daemon).toEqual({ running: false, pid: null });
+    expect((await ui.data.overview()).daemon).toEqual({ running: false, pid: null, paused: null });
 
     await writeFile(join(ui.paths.root, 'daemon.lock'), String(process.pid));
-    expect(await ui.data.overview().then((o) => o.daemon)).toEqual({ running: true, pid: process.pid });
+    expect(await ui.data.overview().then((o) => o.daemon)).toEqual({ running: true, pid: process.pid, paused: null });
 
     await writeFile(join(ui.paths.root, 'daemon.lock'), String(DEAD_PID));
-    expect(await ui.data.overview().then((o) => o.daemon)).toEqual({ running: false, pid: DEAD_PID });
+    expect(await ui.data.overview().then((o) => o.daemon)).toEqual({ running: false, pid: DEAD_PID, paused: null });
+  });
+
+  it('daemon injoignable : paused null et control.reachable faux', async () => {
+    const o = await (await makeUi({ control: offline })).data.overview();
+
+    expect(o.daemon.paused).toBeNull();
+    expect(o.control).toEqual({ reachable: false });
+  });
+
+  it('daemon joignable : paused vient de la socket de contrôle', async () => {
+    expect(await (await makeUi({ control: online(true) })).data.overview().then((o) => o.daemon.paused)).toBe(true);
+    expect(await (await makeUi({ control: online(false) })).data.overview().then((o) => o.daemon.paused)).toBe(false);
+    expect(await (await makeUi({ control: online(false) })).data.overview().then((o) => o.control.reachable)).toBe(true);
+  });
+
+  it('readOnly est publié tel qu’il a été injecté : la page en dépend pour masquer les boutons', async () => {
+    expect((await (await makeUi()).data.overview()).readOnly).toBe(false);
+    expect((await (await makeUi({ readOnly: true })).data.overview()).readOnly).toBe(true);
+  });
+
+  it('recentActions rend les 20 dernières actions, les plus récentes d’abord', async () => {
+    const ui = await makeUi();
+    for (let i = 1; i <= 25; i++) ui.actions.record({ action: 'poll', source: 'ui', outcome: 'ok' });
+
+    const { recentActions } = await ui.data.overview();
+
+    expect(recentActions).toHaveLength(20);
+    expect(recentActions[0].id).toBe(25);
+    expect(recentActions[19].id).toBe(6);
   });
 
   it('budget.spentTodayUsd somme les phases terminées aujourd’hui et ignore celles d’hier', async () => {
@@ -149,26 +203,69 @@ describe('overview', () => {
     expect(o.active[0].phase).toBeNull();
   });
 
-  it('la sonde launchd est mise en cache : un snapshot toutes les 2 s ne lance pas un launchctl par tic', async () => {
+  it('l’état du service est mis en cache : un snapshot toutes les 2 s ne lance pas un launchctl par tic', async () => {
     let calls = 0;
+    let at = new Date('2026-09-10T10:00:00.000Z');
     const ui = await makeUi({
-      launchd: async () => {
-        calls++;
-        return { loaded: true, lastExitCode: 0, detail: 'state = running' };
+      now: () => at,
+      service: {
+        status: async () => {
+          calls++;
+          return { kind: 'launchd', installed: true, running: true, pid: 42, enabledAtBoot: true, detail: 'state = running' };
+        },
       },
     });
 
     await ui.data.overview();
     await ui.data.overview();
     await ui.data.overview();
+    expect(calls).toBe(1);
+
+    // Le cache suit l'horloge injectée : au-delà des 5 s, la sonde est refaite.
+    at = new Date('2026-09-10T10:00:06.000Z');
+    await ui.data.overview();
+    expect(calls).toBe(2);
+  });
+
+  it('deux snapshots simultanés partagent la même sonde plutôt que d’en lancer deux', async () => {
+    let calls = 0;
+    const ui = await makeUi({
+      service: {
+        status: async () => {
+          calls++;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          return { kind: 'launchd', installed: true, running: true, pid: 42, enabledAtBoot: true, detail: 'state = running' };
+        },
+      },
+    });
+
+    await Promise.all([ui.data.overview(), ui.data.overview()]);
 
     expect(calls).toBe(1);
   });
 
-  it('launchd est injectable : la sonde par défaut n’est jamais appelée en test', async () => {
-    const ui = await makeUi({ launchd: async () => ({ loaded: false, lastExitCode: null, detail: 'agent launchd non chargé' }) });
+  it('une sonde en échec n’est pas mise en cache : l’appel suivant réessaie', async () => {
+    let calls = 0;
+    const ui = await makeUi({
+      service: {
+        status: async () => {
+          calls++;
+          if (calls === 1) throw new Error('launchctl introuvable');
+          return { kind: 'launchd', installed: true, running: true, pid: 42, enabledAtBoot: true, detail: 'state = running' };
+        },
+      },
+    });
 
-    expect((await ui.data.overview()).launchd).toEqual({ loaded: false, lastExitCode: null, detail: 'agent launchd non chargé' });
+    await expect(ui.data.overview()).rejects.toThrow('launchctl introuvable');
+    expect((await ui.data.overview()).service.running).toBe(true);
+    expect(calls).toBe(2);
+  });
+
+  it('l’overview publie le statut du service tel que le gestionnaire le rend', async () => {
+    const status = { kind: 'systemd' as const, installed: false, running: false, pid: null, enabledAtBoot: false, detail: 'unité absente' };
+    const ui = await makeUi({ service: { status: async () => status } });
+
+    expect((await ui.data.overview()).service).toEqual(status);
   });
 });
 
@@ -205,6 +302,18 @@ describe('jobDetail', () => {
     await mkdir(dir, { recursive: true });
     return { ui, dir };
   }
+
+  it('joint les actions du job, dans l’ordre où elles ont eu lieu, et seulement les siennes', async () => {
+    const { ui } = await seedDetail();
+    ui.actions.record({ action: 'cancel', source: 'ui', jobId: 'abcdef01', outcome: 'error', error: 'job déjà terminé' });
+    ui.actions.record({ action: 'retry', source: 'cli', jobId: 'abcdef01', outcome: 'ok' });
+    ui.actions.record({ action: 'cancel', source: 'ui', jobId: 'un-autre', outcome: 'ok' });
+
+    const detail = await ui.data.jobDetail('abcdef01');
+
+    expect(detail?.actions.map((a) => a.action)).toEqual(['cancel', 'retry']);
+    expect(detail?.actions[0].error).toBe('job déjà terminé');
+  });
 
   it('rassemble phases, fichiers, transcript plafonné, sorties de vérification, diff et secrets', async () => {
     const { ui, dir } = await seedDetail();

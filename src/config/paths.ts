@@ -21,6 +21,8 @@ export interface DataPaths {
   cacheDir: string;
   jobsDir: string;
   logsDir: string;
+  /** Socket UNIX de contrôle du daemon (mode 0600) ; sous la racine pour rester à portée du seul compte local. */
+  controlSocketPath: string;
 }
 
 export function dataPaths(dataDir: string): DataPaths {
@@ -33,6 +35,7 @@ export function dataPaths(dataDir: string): DataPaths {
     cacheDir: join(root, 'cache'),
     jobsDir: join(root, 'jobs'),
     logsDir: join(root, 'logs'),
+    controlSocketPath: join(root, 'control.sock'),
   };
 }
 

@@ -8,6 +8,7 @@ import { dataPaths, ensureDataDirs } from '../../src/config/paths.js';
 import { Git } from '../../src/git/git.js';
 import { parseRepo } from '../../src/github/source.js';
 import type { PipelineDeps } from '../../src/jobs/pipeline.js';
+import { ActionStore } from '../../src/store/actions.js';
 import { openDatabase } from '../../src/store/db.js';
 import { JobStore } from '../../src/store/jobs.js';
 import { PhaseStore } from '../../src/store/phases.js';
@@ -67,6 +68,7 @@ export async function makeHarness(o: HarnessOptions) {
   const db = openDatabase(':memory:');
   const store = new JobStore(db);
   const phases = new PhaseStore(db);
+  const actions = new ActionStore(db);
   const source = new FakeIssueSource('sisyphe');
   source.remoteUrl = remotePath;
   source.defaultBranch = defaultBranch;
@@ -79,8 +81,8 @@ export async function makeHarness(o: HarnessOptions) {
     `github:\n  appId: 1\n  installationId: 1\n  privateKeyPath: /dev/null\nrepos:\n  - ${REPO}\ndataDir: ${paths.root}\ndailyBudgetUsd: ${o.dailyBudgetUsd ?? 60}\n`,
   );
   const deps: PipelineDeps = {
-    store, phases, source, agent, git: new Git(paths), paths, machine,
+    store, phases, actions, source, agent, git: new Git(paths), paths, machine,
     log: pino({ level: 'silent' }), env: { PATH: process.env.PATH ?? '' }, scan: async () => [],
   };
-  return { root, paths, remotePath, headSha, store, phases, source, agent, deps };
+  return { root, paths, remotePath, headSha, store, phases, actions, source, agent, deps };
 }

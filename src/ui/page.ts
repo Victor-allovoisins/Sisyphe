@@ -32,6 +32,9 @@ export const PAGE_HTML = `<!doctype html>
     --queued: #484f58;
   }
   * { box-sizing: border-box; }
+  /* Le display d'une classe l'emporte sur celui de la feuille par défaut : sans cette règle, une
+     barre ou un formulaire en display:flex resterait visible malgré l'attribut hidden. */
+  [hidden] { display: none !important; }
   html, body { margin: 0; padding: 0; }
   body {
     background: var(--bg);
@@ -82,7 +85,8 @@ export const PAGE_HTML = `<!doctype html>
   .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(430px, 1fr)); gap: 16px; }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
   .card-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  .card-title { font-size: 17px; font-weight: 600; margin: 8px 0 2px; }
+  /* Le titre d'issue vient d'un tiers : sans coupure, un mot de 300 caractères étire la carte. */
+  .card-title { font-size: 17px; font-weight: 600; margin: 8px 0 2px; overflow-wrap: anywhere; }
   .card-meta { display: flex; gap: 18px; flex-wrap: wrap; margin: 10px 0; }
   .card-meta .m-value { font-size: 26px; font-weight: 650; }
   .card-meta .m-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
@@ -103,12 +107,46 @@ export const PAGE_HTML = `<!doctype html>
   .s-queued { background: rgba(72, 79, 88, 0.25); color: var(--muted); border-color: var(--border); }
   .filters { display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 16px; }
   .filters label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
-  select, button.action {
+  select, input[type="number"], button.action {
     background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
     border-radius: 8px; padding: 8px 12px; font-size: 14px; font-family: inherit;
   }
   button.action { cursor: pointer; }
   button.action:hover { border-color: var(--muted); }
+  button.action:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid #58a6ff; outline-offset: 1px; }
+  button.action[disabled] { opacity: 0.45; cursor: not-allowed; }
+  button.action[disabled]:hover { border-color: var(--border); }
+  /* Barre système : construite une seule fois, jamais reconstruite par le snapshot SSE (qui tombe toutes les 2 s). */
+  .sysbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
+  .sysbar .spacer { flex: 1 1 auto; }
+  .sysbar .hint { font-size: 12px; color: var(--muted); }
+  button.primary { border-color: rgba(63, 185, 80, 0.55); color: #56d364; }
+  button.danger { border-color: rgba(248, 81, 73, 0.45); color: #ff7b72; }
+  .banner {
+    border-radius: 10px; padding: 10px 14px; margin-bottom: 16px; font-size: 14px; font-weight: 600;
+    border: 1px solid rgba(210, 153, 34, 0.5); background: rgba(210, 153, 34, 0.12); color: #e3b341;
+  }
+  .new-job { align-items: flex-end; }
+  .new-job input[type="number"] { width: 130px; }
+  .form-title { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); padding-bottom: 10px; }
+  .row-actions { display: flex; gap: 6px; white-space: nowrap; }
+  button.action.small { padding: 4px 10px; font-size: 12px; }
+  .card-actions { display: flex; gap: 8px; margin-top: 12px; }
+  .a-ok { color: var(--done); }
+  .a-ko { color: var(--failed); }
+  /* Une pile d'erreurs longues dépasserait la fenêtre et sortirait les plus anciennes de l'écran :
+     la pile défile, chaque toast est borné, et le script n'en garde que les quatre derniers. */
+  .toasts {
+    position: fixed; right: 20px; bottom: 20px; z-index: 12; display: flex; flex-direction: column;
+    gap: 10px; align-items: flex-end; max-height: calc(100vh - 40px); overflow-y: auto;
+  }
+  .toast {
+    max-width: 520px; border-radius: 10px; padding: 11px 16px; font-size: 14px; overflow-wrap: anywhere;
+    box-shadow: 0 8px 24px rgba(1, 4, 9, 0.55); border: 1px solid var(--border); background: var(--panel-2);
+    max-height: 40vh; overflow: auto; flex: 0 0 auto;
+  }
+  .toast.ok { border-color: rgba(63, 185, 80, 0.55); background: rgba(63, 185, 80, 0.16); color: #7ee787; }
+  .toast.ko { border-color: rgba(248, 81, 73, 0.55); background: rgba(248, 81, 73, 0.16); color: #ff9b95; }
   table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
   th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--border); font-size: 14px; }
   th { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); background: var(--panel-2); }
@@ -136,7 +174,7 @@ export const PAGE_HTML = `<!doctype html>
   }
   .detail h3 { margin: 26px 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--muted); }
   .detail-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-  .detail-title { font-size: 20px; font-weight: 650; margin: 12px 0 0; }
+  .detail-title { font-size: 20px; font-weight: 650; margin: 12px 0 0; overflow-wrap: anywhere; }
   .close { margin-left: auto; }
   pre.block {
     background: #010409; border: 1px solid var(--border); border-radius: 8px; padding: 12px;
@@ -161,14 +199,34 @@ export const PAGE_HTML = `<!doctype html>
 </header>
 <main>
   <section class="view" id="view-dash">
+    <div class="sysbar" id="sysbar" hidden>
+      <button type="button" class="action primary" id="act-start" data-action="start">Démarrer</button>
+      <button type="button" class="action" id="act-pause" data-action="pause">Pause</button>
+      <button type="button" class="action" id="act-poll" data-action="poll">Poll maintenant</button>
+      <button type="button" class="action danger" id="act-stop" data-action="stop">Arrêter</button>
+      <span class="spacer"></span>
+      <span class="hint" id="sysbar-hint"></span>
+    </div>
+    <p class="banner" id="paused-banner" hidden>En pause : les jobs en file ne démarrent plus. Reprendre pour les relancer.</p>
     <div class="band" id="system"></div>
     <div class="budget" id="budget"></div>
     <h2 class="section-title">Jobs actifs</h2>
     <div class="cards" id="active"></div>
     <p class="empty" id="active-empty" hidden>Aucun job actif. Le daemon attend une issue étiquetée.</p>
+    <h2 class="section-title">Dernières actions</h2>
+    <table>
+      <thead><tr><th>Heure</th><th>Action</th><th>Cible</th><th>Résultat</th></tr></thead>
+      <tbody id="actions-body"></tbody>
+    </table>
   </section>
 
   <section class="view" id="view-jobs" hidden>
+    <form class="filters new-job" id="new-job" aria-label="Nouveau job" hidden>
+      <span class="form-title">Nouveau job</span>
+      <label>Repo<select id="new-repo"></select></label>
+      <label>Issue<input type="number" id="new-issue" min="1" step="1" placeholder="numéro" required></label>
+      <button type="submit" class="action primary" id="act-enqueue" data-action="enqueue">Créer</button>
+    </form>
     <div class="filters">
       <label>Repo<select id="filter-repo"></select></label>
       <label>État<select id="filter-state"></select></label>
@@ -177,7 +235,7 @@ export const PAGE_HTML = `<!doctype html>
     <table>
       <thead><tr>
         <th>État</th><th>Issue</th><th>Titre</th><th class="num">Coût</th><th class="num">Durée</th>
-        <th class="num">Essais</th><th>PR</th><th>Créé</th>
+        <th class="num">Essais</th><th>PR</th><th>Créé</th><th id="jobs-actions-head" hidden>Actions</th>
       </tr></thead>
       <tbody id="jobs-body"></tbody>
     </table>
@@ -195,6 +253,7 @@ export const PAGE_HTML = `<!doctype html>
     <div class="chart" id="chart"></div>
   </section>
 </main>
+<div class="toasts" id="toasts" role="status" aria-live="polite" aria-atomic="false"></div>
 <script>
 (function () {
   'use strict';
@@ -210,6 +269,23 @@ export const PAGE_HTML = `<!doctype html>
     done: 's-done', blocked: 's-blocked', failed: 's-failed', cancelled: 's-cancelled'
   };
   var REPO_RE = /^[A-Za-z0-9][A-Za-z0-9-]*\\/[A-Za-z0-9._-]+$/;
+  /** États sur lesquels Relancer a un sens ; partout ailleurs c'est Annuler, ou rien pour un job terminé. */
+  var RETRYABLE = { failed: true, blocked: true, cancelled: true };
+  var TERMINAL = { done: true, blocked: true, failed: true, cancelled: true };
+  var ACTION_LABEL = {
+    cancel: 'annulation', retry: 'relance', enqueue: 'nouveau job', poll: 'poll',
+    pause: 'pause', resume: 'reprise', stop: 'arrêt', start: 'démarrage'
+  };
+  /**
+   * Dernier instantané utile hors du tableau de bord : la liste des jobs et le panneau de détail sont
+   * chargés par des routes qui ne portent pas ces champs. readOnly vaut vrai tant qu'aucun snapshot
+   * n'est arrivé — une instance --read-only ne doit jamais laisser clignoter un bouton.
+   */
+  var ui = { readOnly: true, reachable: false, paused: null, serviceRunning: false, repos: [] };
+  /** Échéance d'un appel d'action : au-dessus des 30 s que le serveur s'accorde pour attendre un démarrage. */
+  var ACTION_TIMEOUT_MS = 45000;
+  /** Toasts empilés au plus ; au-delà les plus anciens quitteraient l'écran. */
+  var MAX_TOASTS = 4;
 
   function byId(id) { return document.getElementById(id); }
 
@@ -297,6 +373,222 @@ export const PAGE_HTML = `<!doctype html>
     });
   }
 
+  // ---------- Actions ----------
+
+  /**
+   * Un appel d'action. Les deux en-têtes sont exigés par le serveur : un formulaire HTML d'un autre site
+   * ne peut poser ni l'un ni l'autre sans CORS préalable. credentials: 'omit' parce que la page n'a ni
+   * session ni cookie et n'a aucune raison d'en envoyer. Ne rejette jamais : panne réseau comprise, le
+   * résultat est toujours un objet, de sorte qu'aucun appelant n'a de bouton laissé désactivé.
+   */
+  function api(name, body) {
+    // Sans échéance, une requête restée en l'air ne rendrait jamais la main : le bouton resterait
+    // désactivé et le compteur busy bloquerait la barre système pour le reste de la session. 45 s
+    // couvrent les 30 s que le serveur s'accorde pour attendre le daemon après un démarrage.
+    var controller = new AbortController();
+    var timer = setTimeout(function () { controller.abort(); }, ACTION_TIMEOUT_MS);
+    return fetch('/api/actions/' + name, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Sisyphe-Action': '1' },
+      credentials: 'omit',
+      signal: controller.signal,
+      body: JSON.stringify(body || {})
+    }).then(function (res) {
+      return res.json().then(function (parsed) { return parsed; }, function () { return null; }).then(function (parsed) {
+        if (res.ok && parsed && parsed.ok === true) return { ok: true, result: parsed.result };
+        var message = parsed && parsed.error ? String(parsed.error) : 'HTTP ' + res.status;
+        return { ok: false, error: message };
+      });
+    }, function (err) {
+      if (err && err.name === 'AbortError') {
+        return { ok: false, error: 'aucune réponse après ' + Math.round(ACTION_TIMEOUT_MS / 1000) + ' s' };
+      }
+      return { ok: false, error: err && err.message ? String(err.message) : 'daemon injoignable' };
+    }).then(function (r) {
+      clearTimeout(timer);
+      return r;
+    }, function (err) {
+      clearTimeout(timer);
+      return { ok: false, error: err && err.message ? String(err.message) : 'erreur inattendue' };
+    });
+  }
+
+  function toast(kind, text) {
+    var box = byId('toasts');
+    var node = el('div', 'toast ' + kind, text);
+    box.appendChild(node);
+    // Au-delà de quatre, les plus anciens sortiraient de l'écran sans avoir été lus.
+    while (box.children.length > MAX_TOASTS) box.removeChild(box.firstChild);
+    setTimeout(function () {
+      if (node.parentNode) node.parentNode.removeChild(node);
+    }, kind === 'ok' ? 4000 : 8000);
+  }
+
+  /**
+   * Appels en vol. Unique consommateur : syncSysbar, qui ne touche plus à rien tant qu'il est non nul —
+   * sinon le snapshot SSE, qui tombe toutes les 2 s, réactiverait un bouton pendant que son action tourne.
+   * api() ne reste jamais en suspens (échéance ci-dessus), donc le compteur redescend toujours à zéro.
+   */
+  var busy = 0;
+
+  /**
+   * Effet local d'une action réussie sur l'état système, appliqué avant le snapshot suivant. Sans lui la
+   * barre mentirait pendant 2 s : « Pause » après une pause réussie, Arrêter encore cliquable sur un daemon
+   * déjà arrêté. Le serveur n'acquitte start et stop qu'après avoir vérifié la socket : l'avance est sûre.
+   */
+  function applyLocalEffect(name) {
+    if (name === 'pause') ui.paused = true;
+    else if (name === 'resume') ui.paused = false;
+    else if (name === 'start') { ui.serviceRunning = true; ui.reachable = true; ui.paused = false; }
+    else if (name === 'stop') { ui.serviceRunning = false; ui.reachable = false; ui.paused = null; }
+  }
+
+  /**
+   * Vue à recharger après un succès, en plus du snapshot SSE qui rafraîchit le tableau de bord. Le focus
+   * du clavier est rendu au bouton du même job après le rechargement : sans cela il retomberait sur body.
+   */
+  function afterAction(jobId) {
+    if (!byId('view-jobs').hidden) {
+      loadJobs(jobId ? function () { focusJobButton(jobId); } : null);
+    }
+    refreshDetail();
+  }
+
+  /** Retrouve le bouton d'action d'un job après un rechargement du tableau, quel que soit son nouvel état. */
+  function focusJobButton(jobId) {
+    var buttons = byId('jobs-body').querySelectorAll('button[data-job]');
+    for (var i = 0; i < buttons.length; i++) {
+      if (buttons[i].getAttribute('data-job') === jobId) {
+        buttons[i].focus();
+        return;
+      }
+    }
+  }
+
+  /**
+   * Déclenche une action : confirmation éventuelle, bouton désactivé pendant l'appel, toast du résultat.
+   * Le bouton est rendu même si la vue a été reconstruite entre-temps (le nœud est alors détaché, sans effet).
+   */
+  function run(button, name, body, question, onOk) {
+    if (question && !window.confirm(question)) return;
+    busy++;
+    button.disabled = true;
+    api(name, body).then(function (r) {
+      busy--;
+      button.disabled = false;
+      if (r.ok) {
+        applyLocalEffect(name);
+        toast('ok', ACTION_LABEL[name] + ' : c\\'est fait');
+        if (onOk) onOk();
+        afterAction(body && body.jobId);
+      } else {
+        toast('ko', ACTION_LABEL[name] + ' : ' + r.error);
+      }
+      syncSysbar();
+    });
+  }
+
+  /** Bouton d'action sur un job : rien du tout en lecture seule, ce qui laisse la page v1 intacte. */
+  function jobButton(job, kind, cls) {
+    if (ui.readOnly) return null;
+    var isCancel = kind === 'cancel';
+    var button = el('button', 'action' + (cls ? ' ' + cls : '') + (isCancel ? ' danger' : ''), isCancel ? 'Annuler' : 'Relancer');
+    button.type = 'button';
+    button.setAttribute('data-action', kind);
+    button.setAttribute('data-job', job.id);
+    var label = job.repo + '#' + job.issueNumber;
+    var question = isCancel ? 'Annuler le job ' + label + ' ?' : 'Relancer le job ' + label + ' ?';
+    button.addEventListener('click', function (event) {
+      // Les lignes du tableau ouvrent le détail au clic : sans cela, annuler ouvrirait aussi le panneau.
+      event.stopPropagation();
+      run(button, kind, { jobId: job.id }, question);
+    });
+    return button;
+  }
+
+  /** Annuler tant que le job tourne, Relancer une fois échoué, bloqué ou annulé, rien sur un job terminé. */
+  function jobButtonFor(job, cls) {
+    if (!TERMINAL[job.state]) return jobButton(job, 'cancel', cls);
+    if (RETRYABLE[job.state]) return jobButton(job, 'retry', cls);
+    return null;
+  }
+
+  /**
+   * État des boutons système. Appelée à chaque snapshot : elle ne touche que hidden, disabled et le
+   * libellé — la barre elle-même est construite une fois pour toutes par le HTML.
+   */
+  function syncSysbar() {
+    var bar = byId('sysbar');
+    bar.hidden = ui.readOnly;
+    byId('paused-banner').hidden = ui.paused !== true;
+    // Onglet Jobs : le formulaire disparaît aussi en lecture seule (la colonne Actions, elle, suit les
+    // lignes dans renderJobs, pour que l'en-tête et les cellules ne puissent jamais se contredire).
+    byId('new-job').hidden = ui.readOnly;
+    if (ui.readOnly || busy > 0) return;
+    var start = byId('act-start');
+    var pause = byId('act-pause');
+    // Le prologue du daemon interroge GitHub avant d'ouvrir sa socket : pendant ces quelques dizaines de
+    // secondes le service tourne sans répondre. Démarrer reste alors visible mais désactivé — le masquer
+    // laisserait une barre entièrement morte, sans rien à cliquer et sans explication.
+    var starting = ui.serviceRunning && !ui.reachable;
+    start.hidden = ui.reachable;
+    start.disabled = starting;
+    if (starting) start.setAttribute('title', 'démarrage en cours…');
+    else start.removeAttribute('title');
+    pause.setAttribute('data-action', ui.paused ? 'resume' : 'pause');
+    pause.textContent = ui.paused ? 'Reprendre' : 'Pause';
+    [pause, byId('act-poll'), byId('act-stop')].forEach(function (button) {
+      button.disabled = !ui.reachable;
+      if (ui.reachable) button.removeAttribute('title');
+      else button.setAttribute('title', starting ? 'démarrage en cours…' : 'daemon arrêté');
+    });
+    var hint = '';
+    if (starting) hint = 'démarrage en cours…';
+    else if (!ui.reachable) hint = 'daemon arrêté : seule l\\'action Démarrer est disponible';
+    byId('sysbar-hint').textContent = hint;
+  }
+
+  /**
+   * Signature de la liste : les lignes du journal sont immuables et identifiées, un simple relevé des id
+   * suffit donc à savoir si quoi que ce soit a changé.
+   */
+  function actionsKey(rows) {
+    if (!rows || !rows.length) return 'vide';
+    return rows.map(function (a) { return String(a.id) + ':' + String(a.at) + ':' + String(a.action); }).join(',');
+  }
+
+  var lastActionsKey = null;
+
+  function renderRecentActions(rows) {
+    // Le snapshot tombe toutes les 2 s : reconstruire à chaque fois empêcherait tout lien de garder le
+    // focus et ferait courir un clic contre la reconstruction suivante.
+    var key = actionsKey(rows);
+    if (key === lastActionsKey) return;
+    lastActionsKey = key;
+    var tbody = byId('actions-body');
+    clear(tbody);
+    if (!rows || !rows.length) {
+      var empty = el('tr');
+      var cell = el('td', 'empty', 'Aucune action enregistrée.');
+      cell.colSpan = 4;
+      empty.appendChild(cell);
+      tbody.appendChild(empty);
+      return;
+    }
+    rows.forEach(function (a) {
+      var tr = el('tr');
+      tr.appendChild(el('td', 'muted', fmtDate(a.at)));
+      tr.appendChild(el('td', null, (ACTION_LABEL[a.action] || String(a.action)) + ' · ' + String(a.source)));
+      var target = el('td');
+      if (a.repo && a.issueNumber) target.appendChild(issueLink(a.repo, a.issueNumber));
+      else if (a.jobId) target.appendChild(el('span', 'muted', String(a.jobId).slice(0, 8)));
+      else target.appendChild(el('span', 'muted', '—'));
+      tr.appendChild(target);
+      tr.appendChild(el('td', a.outcome === 'ok' ? 'a-ok' : 'a-ko', a.outcome === 'ok' ? 'ok' : 'erreur : ' + String(a.error || '')));
+      tbody.appendChild(tr);
+    });
+  }
+
   // ---------- Onglets ----------
 
   var VIEWS = { dash: 'view-dash', jobs: 'view-jobs', kpis: 'view-kpis' };
@@ -322,10 +614,11 @@ export const PAGE_HTML = `<!doctype html>
     clear(box);
     box.appendChild(stat('Daemon', o.daemon.running ? 'actif' : 'arrêté', o.daemon.running ? 'ok' : 'ko',
       o.daemon.pid ? 'pid ' + o.daemon.pid : 'aucun verrou'));
-    var l = o.launchd || { loaded: null, detail: '' };
-    var launchdValue = l.loaded === null ? 'n/a' : (l.loaded ? 'chargé' : 'absent');
-    var launchdTone = l.loaded === null ? '' : (l.loaded && l.lastExitCode !== 0 && l.lastExitCode !== null ? 'warn' : (l.loaded ? 'ok' : 'warn'));
-    box.appendChild(stat('launchd', launchdValue, launchdTone, l.detail));
+    var svc = o.service || { kind: 'none', installed: false, running: false, enabledAtBoot: false, detail: '' };
+    var serviceValue = svc.kind === 'none' ? 'aucun' : (svc.installed ? svc.kind : svc.kind + ' absent');
+    var serviceTone = svc.kind === 'none' ? '' : (svc.installed ? (svc.running ? 'ok' : 'warn') : 'warn');
+    var serviceDetail = 'au boot : ' + (svc.enabledAtBoot ? 'oui' : 'non') + (svc.detail ? ' · ' + svc.detail : '');
+    box.appendChild(stat('Service', serviceValue, serviceTone, serviceDetail));
     box.appendChild(stat('Backend', o.backend, '', o.repos.join(' · ')));
     box.appendChild(stat('Actifs', o.counts.active, o.counts.active ? 'ok' : '', 'dont ' + o.counts.queued + ' en file'));
     box.appendChild(stat('Terminés', o.counts.done, o.counts.done ? 'ok' : '', ''));
@@ -374,6 +667,13 @@ export const PAGE_HTML = `<!doctype html>
     card.appendChild(meta);
     var feedNode = el('pre', 'feed', '');
     card.appendChild(feedNode);
+    // Un job actif n'est jamais terminal : seule l'annulation a du sens ici.
+    var cancel = jobButton(job, 'cancel', 'small');
+    if (cancel) {
+      var actions = el('div', 'card-actions');
+      actions.appendChild(cancel);
+      card.appendChild(actions);
+    }
     return {
       card: card, badge: badgeNode, phase: phaseNode, title: titleNode,
       elapsed: elapsed.value, cost: cost.value, attempt: attempt.value, feed: feedNode, state: null
@@ -422,9 +722,17 @@ export const PAGE_HTML = `<!doctype html>
   }
 
   function renderOverview(o) {
+    var svc = o.service || {};
+    ui.readOnly = o.readOnly !== false;
+    ui.reachable = !!(o.control && o.control.reachable);
+    ui.paused = o.daemon ? o.daemon.paused : null;
+    ui.serviceRunning = !!svc.running || !!(o.daemon && o.daemon.running);
+    ui.repos = o.repos || [];
+    syncSysbar();
     renderSystem(o);
     renderBudget(o);
     renderActive(o);
+    renderRecentActions(o.recentActions);
   }
 
   // ---------- Jobs ----------
@@ -440,9 +748,19 @@ export const PAGE_HTML = `<!doctype html>
       stateSelect.appendChild(new Option('tous', ''));
       STATES.forEach(function (s) { stateSelect.appendChild(new Option(STATE_LABEL[s], s)); });
     }
+    var newRepo = byId('new-repo');
+    if (newRepo.options.length === 0) {
+      repos.forEach(function (r) { newRepo.appendChild(new Option(r, r)); });
+    }
   }
 
-  function loadJobs() {
+  /** La colonne Actions n'existe pas en lecture seule : le colSpan des lignes vides suit. */
+  function jobsColumns() {
+    return ui.readOnly ? 8 : 9;
+  }
+
+  function loadJobs(after) {
+    byId('new-job').hidden = ui.readOnly;
     var params = [];
     var repo = byId('filter-repo').value;
     var state = byId('filter-state').value;
@@ -451,12 +769,15 @@ export const PAGE_HTML = `<!doctype html>
     params.push('limit=200');
     getJson('/api/jobs' + '?' + params.join('&')).then(function (body) {
       renderJobs(body.jobs);
+      // Une fois les lignes en place seulement : le focus vise un bouton qui n'existait pas avant.
+      // Le test du type protège des branchements directs en écouteur, où le premier argument est l'événement.
+      if (typeof after === 'function') after();
     }, function (err) {
       var tbody = byId('jobs-body');
       clear(tbody);
       var tr = el('tr');
       var td = el('td', 'empty', String(err.message));
-      td.colSpan = 8;
+      td.colSpan = jobsColumns();
       tr.appendChild(td);
       tbody.appendChild(tr);
     });
@@ -464,11 +785,14 @@ export const PAGE_HTML = `<!doctype html>
 
   function renderJobs(jobs) {
     var tbody = byId('jobs-body');
+    // L'en-tête est basculé ici, avec les lignes qu'il décrit : réglé ailleurs, un premier rendu
+    // antérieur au premier snapshot afficherait neuf colonnes d'en-tête au-dessus de huit cellules.
+    byId('jobs-actions-head').hidden = ui.readOnly;
     clear(tbody);
     if (!jobs.length) {
       var empty = el('tr');
       var cell = el('td', 'empty', 'Aucun job pour ce filtre.');
-      cell.colSpan = 8;
+      cell.colSpan = jobsColumns();
       empty.appendChild(cell);
       tbody.appendChild(empty);
       return;
@@ -489,15 +813,26 @@ export const PAGE_HTML = `<!doctype html>
       prCell.appendChild(job.prNumber ? ghLink(job.prUrl, '#' + job.prNumber) : el('span', 'muted', '—'));
       tr.appendChild(prCell);
       tr.appendChild(el('td', 'muted', fmtDate(job.createdAt)));
+      if (!ui.readOnly) {
+        var actionCell = el('td');
+        var box = el('div', 'row-actions');
+        var button = jobButtonFor(job, 'small');
+        if (button) box.appendChild(button);
+        else box.appendChild(el('span', 'muted', '—'));
+        actionCell.appendChild(box);
+        tr.appendChild(actionCell);
+      }
+      // tabindex sans role="button" : la ligne reste une ligne de tableau pour les lecteurs d'écran
+      // (le rôle aplatissait déjà les cellules, et il est invalide autour du vrai bouton d'action).
       tr.setAttribute('tabindex', '0');
-      tr.setAttribute('role', 'button');
       tr.addEventListener('click', function (event) {
         if (event.target && event.target.tagName === 'A') return;
         openDetail(job.id);
       });
       tr.addEventListener('keydown', function (event) {
         if (event.key !== 'Enter') return;
-        if (event.target && event.target.tagName === 'A') return;
+        // Entrée sur un bouton d'action de la ligne : le clic natif suffit, la ligne ne doit pas s'ouvrir.
+        if (event.target !== tr) return;
         event.preventDefault();
         openDetail(job.id);
       });
@@ -508,10 +843,16 @@ export const PAGE_HTML = `<!doctype html>
   // ---------- Détail d'un job ----------
 
   var openPanels = [];
+  /** Job affiché dans le panneau, pour le rafraîchir après une action réussie. */
+  var detailJobId = null;
+  /** Nœuds mobiles de l'en-tête du panneau ; null quand le panneau n'affiche qu'une erreur. */
+  var detailHead = null;
 
   function closeDetail() {
     openPanels.forEach(function (node) { if (node.parentNode) node.parentNode.removeChild(node); });
     openPanels = [];
+    detailJobId = null;
+    detailHead = null;
   }
 
   function section(parent, title) {
@@ -521,7 +862,43 @@ export const PAGE_HTML = `<!doctype html>
   function openDetail(id) {
     getJson('/api/jobs/' + encodeURIComponent(id)).then(renderDetail, function (err) {
       var panel = buildPanel();
+      // Retenu malgré l'erreur : une action réussie retentera l'ouverture au lieu de laisser ce message.
+      detailJobId = id;
       panel.appendChild(el('p', 'error-box', String(err.message)));
+    });
+  }
+
+  /**
+   * Après une action, seuls l'état du job et son bouton changent dans l'en-tête : les mettre à jour sur
+   * place évite de reconstruire le panneau, ce qui ramènerait le défilement en haut et perdrait le focus.
+   * Le reste du panneau (phases, transcript, liste d'actions) attend la prochaine ouverture.
+   */
+  function refreshDetail() {
+    if (!detailJobId) return;
+    var id = detailJobId;
+    // Panneau d'erreur : rien à mettre à jour sur place, mais l'ouverture peut maintenant aboutir.
+    if (!detailHead) {
+      openDetail(id);
+      return;
+    }
+    getJson('/api/jobs/' + encodeURIComponent(id)).then(function (detail) {
+      // Le panneau a pu être fermé ou remplacé pendant la requête.
+      if (detailJobId !== id || !detailHead) return;
+      var job = detail.job;
+      detailHead.badge.className = 'badge ' + (STATE_CLASS[job.state] || 's-queued');
+      detailHead.badge.textContent = STATE_LABEL[job.state] || String(job.state);
+      var keepFocus = detailHead.action !== null && document.activeElement === detailHead.action;
+      if (detailHead.action && detailHead.action.parentNode) detailHead.action.parentNode.removeChild(detailHead.action);
+      detailHead.action = jobButtonFor(job, 'small');
+      if (detailHead.action) {
+        detailHead.node.insertBefore(detailHead.action, detailHead.close);
+        if (keepFocus) detailHead.action.focus();
+      } else if (keepFocus) {
+        // Plus aucune action possible sur ce job : le focus va au bouton voisin plutôt que sur body.
+        detailHead.close.focus();
+      }
+    }, function () {
+      // L'action a réussi ; seul l'affichage est en retard, le panneau reste tel quel.
     });
   }
 
@@ -540,14 +917,19 @@ export const PAGE_HTML = `<!doctype html>
     var panel = buildPanel();
     var job = detail.job;
     var head = el('div', 'detail-head');
-    head.appendChild(badge(job.state));
+    var stateBadge = badge(job.state);
+    head.appendChild(stateBadge);
     head.appendChild(ghLink(detail.issueUrl, job.repo + '#' + job.issueNumber));
     if (job.prNumber) head.appendChild(ghLink(job.prUrl, 'PR #' + job.prNumber));
     head.appendChild(el('span', 'muted', job.id));
+    detailJobId = job.id;
+    var jobAction = jobButtonFor(job, 'small');
+    if (jobAction) head.appendChild(jobAction);
     var close = el('button', 'action close', 'Fermer');
     close.type = 'button';
     close.addEventListener('click', closeDetail);
     head.appendChild(close);
+    detailHead = { node: head, badge: stateBadge, action: jobAction, close: close };
     panel.appendChild(head);
     panel.appendChild(el('p', 'detail-title', job.issueTitle));
 
@@ -584,6 +966,16 @@ export const PAGE_HTML = `<!doctype html>
         list.appendChild(el('li', null, p.name + ' · essai ' + p.attempt + ' · ' + fmtUsd(p.costUsd) + ' · ' + duration + outcome));
       });
       panel.appendChild(list);
+    }
+
+    if (detail.actions && detail.actions.length) {
+      section(panel, 'Actions');
+      var actionList = el('ul', 'plain');
+      detail.actions.forEach(function (a) {
+        var outcome = a.outcome === 'ok' ? 'ok' : 'erreur : ' + String(a.error || '');
+        actionList.appendChild(el('li', null, fmtDate(a.at) + ' · ' + (ACTION_LABEL[a.action] || String(a.action)) + ' · ' + String(a.source) + ' · ' + outcome));
+      });
+      panel.appendChild(actionList);
     }
 
     if (detail.diff) {
@@ -751,11 +1143,44 @@ export const PAGE_HTML = `<!doctype html>
   document.querySelectorAll('.tab').forEach(function (tab) {
     tab.addEventListener('click', function () { selectTab(tab.getAttribute('data-tab')); });
   });
-  byId('refresh').addEventListener('click', loadJobs);
-  byId('filter-repo').addEventListener('change', loadJobs);
-  byId('filter-state').addEventListener('change', loadJobs);
+  // Enveloppés : branchés directement, l'événement arriverait comme callback de fin de chargement.
+  byId('refresh').addEventListener('click', function () { loadJobs(); });
+  byId('filter-repo').addEventListener('change', function () { loadJobs(); });
+  byId('filter-state').addEventListener('change', function () { loadJobs(); });
   byId('period').addEventListener('change', loadReport);
   document.addEventListener('keydown', function (event) { if (event.key === 'Escape') closeDetail(); });
+
+  // Boutons système : câblés une fois, comme la barre elle-même. Seul l'arrêt demande confirmation —
+  // pause, reprise et poll sont réversibles ou sans effet de bord.
+  ['act-start', 'act-pause', 'act-poll', 'act-stop'].forEach(function (id) {
+    var button = byId(id);
+    button.addEventListener('click', function () {
+      var name = button.getAttribute('data-action');
+      run(button, name, {}, name === 'stop' ? 'Arrêter le daemon ?' : null);
+    });
+  });
+
+  // Un vrai formulaire : Entrée valide, le bouton est atteignable au clavier, le navigateur vérifie min.
+  byId('new-job').addEventListener('submit', function (event) {
+    event.preventDefault();
+    var repo = byId('new-repo').value;
+    var field = byId('new-issue');
+    var issueNumber = Number(field.value);
+    if (!repo) {
+      toast('ko', 'nouveau job : aucun repo configuré');
+      return;
+    }
+    if (!isFinite(issueNumber) || issueNumber < 1 || Math.floor(issueNumber) !== issueNumber) {
+      toast('ko', 'nouveau job : numéro d\\'issue invalide');
+      return;
+    }
+    // Le champ n'est vidé qu'en cas de succès : sur un refus, le numéro reste pour corriger et réessayer.
+    run(byId('act-enqueue'), 'enqueue', { repo: repo, issueNumber: issueNumber }, null, function () {
+      field.value = '';
+    });
+  });
+
+  syncSysbar();
 })();
 </script>
 </body>

@@ -3,7 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { InvalidTransitionError } from '../jobs/state.js';
-import { openDatabase, sqlList } from './db.js';
+import { ACTION_OUTCOMES, ACTION_SOURCES, ActionStore } from './actions.js';
+import { DatabaseSync } from 'node:sqlite';
+import { SCHEMA_VERSION, applyMigrations, openDatabase, sqlList } from './db.js';
 import { JobStore } from './jobs.js';
 import { PhaseStore } from './phases.js';
 import { JOB_STATES, TERMINAL_STATES } from './types.js';
@@ -165,15 +167,64 @@ describe('openDatabase', () => {
     a.close();
     const b = openDatabase(file);
     expect(new JobStore(b).listActive()).toHaveLength(1);
-    expect((b.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(1);
+    expect((b.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(2);
     expect((b.prepare('PRAGMA journal_mode').get() as { journal_mode: string }).journal_mode).toBe('wal');
     b.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('migre une base existante en version 1 vers la version 2 sans toucher aux jobs/phases', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sisyphe-db-'));
+    const file = join(dir, 'sisyphe.db');
+    // Fabrique une base v1 authentique : ouvre en v2, puis redescend artificiellement à v1
+    // en supprimant ce que la migration 2 a ajouté.
+    const a = openDatabase(file);
+    const job = new JobStore(a).create({ repo: 'a/b', issueNumber: 1, issueTitle: 't' });
+    const phase = new PhaseStore(a).start({ jobId: job.id, name: 'triage', attempt: 1 });
+    a.exec('DROP TABLE actions');
+    a.exec('PRAGMA user_version = 1');
+    a.close();
+
+    const b = openDatabase(file);
+    expect((b.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(2);
+    expect(new JobStore(b).get(job.id)?.issueTitle).toBe('t');
+    expect(new PhaseStore(b).listForJob(job.id).map((p) => p.id)).toEqual([phase.id]);
+    expect(b.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'actions'").get()).toBeTruthy();
+    expect(new ActionStore(b).record({ action: 'retry', source: 'ui', outcome: 'ok' }).outcome).toBe('ok');
+    b.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('deux migrateurs concurrents sur la même base : le second ne rejoue rien et les deux finissent à jour', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sisyphe-db-'));
+    const file = join(dir, 'sisyphe.db');
+    const seed = openDatabase(file);
+    seed.exec('DROP TABLE actions');
+    seed.exec('PRAGMA user_version = 1'); // base v1, comme avant la migration 2
+    seed.close();
+
+    // Le gagnant migre. Le perdant a lu `user_version` avant lui : il repart donc du plan périmé « v1 »,
+    // exactement ce que fait un second processus (daemon, `sisyphe ui`, `sisyphe setup`) parti en même temps.
+    const winner = openDatabase(file);
+    const loser = new DatabaseSync(file);
+    loser.exec('PRAGMA busy_timeout = 5000;');
+    applyMigrations(loser, 1);
+
+    const version = (db: DatabaseSync) => (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
+    expect(version(winner)).toBe(SCHEMA_VERSION);
+    expect(version(loser)).toBe(SCHEMA_VERSION);
+    // Une seule table `actions` : la migration n'a pas été rejouée par-dessus elle-même.
+    expect(new ActionStore(loser).record({ action: 'retry', source: 'ui', outcome: 'ok' }).outcome).toBe('ok');
+    winner.close();
+    loser.close();
     await rm(dir, { recursive: true, force: true });
   });
 
   it('fige le littéral des énumérations SQL : le changer exige une nouvelle migration', () => {
     expect(sqlList(JOB_STATES)).toBe("'queued','triaging','implementing','verifying','delivering','done','blocked','failed','cancelled'");
     expect(sqlList(TERMINAL_STATES)).toBe("'done','blocked','failed','cancelled'");
+    expect(sqlList(ACTION_SOURCES)).toBe("'ui','cli'");
+    expect(sqlList(ACTION_OUTCOMES)).toBe("'ok','error'");
   });
 });
 
