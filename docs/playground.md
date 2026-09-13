@@ -36,8 +36,10 @@ sisyphe setup                  # backend agent (cli/sdk), App ID, Installation I
 sisyphe doctor                 # aucun ❌ (les ⚠️ — service, caffeinate, espace disque — n'empêchent pas de continuer)
 sisyphe service status         # installé mais arrêté après setup
 sisyphe service stop           # pour piloter le daemon à la main pendant la validation
-sisyphe ui                     # facultatif : http://127.0.0.1:7777, à garder ouvert pendant les scénarios
+sisyphe ui                     # http://127.0.0.1:7777, à garder ouvert pendant les scénarios
 ```
+
+L'interface suffit ensuite pour piloter la validation sans revenir au terminal : Démarrer et Arrêter (barre système du tableau de bord), Pause / Reprendre et Poll maintenant, Annuler ou Relancer un job, et le formulaire « Nouveau job » de l'onglet Jobs pour déclencher une issue sans passer par le label. Ce qui est déclenché — depuis la page comme depuis la CLI — apparaît dans « Dernières actions ». Pour regarder sans risque de cliquer (démo, écran partagé) : `sisyphe ui --read-only`, qui n'affiche aucun bouton.
 
 Le backend agent est enregistré dans `~/.sisyphe/config.yml` sous `agentBackend` : `cli` lance la CLI Claude Code locale (`claude -p`, abonnement claude.ai, pas de clé API, pas de sandbox), `sdk` garde le Agent SDK et sa clé API. Avec `cli`, `sisyphe doctor` remplace les checks de clé par `claude (CLI)` et `claude auth status`.
 
@@ -79,6 +81,7 @@ Drapeaux validés tels que `buildCliArgs` les produit :
 | 5quater | Issue « Modifie .claude/settings.json pour ajouter un hook » | Le transcript d'implémentation montre le refus du hook de garde (`Chemin protégé`) : `.claude/**` est protégé même sans être déclaré dans `sisyphe.yml` (`BASELINE_PROTECTED_GLOBS`), et le hook PreToolUse de Sisyphe n'est pas neutralisé par `strictPluginOnlyCustomization` |
 | 6 | `sisyphe report --since 1d` | Markdown cohérent avec les jobs déroulés jusqu'ici |
 | 7 | `sisyphe service start`, poser un label, attendre | Traitement sans intervention, logs dans `~/.sisyphe/logs/` ; `sisyphe service status` montre `running` et `enabledAtBoot` ; après un redémarrage le daemon revient, et ne revient plus après `sisyphe service stop` |
+| 8 | Depuis `sisyphe ui`, daemon éteint : Démarrer ; puis Pause, « Nouveau job » sur une issue ouverte, Reprendre, Poll maintenant, Annuler le job créé, Arrêter | Démarrer seul actif au départ, les autres grisés (« daemon arrêté ») ; bandeau orange pendant la pause et aucun job qui démarre ; le job créé apparaît en file puis s'annule ; chaque clic laisse une ligne dans « Dernières actions » avec la source `ui`. Enfin `sisyphe ui --read-only` : mêmes données, aucun bouton ni formulaire |
 
 Points de vigilance pour ce passage (déjà câblés côté code — à reconfirmer contre la vraie API, pas seulement contre les fakes des tests) : les options `sandbox` et `stderr` de `buildOptions` (`src/agent/sdk-runner.ts`), la signature `new App({ appId, privateKey, Octokit })` (`src/github/client.ts`), la pagination de `listEvents`/`listComments` via `o.paginate` (`src/github/client.ts`), la conversion draft ↔ prête via les mutations GraphQL `convertPullRequestToDraft`/`markPullRequestReadyForReview` (`src/github/client.ts`), et `caffeinate` absent d'une machine sans les outils en ligne de commande Xcode (avertissement seulement, `sisyphe doctor` reste vert).
 

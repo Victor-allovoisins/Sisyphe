@@ -40,4 +40,81 @@ describe('PAGE_HTML', () => {
       expect(PAGE_HTML).toContain(cls);
     }
   });
+
+  it('expose les boutons système, statiques et identifiés par leur action', () => {
+    for (const name of ['start', 'pause', 'poll', 'stop', 'enqueue']) {
+      expect(PAGE_HTML).toContain(`data-action="${name}"`);
+    }
+    for (const label of ['Démarrer', 'Arrêter', 'Pause', 'Reprendre', 'Poll maintenant']) {
+      expect(PAGE_HTML).toContain(label);
+    }
+    // Daemon injoignable : les boutons de la socket sont grisés et disent pourquoi.
+    expect(PAGE_HTML).toContain("'title', 'daemon arrêté'");
+    expect(PAGE_HTML).toContain('id="paused-banner"');
+  });
+
+  it('porte le formulaire « Nouveau job » : un vrai form, un select de repos, un numéro entier positif', () => {
+    expect(PAGE_HTML).toContain('<form class="filters new-job" id="new-job"');
+    expect(PAGE_HTML).toContain('Nouveau job');
+    expect(PAGE_HTML).toContain('<select id="new-repo">');
+    expect(PAGE_HTML).toContain('<input type="number" id="new-issue" min="1"');
+    // `preventDefault` : la validation passe par `api()`, jamais par une navigation de formulaire.
+    expect(PAGE_HTML).toContain("byId('new-job').addEventListener('submit'");
+    expect(PAGE_HTML).toContain('event.preventDefault();');
+  });
+
+  it('construit les boutons Annuler et Relancer par job, avec leur attribut d’action', () => {
+    expect(PAGE_HTML).toContain("setAttribute('data-action', kind)");
+    expect(PAGE_HTML).toContain("jobButton(job, 'cancel'");
+    expect(PAGE_HTML).toContain("jobButton(job, 'retry'");
+    expect(PAGE_HTML).toContain('Annuler');
+    expect(PAGE_HTML).toContain('Relancer');
+    // Le clic ne doit pas remonter à la ligne du tableau, qui ouvrirait le panneau de détail.
+    expect(PAGE_HTML).toContain('event.stopPropagation();');
+  });
+
+  it('appelle les actions avec les deux en-têtes anti-CSRF et sans cookie', () => {
+    expect(PAGE_HTML).toContain("'/api/actions/' + name");
+    expect(PAGE_HTML).toContain("method: 'POST'");
+    expect(PAGE_HTML).toContain("'Content-Type': 'application/json'");
+    expect(PAGE_HTML).toContain("'X-Sisyphe-Action': '1'");
+    expect(PAGE_HTML).toContain("credentials: 'omit'");
+  });
+
+  it('confirme avant une action destructrice et désactive le bouton pendant l’appel', () => {
+    expect(PAGE_HTML).toContain('window.confirm(question)');
+    expect(PAGE_HTML).toContain('Annuler le job ');
+    expect(PAGE_HTML).toContain('Relancer le job ');
+    expect(PAGE_HTML).toContain('Arrêter le daemon ?');
+    expect(PAGE_HTML).toContain('button.disabled = true;');
+    expect(PAGE_HTML).toContain('button.disabled = false;');
+  });
+
+  it('affiche un toast par résultat et le journal des actions', () => {
+    expect(PAGE_HTML).toContain('.toast.ok');
+    expect(PAGE_HTML).toContain('.toast.ko');
+    // Succès 4 s, erreur 8 s avec le message relayé.
+    expect(PAGE_HTML).toContain("kind === 'ok' ? 4000 : 8000");
+    expect(PAGE_HTML).toContain('Dernières actions');
+    expect(PAGE_HTML).toContain('id="actions-body"');
+  });
+
+  it('ne montre aucun bouton ni formulaire en lecture seule', () => {
+    // Défaut prudent : tant qu'aucun snapshot n'est arrivé, la page se croit en lecture seule.
+    expect(PAGE_HTML).toContain('readOnly: true');
+    expect(PAGE_HTML).toContain('if (ui.readOnly) return null;');
+    expect(PAGE_HTML).toContain('bar.hidden = ui.readOnly;');
+    expect(PAGE_HTML).toContain("byId('new-job').hidden = ui.readOnly;");
+    expect(PAGE_HTML).toContain("byId('jobs-actions-head').hidden = ui.readOnly;");
+    expect(PAGE_HTML).toContain('ui.readOnly = o.readOnly !== false;');
+    // La barre et le formulaire sont en `display: flex` : sans cette règle, `hidden` ne les masquerait pas.
+    expect(PAGE_HTML).toContain('[hidden] { display: none !important; }');
+  });
+
+  it('ne câble que de vrais boutons et un vrai formulaire : tout est atteignable au clavier', () => {
+    // Aucun `div` cliquable : chaque action est un <button> ou le submit du formulaire.
+    expect(PAGE_HTML).not.toMatch(/<div[^>]*onclick/i);
+    expect(PAGE_HTML).not.toContain("el('div', 'action'");
+    expect(PAGE_HTML).toContain("button.type = 'button';");
+  });
 });

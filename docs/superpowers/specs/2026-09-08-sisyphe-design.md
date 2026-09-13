@@ -28,13 +28,13 @@ Contexte : POC sur le Mac de Victor, destiné à prouver la faisabilité et à j
 - `config` : chargement et validation (zod) de la config machine `~/.sisyphe/config.yml` et de la config repo `sisyphe.yml`. Applique les défauts.
 - `github` : client GitHub App (Octokit) : issues, labels, commentaires, permissions, PR. Implémente l'interface `IssueSource`.
 - `git` : miroir bare par repo, worktree par job, branches, squash, push, diff. Appelle le binaire `git` via `execa`.
-- `store` : SQLite via `node:sqlite`, tables `jobs` et `phases`, migrations versionnées.
+- `store` : SQLite via `node:sqlite`, tables `jobs`, `phases` et `actions` (journal des actions UI et CLI), migrations versionnées.
 - `jobs` : machine à états, scheduler, réconciliation au démarrage.
 - `agent` : `AgentRunner` qui enveloppe le SDK, prompts de triage et d'implémentation, schémas JSON de sortie, hooks de sécurité.
 - `verify` : exécution de build, test, lint ; scan de secrets (gitleaks) ; détection des chemins protégés ; taille du diff.
 - `deliver` : squash, commit, push, rendu du body de PR, création de la PR, labels et commentaires finaux.
-- `daemon` : boucle de poll, gestion de la concurrence, `caffeinate`, arrêt propre, suivi des PR.
-- `cli` : `sisyphe setup | doctor | start | status | logs | report | cancel`.
+- `daemon` : boucle de poll, gestion de la concurrence, `caffeinate`, arrêt propre, suivi des PR, et la socket de contrôle UNIX `<dataDir>/control.sock` (0600) par laquelle l'interface et la CLI lui demandent d'agir — le daemon reste le seul écrivain de la base.
+- `cli` : `sisyphe setup | doctor | start | status | logs | report | ui | cancel | service`.
 - `report` : agrégation des KPI depuis SQLite, rendu markdown.
 
 ### 3.2 Dépendances externes
@@ -300,8 +300,8 @@ Logs du daemon : pino JSON sur stdout et dans `~/.sisyphe/logs/daemon-YYYY-MM-DD
 - `sisyphe status` : jobs actifs et les 20 derniers, avec état, coût, durée, lien PR.
 - `sisyphe logs <jobId> [--phase <name>] [--raw]` : par défaut un résumé lisible du transcript (outils appelés, fichiers touchés, commandes lancées) ; `--raw` affiche les fichiers bruts.
 - `sisyphe report [--since 30d] [--repo <owner/repo>]` : markdown avec nombre de jobs, répartition par état final, taux de PR ouvertes, taux de PR mergées, coût total et médian, coût par PR mergée, durée médiane (cumulée sur les runs requeués), nombre de tentatives moyen, cinq derniers échecs avec raison.
-- `sisyphe ui [--port <n>]` : interface web locale en lecture seule sur `127.0.0.1` (tableau de bord temps réel, jobs, KPIs) — spec dédiée `docs/superpowers/specs/2026-09-09-sisyphe-ui-design.md`.
-- `sisyphe cancel <jobId>` : annule un job actif.
+- `sisyphe ui [--port <n>] [--read-only]` : interface web locale sur `127.0.0.1` (tableau de bord temps réel, jobs, KPIs). La base reste ouverte en lecture seule ; les actions (annuler, relancer, créer un job, poll, pause, reprise, arrêter) sont relayées au daemon par la socket de contrôle `<dataDir>/control.sock`, Démarrer et Arrêter par le gestionnaire de service, et `--read-only` n'affiche aucun bouton. Specs dédiées : `docs/superpowers/specs/2026-09-09-sisyphe-ui-design.md` (v1, lecture) et `2026-09-09-sisyphe-ui-actions-design.md` (v2, actions).
+- `sisyphe cancel <jobId>` : annule un job actif — par la socket de contrôle si le daemon répond (annulation immédiate et journalisée), sinon par retrait du label comme avant.
 - `sisyphe service <status|start|stop|uninstall>` : pilote le service utilisateur qui héberge le daemon (launchd sur macOS, systemd `--user` sur Ubuntu). `sisyphe setup --reinstall-service` réécrit l'unité sans rejouer les questions. Détail : `docs/superpowers/specs/2026-09-10-sisyphe-install-service-design.md` §3 et §4.
 
 ## 8. Gestion d'erreurs

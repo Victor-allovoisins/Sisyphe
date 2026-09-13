@@ -60,7 +60,7 @@ sisyphe service stop        # arrête maintenant et désactive au boot
 sisyphe service uninstall
 ```
 
-Les boutons Démarrer et Arrêter de l'interface (`sisyphe ui`) pilotent ces deux mêmes opérations — c'est le service qui est démarré ou arrêté, jamais un processus détaché de la page (branchement livré par l'UI v2, en cours). Sur une plateforme sans gestionnaire de service, `sisyphe service start` lance un daemon détaché qui, lui, ne survit pas au redémarrage.
+Les boutons Démarrer et Arrêter de l'interface (`sisyphe ui`) pilotent ces deux mêmes opérations — c'est le service qui est démarré ou arrêté, jamais un processus détaché de la page. Sur une plateforme sans gestionnaire de service, `sisyphe service start` lance un daemon détaché qui, lui, ne survit pas au redémarrage.
 
 ## Côté repo cible
 
@@ -72,7 +72,11 @@ Un fichier `sisyphe.yml` à la racine de la branche par défaut (exemple iOS : `
 
 ### Interface web
 
-`sisyphe ui` sert une page locale sur `http://127.0.0.1:7777` : tableau de bord temps réel (daemon, service, budget du jour, jobs actifs et fil des actions de l'agent), historique des jobs avec panneau de détail (phases, transcript résumé, sorties de vérification, diff, secrets détectés) et KPIs par période. La page crée et migre sa base au besoin, puis l'ouvre en `readOnly` : elle n'écrit rien d'autre et ne fait aucun appel réseau. Les actions (annuler, relancer, créer un job, poll, pause, reprise, démarrer, arrêter) passent par `POST /api/actions/<nom>`, réservé au navigateur local (en-tête `X-Sisyphe-Action`, `Content-Type` JSON et `Origin` vérifiée) ; Démarrer et Arrêter passent par le service, jamais par la seule socket. `--read-only` refuse toute action. Captures : `docs/ui/`.
+`sisyphe ui` sert une page locale sur `http://127.0.0.1:7777` : tableau de bord temps réel (daemon, service, budget du jour, jobs actifs et fil des actions de l'agent), historique des jobs avec panneau de détail (phases, transcript résumé, sorties de vérification, diff, secrets détectés) et KPIs par période. La page crée et migre sa base au besoin, puis l'ouvre en `readOnly` : elle n'écrit rien d'autre et ne fait aucun appel réseau.
+
+Elle pilote aussi Sisyphe. Barre système du tableau de bord : Démarrer (visible tant que rien ne tourne), Pause ou Reprendre, Poll maintenant, Arrêter — grisés avec un « daemon arrêté » en infobulle quand la socket de contrôle ne répond pas, et un bandeau orange signale l'état en pause. Chaque job porte Annuler tant qu'il n'est pas terminé, Relancer s'il est en échec, bloqué ou annulé (carte du tableau de bord, ligne du tableau Jobs, panneau de détail). Un formulaire « Nouveau job » en tête de l'onglet Jobs crée un job depuis un repo configuré et un numéro d'issue. Annuler, Relancer et Arrêter demandent confirmation ; le résultat arrive en toast (succès 4 s, erreur 8 s avec le message du daemon) et le bloc « Dernières actions » — comme la liste d'actions du détail d'un job — garde la trace de ce qui a été déclenché, depuis l'interface comme depuis la CLI.
+
+Les actions (annuler, relancer, créer un job, poll, pause, reprise, démarrer, arrêter) passent par `POST /api/actions/<nom>`, réservé au navigateur local (en-tête `X-Sisyphe-Action`, `Content-Type` JSON et `Origin` vérifiée) ; Démarrer et Arrêter passent par le service, jamais par la seule socket. `sisyphe ui --read-only` refuse toute action et n'affiche aucun bouton ni formulaire. Captures : `docs/ui/`.
 
 ## Développement
 
