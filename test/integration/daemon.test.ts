@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { effectiveDailyBudget } from '../../src/config/machine.js';
 import { Daemon } from '../../src/daemon/daemon.js';
 import { pollOnce } from '../../src/daemon/poll.js';
 import { SHUTDOWN } from '../../src/jobs/pipeline.js';
+import { startOfLocalDay } from '../../src/jobs/scheduler.js';
 import { isTerminal } from '../../src/store/types.js';
-import { makeHarness, readyVerdict, repoRef, report, writeFeature } from '../helpers/harness.js';
+import { REPO, makeHarness, readyVerdict, repoRef, report, writeFeature } from '../helpers/harness.js';
 
 /** Timers à l'heure : seuls les appels explicites font avancer le daemon. Pas de socket : elle a ses propres tests. */
 const QUIET = { intervals: { pollMs: 3_600_000, cancelMs: 3_600_000, prTrackMs: 3_600_000, purgeMs: 3_600_000 }, control: false };
@@ -34,6 +36,28 @@ describe('Daemon', () => {
     const queued = h.store.listByStates(['queued']);
     expect(queued.map((j) => j.issueNumber)).toEqual([8]);
     expect(h.source.commentsOf({ repo: repoRef, number: 8 }).at(-1)).toContain('Budget quotidien');
+  });
+
+  it('sans plafond, aucune pause budgétaire : le job démarre malgré une dépense élevée', async () => {
+    // Plafond vidé (`dailyBudgetUsd: null`) sur un backend `sdk` : ce que l'absence du champ ne peut pas dire.
+    const h = await makeHarness({
+      steps: [{ output: readyVerdict }, { output: report('a'), sideEffect: writeFeature('hello\n') }],
+      dailyBudgetUsd: null,
+    });
+    expect(effectiveDailyBudget(h.deps.machine)).toBeUndefined();
+
+    // Dépense du jour très supérieure à n'importe quel plafond plausible, portée par un job déjà terminé.
+    const spent = h.store.create({ repo: REPO, issueNumber: 99, issueTitle: 'dépense du jour' });
+    h.store.transition(spent.id, 'failed');
+    const phase = h.phases.start({ jobId: spent.id, name: 'triage', attempt: 1 });
+    h.phases.finish(phase.id, { costUsd: 5000, outcome: 'success' });
+    expect(h.phases.costSince(startOfLocalDay())).toBeGreaterThan(1000);
+
+    await new Daemon(h.deps).runOnce();
+
+    expect(h.source.pulls).toHaveLength(1);
+    expect(h.store.listByStates(['queued'])).toHaveLength(0);
+    expect(h.source.commentsOf({ repo: repoRef, number: 7 }).filter((c) => /budget/i.test(c))).toEqual([]);
   });
 
   it('watchCancellations annule un job dont le label a disparu', async () => {

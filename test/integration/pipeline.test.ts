@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { jobDir } from '../../src/config/paths.js';
 import { runJob } from '../../src/jobs/pipeline.js';
 import { REPO, SISYPHE_YML, makeHarness, readyVerdict, repoRef, report, writeFeature } from '../helpers/harness.js';
 import { remoteBranchSha, remoteCommitParents } from '../helpers/git-fixture.js';
@@ -84,7 +85,7 @@ describe('runJob', () => {
     ]);
   });
 
-  it('tentatives épuisées : failed avec PR draft et worktree conservé', async () => {
+  it('tentatives épuisées : failed avec PR draft, worktree supprimé et dossier de job conservé', async () => {
     const h = await makeHarness({
       steps: [{ output: readyVerdict }, { output: report('v1'), sideEffect: writeFeature('bye\n') }, { output: report('v2'), sideEffect: writeFeature('bye\n') }],
     });
@@ -96,7 +97,9 @@ describe('runJob', () => {
     expect(h.source.pulls[0].body).toContain('PR en draft');
     expect(done.prNumber).not.toBeNull();
     expect(h.source.labelsOf(issue7)).toEqual(['sisyphe', 'sisyphe:failed']);
-    expect(existsSync(done.worktreePath!)).toBe(true);
+    // Le clone part, le dossier de job reste : le post-mortem se fait sur les transcripts et la PR.
+    expect(existsSync(done.worktreePath!)).toBe(false);
+    expect(existsSync(jobDir(h.paths, done.id))).toBe(true);
   });
 
   it('aucun changement : blocked', async () => {
@@ -118,6 +121,8 @@ describe('runJob', () => {
     expect(await remoteBranchSha(h.remotePath, BRANCH)).toBeNull();
     expect(h.source.pulls).toHaveLength(0);
     expect(h.source.commentsOf(issue7).at(-1)).toContain('aws-access-token');
+    expect(existsSync(done.worktreePath!)).toBe(false);
+    expect(existsSync(jobDir(h.paths, done.id))).toBe(true);
   });
 
   it('sisyphe.yml absent : blocked sans appel agent', async () => {
@@ -172,6 +177,8 @@ describe('runJob', () => {
     expect(done.state).toBe('failed');
     expect(done.error).toContain('SDK indisponible');
     expect(h.source.labelsOf(issue7)).toEqual(['sisyphe', 'sisyphe:failed']);
+    expect(existsSync(done.worktreePath!)).toBe(false);
+    expect(existsSync(jobDir(h.paths, done.id))).toBe(true);
   });
 
   it('injecte le CLAUDE.md du repo dans le system prompt et refuse un sisyphe.yml invalide', async () => {

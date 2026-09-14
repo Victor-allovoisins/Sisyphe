@@ -4,10 +4,10 @@ import type { Logger } from 'pino';
 import { summarizeTranscript } from '../cli/format.js';
 import type { ServiceStatus } from '../service/index.js';
 import { AmbiguousJobPrefixError, findJob } from '../cli/resolve-job.js';
-import type { AgentBackend, MachineConfig } from '../config/machine.js';
+import { effectiveDailyBudget, type AgentBackend, type MachineConfig } from '../config/machine.js';
 import { jobDir, type DataPaths } from '../config/paths.js';
 import { DaemonUnreachableError } from '../daemon/control-client.js';
-import type { DaemonStatus } from '../daemon/control-types.js';
+import type { DaemonStatus, RestartRequiredField } from '../daemon/control-types.js';
 import { readLock } from '../daemon/lock.js';
 import type { ActionRow, ActionStore } from '../store/actions.js';
 import { startOfLocalDay } from '../jobs/scheduler.js';
@@ -99,12 +99,13 @@ export interface ActiveJob extends Job {
 export interface Overview {
   now: string;
   /** `paused` vient de la socket de contrôle : `null` quand le daemon ne répond pas. */
-  daemon: { running: boolean; pid: number | null; paused: boolean | null };
+  daemon: { running: boolean; pid: number | null; paused: boolean | null; pendingRestart: RestartRequiredField[] };
   control: { reachable: boolean };
   readOnly: boolean;
   recentActions: ActionRow[];
   service: ServiceStatus;
-  budget: { spentTodayUsd: number; dailyBudgetUsd: number; ratio: number };
+  /** `dailyBudgetUsd` à `null` : aucun plafond configuré. La dépense du jour reste affichée. */
+  budget: { spentTodayUsd: number; dailyBudgetUsd: number | null; ratio: number };
   backend: AgentBackend;
   repos: string[];
   counts: Counts;
@@ -308,18 +309,21 @@ export function createUiData(deps: UiDataDeps): UiData {
         };
       }),
     );
+    const cap = effectiveDailyBudget(machine);
     return {
       now: at.toISOString(),
-      daemon: { running: lock?.alive ?? false, pid: lock?.pid ?? null, paused: status?.paused ?? null },
+      daemon: {
+        running: lock?.alive ?? false,
+        pid: lock?.pid ?? null,
+        paused: status?.paused ?? null,
+        // Rappel persistant de la page de réglages : le daemon accumule les champs structurels modifiés, il les dit ici.
+        pendingRestart: status?.pendingRestart ?? [],
+      },
       control: { reachable: status !== null },
       readOnly: deps.readOnly,
       recentActions: deps.actions.listRecent(RECENT_ACTIONS),
       service: await serviceStatus(),
-      budget: {
-        spentTodayUsd,
-        dailyBudgetUsd: machine.dailyBudgetUsd,
-        ratio: machine.dailyBudgetUsd > 0 ? spentTodayUsd / machine.dailyBudgetUsd : 0,
-      },
+      budget: { spentTodayUsd, dailyBudgetUsd: cap ?? null, ratio: cap === undefined ? 0 : spentTodayUsd / cap },
       backend: machine.agentBackend,
       repos: machine.repos,
       counts: {

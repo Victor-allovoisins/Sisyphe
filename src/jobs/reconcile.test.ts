@@ -79,7 +79,7 @@ describe('reconcile', () => {
     expect(existsSync(wt2.worktreePath)).toBe(true);
   });
 
-  it("conserve le worktree d'un job failed récent et le purge après le TTL", async () => {
+  it("purge le worktree d'un job failed resté sur le disque", async () => {
     const h = await makeHarness({ steps: [] });
     await h.deps.git.ensureMirror(REPO, h.remotePath, h.remotePath, ['main']);
     const wt = await h.deps.git.createWorktree(REPO, 7, 'feature/issue-7-t', 'main');
@@ -88,10 +88,8 @@ describe('reconcile', () => {
     h.store.transition(job.id, 'implementing', { worktreePath: wt.worktreePath, branch: 'feature/issue-7-t', baseSha: wt.baseSha });
     h.store.transition(job.id, 'failed', { worktreePath: wt.worktreePath, error: 'x' });
 
-    await purgeOrphanWorktrees(h.deps);
-    expect(existsSync(wt.worktreePath)).toBe(true);
-
-    h.store.update(job.id, { finishedAt: new Date(Date.now() - 8 * 86_400_000).toISOString() });
+    // Le job échoue désormais en supprimant son clone : un clone encore là est le reste d'une suppression
+    // ratée, pas un choix. Le purger sans délai, y compris à la réconciliation qui suit immédiatement.
     await purgeOrphanWorktrees(h.deps);
     expect(existsSync(wt.worktreePath)).toBe(false);
   });
@@ -134,7 +132,7 @@ describe('reconcile', () => {
     expect(j.error).toBeNull();
   });
 
-  it('marque failed et conserve le worktree quand la vérification avait échoué mais la PR existe', async () => {
+  it('marque failed et supprime le worktree quand la vérification avait échoué mais la PR existe', async () => {
     const h = await makeHarness({ steps: [] });
     await h.deps.git.ensureMirror(REPO, h.remotePath, h.remotePath, ['main']);
     const wt = await h.deps.git.createWorktree(REPO, 7, 'feature/issue-7-t', 'main');
@@ -150,7 +148,8 @@ describe('reconcile', () => {
     expect(j.state).toBe('failed');
     expect(j.prNumber).toBe(100);
     expect(h.source.labelsOf({ repo: repoRef, number: 7 })).toContain('sisyphe:failed');
-    expect(existsSync(wt.worktreePath)).toBe(true);
+    // Chemin jumeau de `runJob` : le TTL des worktrees de jobs failed garderait celui-ci, la réconciliation le supprime.
+    expect(existsSync(wt.worktreePath)).toBe(false);
   });
 
   it('corrige un label in-progress resté en place quand le job est déjà done avec une PR ouverte', async () => {

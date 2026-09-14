@@ -35,6 +35,70 @@ describe('PAGE_HTML', () => {
     expect(PAGE_HTML).toContain("'/api/report?since='");
   });
 
+  it('ajoute un quatrième onglet Réglages, avec son formulaire groupé', () => {
+    expect(PAGE_HTML).toContain('data-tab="settings"');
+    expect(PAGE_HTML).toContain('id="view-settings"');
+    // Un champ par réglage modifiable, `dataDir` compris (verrouillé), et les trois groupes.
+    for (const id of ['set-poll', 'set-concurrent', 'set-budget', 'set-backend', 'set-sandbox',
+      'set-app-id', 'set-installation', 'set-label', 'set-key-path', 'set-data-dir']) {
+      expect(PAGE_HTML).toContain(`id="${id}"`);
+    }
+    for (const title of ['Exécution', 'Agent', 'GitHub']) expect(PAGE_HTML).toContain(title);
+    // `dataDir` : affiché désactivé, jamais reposté modifié (le serveur le refuse de toute façon).
+    expect(PAGE_HTML).toContain('id="set-data-dir" disabled');
+    // Le champ budget vide vaut « aucune limite ».
+    expect(PAGE_HTML).toContain('placeholder="aucune limite"');
+  });
+
+  it('affiche les quatre blocs d’information et charge aux routes dédiées', () => {
+    for (const id of ['diag-list', 'disk-list', 'env-list', 'repos-list']) {
+      expect(PAGE_HTML).toContain(`id="${id}"`);
+    }
+    expect(PAGE_HTML).toContain("getJson('/api/settings')");
+    expect(PAGE_HTML).toContain("getJson('/api/diagnostics' + (fresh ? '?fresh=1' : ''))");
+    expect(PAGE_HTML).toContain("getJson('/api/disk')");
+    expect(PAGE_HTML).toContain("api('settings', readSettingsConfig())");
+    expect(PAGE_HTML).toContain("api('purge-cache', {})");
+    // Le diagnostic n'est pas lancé au chargement de la page : les blocs se chargent au premier affichage de l'onglet.
+    expect(PAGE_HTML).toContain("if (name === 'settings')");
+    expect(PAGE_HTML).toContain('if (!blocks.diagnostics)');
+  });
+
+  it('ne peut enregistrer que si quelque chose a changé, et place les erreurs sous le champ fautif', () => {
+    // La référence est la forme réémise par le formulaire, comparée champ à champ par JSON.
+    expect(PAGE_HTML).toContain('settings.baseline = JSON.stringify(readSettingsConfig());');
+    expect(PAGE_HTML).toContain('JSON.stringify(readSettingsConfig()) !== settings.baseline');
+    expect(PAGE_HTML).toContain("byId('set-save').disabled = ui.readOnly || !changed;");
+    // `issues` du serveur : chaque message va sous son champ, les autres dans l'encadré général.
+    expect(PAGE_HTML).toContain('function showFieldErrors(issues, error)');
+    expect(PAGE_HTML).toContain("input.parentNode.appendChild(el('p', 'field-error', issue.message));");
+  });
+
+  it('rappelle un redémarrage dû de façon persistante, depuis le statut du daemon', () => {
+    // Le rappel ne vient pas de la réponse d'un enregistrement, qui disparaît au snapshot suivant.
+    expect(PAGE_HTML).toContain('ui.pendingRestart = (o.daemon && o.daemon.pendingRestart) || [];');
+    expect(PAGE_HTML).toContain('if (ui.reachable && pending.length) restartFields = pending;');
+    expect(PAGE_HTML).toContain("el('button', 'action small danger', 'Redémarrer')");
+    // Daemon arrêté : on propose Démarrer, jamais Redémarrer, et tout prendra effet au démarrage.
+    expect(PAGE_HTML).toContain("el('button', 'action small primary', 'Démarrer')");
+    expect(PAGE_HTML).toContain('Prendra effet au démarrage');
+    // Redémarrer enchaîne arrêt puis démarrage.
+    expect(PAGE_HTML).toContain('function restartDaemon(button)');
+    expect(PAGE_HTML).toContain("api('stop', {}).then");
+  });
+
+  it('traduit les trois réponses d’enregistrement sans mentir sur l’état du daemon', () => {
+    expect(PAGE_HTML).toContain('function afterSave(result)');
+    expect(PAGE_HTML).toContain('result.reloaded');
+    expect(PAGE_HTML).toContain('result.reloadError');
+    expect(PAGE_HTML).toContain('result.needsRestart');
+    expect(PAGE_HTML).toContain('effet au démarrage');
+  });
+
+  it('affiche « aucune limite » quand le budget du jour n’a pas de plafond', () => {
+    expect(PAGE_HTML).toContain("'aucune limite'");
+  });
+
   it('porte les couleurs d’état alignées sur les labels GitHub', () => {
     for (const cls of ['.s-run', '.s-done', '.s-blocked', '.s-failed', '.s-cancelled', '.s-queued']) {
       expect(PAGE_HTML).toContain(cls);
@@ -163,8 +227,25 @@ describe('PAGE_HTML', () => {
     expect(PAGE_HTML).toContain('démarrage en cours…');
   });
 
-  it('borne chaque appel et la pile de toasts', () => {
-    expect(PAGE_HTML).toContain('new AbortController()');
+  it('désactive tout le formulaire et les actions de réglages en lecture seule', () => {
+    expect(PAGE_HTML).toContain('function applySettingsReadOnly()');
+    expect(PAGE_HTML).toContain('byId(id).disabled = disabled;');
+    expect(PAGE_HTML).toContain("byId('set-save').hidden = disabled;");
+    expect(PAGE_HTML).toContain("byId('purge-cache').hidden = disabled;");
+    expect(PAGE_HTML).toContain("byId('set-repo-add').hidden = disabled;");
+    // `dataDir` reste verrouillé même en écriture : il se change par `sisyphe setup`.
+    expect(PAGE_HTML).toContain("byId('set-data-dir').disabled = true;");
+  });
+
+  it('vide le cache de build après confirmation et montre l’espace disque', () => {
+    expect(PAGE_HTML).toContain('Vider le cache de build');
+    expect(PAGE_HTML).toContain('function purgeCache(button)');
+    expect(PAGE_HTML).toContain('Vider le cache de build ? Il sera reconstruit au prochain build.');
+    expect(PAGE_HTML).toContain('function fmtBytes(n)');
+    expect(PAGE_HTML).toContain("byId('disk-total').textContent = 'Total : '");
+  });
+
+  it('borne chaque appel et la pile de toasts', () => {    expect(PAGE_HTML).toContain('new AbortController()');
     expect(PAGE_HTML).toContain('signal: controller.signal');
     expect(PAGE_HTML).toContain("err.name === 'AbortError'");
     expect(PAGE_HTML).toContain('clearTimeout(timer);');

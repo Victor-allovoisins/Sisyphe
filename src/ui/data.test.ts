@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
-import { parseMachineConfig } from '../config/machine.js';
+import { parseMachineConfig, type AgentBackend } from '../config/machine.js';
 import { dataPaths, jobDir } from '../config/paths.js';
 import { openDatabase } from '../store/db.js';
 import { JobStore } from '../store/jobs.js';
@@ -65,11 +65,15 @@ const offline: UiControl = { ping: async () => null };
 
 /** Daemon qui répond, en pause ou non. */
 const online = (paused: boolean): UiControl => ({
-  ping: async () => ({ pid: 7, paused, running: 1, queued: 2, startedAt: '2026-09-13T08:00:00.000Z' }),
+  ping: async () => ({ pid: 7, paused, running: 1, queued: 2, startedAt: '2026-09-13T08:00:00.000Z', pendingRestart: [] }),
 });
 
 async function makeUi(
-  opts: { service?: UiService; control?: UiControl; readOnly?: boolean; now?: () => Date; dailyBudgetUsd?: number } = {},
+  /** `dailyBudgetUsd` : ce qu'écrit `config.yml` — un nombre, `null` pour « aucun plafond », `'absent'` pour ne rien écrire. */
+  opts: {
+    service?: UiService; control?: UiControl; readOnly?: boolean; now?: () => Date;
+    dailyBudgetUsd?: number | null | 'absent'; agentBackend?: AgentBackend;
+  } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), 'sisyphe-ui-'));
   const paths = dataPaths(root);
@@ -77,8 +81,10 @@ async function makeUi(
   const store = new JobStore(db);
   const phases = new PhaseStore(db);
   const actions = new ActionStore(db);
+  const budget = opts.dailyBudgetUsd === undefined ? 20 : opts.dailyBudgetUsd;
+  const budgetLine = budget === 'absent' ? '' : `dailyBudgetUsd: ${budget}\n`;
   const machine = parseMachineConfig(
-    `github:\n  appId: 1\n  installationId: 1\n  privateKeyPath: /dev/null\nrepos:\n  - acme/demo\n  - acme/other\ndataDir: ${root}\ndailyBudgetUsd: ${opts.dailyBudgetUsd ?? 20}\n`,
+    `github:\n  appId: 1\n  installationId: 1\n  privateKeyPath: /dev/null\nrepos:\n  - acme/demo\n  - acme/other\ndataDir: ${root}\nagentBackend: ${opts.agentBackend ?? 'sdk'}\n${budgetLine}`,
   );
   const data = createUiData({
     store,
@@ -98,13 +104,13 @@ describe('overview', () => {
   it("daemon.running est faux sans fichier de verrou, vrai avec le pid courant, faux avec un pid mort", async () => {
     const ui = await makeUi();
 
-    expect((await ui.data.overview()).daemon).toEqual({ running: false, pid: null, paused: null });
+    expect((await ui.data.overview()).daemon).toEqual({ running: false, pid: null, paused: null, pendingRestart: [] });
 
     await writeFile(join(ui.paths.root, 'daemon.lock'), String(process.pid));
-    expect(await ui.data.overview().then((o) => o.daemon)).toEqual({ running: true, pid: process.pid, paused: null });
+    expect(await ui.data.overview().then((o) => o.daemon)).toEqual({ running: true, pid: process.pid, paused: null, pendingRestart: [] });
 
     await writeFile(join(ui.paths.root, 'daemon.lock'), String(DEAD_PID));
-    expect(await ui.data.overview().then((o) => o.daemon)).toEqual({ running: false, pid: DEAD_PID, paused: null });
+    expect(await ui.data.overview().then((o) => o.daemon)).toEqual({ running: false, pid: DEAD_PID, paused: null, pendingRestart: [] });
   });
 
   it('daemon injoignable : paused null et control.reachable faux', async () => {
@@ -118,6 +124,17 @@ describe('overview', () => {
     expect(await (await makeUi({ control: online(true) })).data.overview().then((o) => o.daemon.paused)).toBe(true);
     expect(await (await makeUi({ control: online(false) })).data.overview().then((o) => o.daemon.paused)).toBe(false);
     expect(await (await makeUi({ control: online(false) })).data.overview().then((o) => o.control.reachable)).toBe(true);
+  });
+
+  it('publie les champs en attente de redémarrage rapportés par le daemon', async () => {
+    const control: UiControl = {
+      ping: async () => ({
+        pid: 7, paused: false, running: 0, queued: 0, startedAt: '2026-09-13T08:00:00.000Z',
+        pendingRestart: ['repos', 'triggerLabel'],
+      }),
+    };
+    const o = await (await makeUi({ control })).data.overview();
+    expect(o.daemon.pendingRestart).toEqual(['repos', 'triggerLabel']);
   });
 
   it('readOnly est publié tel qu’il a été injecté : la page en dépend pour masquer les boutons', async () => {
@@ -150,6 +167,27 @@ describe('overview', () => {
     expect(o.budget.spentTodayUsd).toBeCloseTo(4);
     expect(o.budget.dailyBudgetUsd).toBe(10);
     expect(o.budget.ratio).toBeCloseTo(0.4);
+  });
+
+  it('plafond vidé : budget.dailyBudgetUsd est null et le ratio reste à zéro', async () => {
+    const ui = await makeUi({ dailyBudgetUsd: null });
+    insertJob(ui.db, { id: 'a1' });
+    insertPhase(ui.db, { jobId: 'a1', costUsd: 3, finishedAt: new Date().toISOString() });
+
+    const o = await ui.data.overview();
+
+    // La dépense reste calculée et affichée : c'est le plafond qui disparaît, pas le coût.
+    expect(o.budget.spentTodayUsd).toBeCloseTo(3);
+    expect(o.budget.dailyBudgetUsd).toBeNull();
+    expect(o.budget.ratio).toBe(0);
+  });
+
+  it('champ absent : l’interface montre le plafond effectif, pas la valeur brute', async () => {
+    // `sdk` sans ligne `dailyBudgetUsd` : la page affiche les 60 $ réellement appliqués.
+    expect((await (await makeUi({ dailyBudgetUsd: 'absent' })).data.overview()).budget.dailyBudgetUsd).toBe(60);
+    // `cli` sans ligne : aucun plafond appliqué, donc rien à afficher.
+    const cli = await makeUi({ dailyBudgetUsd: 'absent', agentBackend: 'cli' });
+    expect((await cli.data.overview()).budget.dailyBudgetUsd).toBeNull();
   });
 
   it('counts compte les jobs par état, backend et repos viennent de la config machine', async () => {

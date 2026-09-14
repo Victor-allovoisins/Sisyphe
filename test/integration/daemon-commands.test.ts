@@ -1,4 +1,7 @@
+import { mkdir, readdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { effectiveDailyBudget } from '../../src/config/machine.js';
 import { Daemon } from '../../src/daemon/daemon.js';
 import { pollOnce } from '../../src/daemon/poll.js';
 import type { JobStore } from '../../src/store/jobs.js';
@@ -301,5 +304,272 @@ describe('Daemon.enqueueIssue', () => {
 
     expect(h.store.listByStates(['queued'])).toHaveLength(1);
     expect(h.source.labelsOf({ repo: repoRef, number: 9 })).toContain('sisyphe');
+  });
+});
+
+/**
+ * Période d'un minuteur Node, en millisecondes ; `-1` une fois le minuteur annulé. Champ interne, mais
+ * c'est la seule façon de vérifier qu'un minuteur a bien été remplacé sans attendre qu'il se déclenche.
+ */
+const periodMs = (t: NodeJS.Timeout): number => (t as unknown as { _idleTimeout: number })._idleTimeout;
+
+describe('Daemon.purgeBuildCache', () => {
+  /** 10 octets sous le cache du dossier temporaire du harness : jamais ailleurs. */
+  async function seedCache(cacheDir: string): Promise<void> {
+    await mkdir(join(cacheDir, 'acme__demo'), { recursive: true });
+    await writeFile(join(cacheDir, 'acme__demo', 'a.o'), 'x'.repeat(10));
+  }
+
+  it('refusée tant qu’un job tourne, cache intact, refus journalisé', async () => {
+    const h = await makeHarness({ steps: [], issues: [{ number: 7, title: 'Un' }] });
+    const daemon = new Daemon(h.deps, { ...QUIET, configPath: h.configPath });
+    // Un agent qui ne rend la main qu'à l'abort : le job reste en cours le temps du test.
+    h.deps.agent = {
+      async run(opts: { signal: AbortSignal }) {
+        await new Promise<never>((_resolve, reject) => opts.signal.addEventListener('abort', () => reject(opts.signal.reason as Error)));
+      },
+    } as never;
+    await seedCache(h.paths.cacheDir);
+    await pollOnce(h.deps);
+    await daemon.requestTick();
+    expect(daemon.status().running).toBe(1);
+
+    expect(await daemon.purgeBuildCache('ui')).toEqual({ ok: false, error: 'purge refusée : 1 job(s) en cours' });
+    expect(await readdir(h.paths.cacheDir)).toEqual(['acme__demo']);
+    expect(h.actions.listRecent(1)[0]).toMatchObject({ action: 'purge', source: 'ui', outcome: 'error' });
+    await daemon.stop();
+  });
+
+  it('sans job en cours : vide le cache, rend la place libérée, et journalise', async () => {
+    const h = await makeHarness({ steps: [] });
+    const daemon = new Daemon(h.deps, { ...QUIET, configPath: h.configPath });
+    await seedCache(h.paths.cacheDir);
+
+    expect(await daemon.purgeBuildCache('cli')).toEqual({ ok: true, result: { freedBytes: 10 } });
+    expect(await readdir(h.paths.cacheDir)).toEqual([]);
+    expect(h.actions.listRecent(1)[0]).toMatchObject({ action: 'purge', source: 'cli', outcome: 'ok' });
+  });
+});
+
+describe('Daemon.reload', () => {
+  it('budget relevé à chaud : un job bloqué par le budget démarre au tick suivant', async () => {
+    const h = await makeHarness({
+      steps: [{ output: readyVerdict }, { output: report('a'), sideEffect: writeFeature('hello\n') }],
+      dailyBudgetUsd: 1,
+    });
+    const daemon = new Daemon(h.deps, { ...QUIET, configPath: h.configPath });
+    await pollOnce(h.deps);
+    const job = h.store.listByStates(['queued'])[0];
+    // Dépense du jour bien au-delà du plafond d'un dollar : plus rien ne démarre.
+    const phase = h.phases.start({ jobId: job.id, name: 'triage', attempt: 1 });
+    h.phases.finish(phase.id, { costUsd: 5, outcome: 'success' });
+
+    await daemon.requestTick();
+    expect(h.store.get(job.id)!.state).toBe('queued');
+
+    await h.writeConfig({ dailyBudgetUsd: 100 });
+    expect(await daemon.reload('ui')).toEqual({ ok: true, result: { applied: ['dailyBudgetUsd'], needsRestart: [] } });
+    expect(h.deps.machine.dailyBudgetUsd).toBe(100);
+
+    await daemon.requestTick();
+    expect(h.store.get(job.id)!.state).toBe('triaging'); // le budget est relu à chaque décision : rien d'autre à faire
+    await daemon.stop();
+
+    expect(h.actions.listRecent(1)[0]).toMatchObject({ action: 'reload', source: 'ui', outcome: 'ok' });
+  });
+
+  it('plafond vidé sous `cli` : `null` et champ absent restent deux valeurs distinctes', async () => {
+    // Sous `cli` les deux formes se résolvent toutes deux en « aucun plafond » : seule une comparaison sur la
+    // valeur brute peut encore les distinguer. Sous `sdk`, l'absence vaut 60 et le test ne prouverait rien.
+    const h = await makeHarness({ steps: [], agentBackend: 'cli', dailyBudgetUsd: 'absent' });
+    const daemon = new Daemon(h.deps, { ...QUIET, configPath: h.configPath });
+    expect(effectiveDailyBudget(h.deps.machine)).toBeUndefined();
+
+    await h.writeConfig({ dailyBudgetUsd: null });
+    expect(await daemon.reload('ui')).toEqual({ ok: true, result: { applied: ['dailyBudgetUsd'], needsRestart: [] } });
+    expect(h.deps.machine.dailyBudgetUsd).toBeNull();
+    expect(effectiveDailyBudget(h.deps.machine)).toBeUndefined(); // même résolution, valeur brute différente
+
+    await h.writeConfig({ dailyBudgetUsd: 'absent' });
+    expect(await daemon.reload('ui')).toEqual({ ok: true, result: { applied: ['dailyBudgetUsd'], needsRestart: [] } });
+    expect(h.deps.machine.dailyBudgetUsd).toBeUndefined();
+  });
+
+  it('backend en attente de redémarrage : le budget n’est pas appliqué à chaud, la paire reste cohérente', async () => {
+    // Vivant : {sdk, 40}. Fichier : {cli, budget absent}. Recopier le budget brut seul mettrait le daemon
+    // sur le plafond que `sdk` applique à un champ absent — 60 — que ni la config vivante ni le fichier ne demandent.
+    const h = await makeHarness({ steps: [], dailyBudgetUsd: 40 });
+    const daemon = new Daemon(h.deps, { ...QUIET, configPath: h.configPath });
+    await h.writeConfig({ agentBackend: 'cli', dailyBudgetUsd: 'absent' });
+
+    expect(await daemon.reload('ui')).toEqual({ ok: true, result: { applied: [], needsRestart: ['agentBackend'] } });
+    expect(h.deps.machine.dailyBudgetUsd).toBe(40);
+    expect(h.deps.machine.agentBackend).toBe('sdk');
+    expect(effectiveDailyBudget(h.deps.machine)).toBe(40); // le plafond réellement appliqué reste celui de la paire vivante
+  });
+
+  it('maxConcurrentJobs relevé à chaud : deux jobs démarrent là où un seul le pouvait', async () => {
+    const h = await makeHarness({
+      steps: [],
+      issues: [
+        { number: 7, title: 'Un' },
+        { number: 8, title: 'Deux' },
+      ],
+    });
+    const daemon = new Daemon(h.deps, { ...QUIET, configPath: h.configPath });
+    // Un agent qui ne rend la main qu'à l'abort : sans lui le premier job se terminerait aussitôt et
+    // libérerait sa place, si bien que le second démarrerait quelle que soit la concurrence autorisée.
+    h.deps.agent = {
+      async run(opts: { signal: AbortSignal }) {
+        await new Promise<never>((_resolve, reject) => opts.signal.addEventListener('abort', () => reject(opts.signal.reason as Error)));
+      },
+    } as never;
+    await pollOnce(h.deps);
+    expect(h.store.listByStates(['queued'])).toHaveLength(2);
+
+    await daemon.requestTick();
+    expect(h.store.listByStates(['queued'])).toHaveLength(1); // maxConcurrentJobs vaut 1 : le second attend
+
+    await h.writeConfig({ maxConcurrentJobs: 2 });
+    expect(await daemon.reload('cli')).toEqual({ ok: true, result: { applied: ['maxConcurrentJobs'], needsRestart: [] } });
+    expect(h.deps.machine.maxConcurrentJobs).toBe(2);
+
+    await daemon.requestTick();
+    expect(h.store.listByStates(['queued'])).toHaveLength(0); // le premier occupe toujours sa place : c'est bien le plafond qui a cédé
+    await daemon.stop();
+  });
+
+  it('champs structurels : tous nommés dans needsRestart, aucun appliqué à la configuration en cours', async () => {
+    const h = await makeHarness({ steps: [] });
+    const daemon = new Daemon(h.deps, { ...QUIET, configPath: h.configPath });
+    await h.writeConfig({
+      github: { appId: 2, installationId: 3, privateKeyPath: '/tmp/autre.pem' },
+      repos: [REPO, 'acme/other'],
+      triggerLabel: 'autre',
+      sandbox: true,
+      agentBackend: 'cli',
+      dataDir: '/tmp/ailleurs',
+    });
+
+    // Les noms pointés sont le contrat avec la page de réglages, qui en fait un bandeau : ils sont figés ici.
+    expect(await daemon.reload('cli')).toEqual({
+      ok: true,
+      result: {
+        applied: [],
+        needsRestart: [
+          'github.appId', 'github.installationId', 'github.privateKeyPath',
+          'repos', 'triggerLabel', 'sandbox', 'agentBackend', 'dataDir',
+        ],
+      },
+    });
+    expect(h.deps.machine).toMatchObject({
+      github: { appId: 1, installationId: 1, privateKeyPath: '/dev/null' },
+      repos: [REPO],
+      triggerLabel: 'sisyphe',
+      sandbox: false,
+      agentBackend: 'sdk',
+      dataDir: h.paths.root,
+    });
+    expect(h.actions.listRecent(1)[0]).toMatchObject({ action: 'reload', source: 'cli', outcome: 'ok' });
+  });
+
+  it('rappel persistant : les champs structurels s’accumulent dans status(), et en sortent s’ils reviennent', async () => {
+    const h = await makeHarness({ steps: [] });
+    const daemon = new Daemon(h.deps, { ...QUIET, configPath: h.configPath });
+    expect(daemon.status().pendingRestart).toEqual([]);
+
+    await h.writeConfig({ repos: [REPO, 'acme/other'] });
+    expect(await daemon.reload('ui')).toMatchObject({ ok: true, result: { needsRestart: ['repos'] } });
+    expect(daemon.status().pendingRestart).toEqual(['repos']);
+
+    // Deuxième enregistrement portant sur un autre champ : le premier reste dû, bandeau fermé ou non.
+    await h.writeConfig({ triggerLabel: 'autre' });
+    await daemon.reload('ui');
+    expect(daemon.status().pendingRestart).toEqual(['repos', 'triggerLabel']);
+
+    // Champ ramené à ce que le daemon exécute : il sort du rappel, l'autre y reste.
+    await h.writeConfig({ repos: [REPO] });
+    expect(await daemon.reload('ui')).toMatchObject({ ok: true, result: { needsRestart: ['triggerLabel'] } });
+    expect(daemon.status().pendingRestart).toEqual(['triggerLabel']);
+  });
+
+  it('configuration inchangée : deux listes vides, et l’action est quand même journalisée', async () => {
+    const h = await makeHarness({ steps: [] });
+    const daemon = new Daemon(h.deps, { ...QUIET, configPath: h.configPath });
+
+    expect(await daemon.reload('ui')).toEqual({ ok: true, result: { applied: [], needsRestart: [] } });
+    expect(h.actions.listRecent(1)[0]).toMatchObject({ action: 'reload', source: 'ui', outcome: 'ok' });
+  });
+
+  it('configuration invalide : refus journalisé, et le daemon garde celle qu’il avait', async () => {
+    const h = await makeHarness({ steps: [] });
+    const daemon = new Daemon(h.deps, { ...QUIET, configPath: h.configPath });
+
+    await writeFile(h.configPath, 'github: [\n');
+    const unreadable = await daemon.reload('ui');
+    expect(unreadable.ok).toBe(false);
+    if (!unreadable.ok) expect(unreadable.error).toContain('YAML illisible');
+
+    await writeFile(h.configPath, 'github:\n  appId: zéro\nrepos: []\n');
+    const invalid = await daemon.reload('ui');
+    expect(invalid.ok).toBe(false);
+    if (!invalid.ok) expect(invalid.error).toContain('config.yml invalide');
+
+    expect(h.deps.machine.repos).toEqual([REPO]);
+    expect(h.deps.machine.dailyBudgetUsd).toBe(60);
+    expect(h.deps.machine.github.appId).toBe(1);
+    expect(h.actions.listRecent(2).map((a) => [a.action, a.outcome])).toEqual([
+      ['reload', 'error'],
+      ['reload', 'error'],
+    ]);
+  });
+
+  it('pollIntervalSeconds : le minuteur de poll est remplacé à sa place, les autres sont intacts', async () => {
+    const h = await makeHarness({ steps: [], issues: [] });
+    // Aucun intervalle de poll imposé : c'est la configuration qui le fixe, comme en production.
+    const daemon = new Daemon(h.deps, {
+      intervals: { cancelMs: 3_600_000, prTrackMs: 3_600_000, purgeMs: 3_600_000 },
+      control: false,
+      configPath: h.configPath,
+    });
+    const internals = daemon as unknown as { timers: NodeJS.Timeout[]; pollTimer: NodeJS.Timeout | null };
+    const started = daemon.start();
+    await waitFor(() => internals.pollTimer !== null);
+    const before = internals.pollTimer!;
+    expect(periodMs(before)).toBe(60_000); // défaut du schéma
+    const others = internals.timers.filter((t) => t !== before);
+
+    await h.writeConfig({ pollIntervalSeconds: 600 });
+    expect(await daemon.reload('ui')).toEqual({ ok: true, result: { applied: ['pollIntervalSeconds'], needsRestart: [] } });
+
+    expect(h.deps.machine.pollIntervalSeconds).toBe(600);
+    expect(internals.pollTimer).not.toBe(before);
+    expect(periodMs(internals.pollTimer!)).toBe(600_000);
+    expect(periodMs(before)).toBe(-1); // l'ancien minuteur est annulé, il ne se déclenchera plus
+    expect(internals.timers).toContain(internals.pollTimer); // dans la liste, donc annulé par stop()
+    expect(internals.timers).not.toContain(before);
+    expect(internals.timers.filter((t) => t !== internals.pollTimer)).toEqual(others);
+
+    await daemon.stop();
+    await started;
+  });
+
+  it('un intervalle de poll imposé par les options prime sur celui du fichier', async () => {
+    const h = await makeHarness({ steps: [], issues: [] });
+    const daemon = new Daemon(h.deps, { ...QUIET, configPath: h.configPath });
+    const internals = daemon as unknown as { pollTimer: NodeJS.Timeout | null };
+    const started = daemon.start();
+    await waitFor(() => internals.pollTimer !== null);
+    const before = internals.pollTimer!;
+
+    await h.writeConfig({ pollIntervalSeconds: 600 });
+    expect(await daemon.reload('ui')).toEqual({ ok: true, result: { applied: ['pollIntervalSeconds'], needsRestart: [] } });
+
+    expect(h.deps.machine.pollIntervalSeconds).toBe(600); // la valeur est bien appliquée
+    expect(internals.pollTimer).toBe(before); // mais le minuteur n'est pas reprogrammé
+    expect(periodMs(before)).toBe(3_600_000);
+
+    await daemon.stop();
+    await started;
   });
 });

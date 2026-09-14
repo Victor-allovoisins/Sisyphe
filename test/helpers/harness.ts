@@ -1,5 +1,5 @@
 import { execa } from 'execa';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pino from 'pino';
@@ -41,10 +41,47 @@ export const report = (summary: string) => ({
 export const writeFeature = (content: string): NonNullable<ScriptedStep['sideEffect']> => async (opts) =>
   writeFiles(opts.cwd, { 'src/feature.txt': content });
 
+/** Champs de `config.yml` que les tests font varier ; le reste du fichier est figé. */
+export interface ConfigFields {
+  github: { appId: number; installationId: number; privateKeyPath: string };
+  repos: string[];
+  dataDir: string;
+  /** Un nombre, `null` pour « aucun plafond », `'absent'` pour ne pas écrire la ligne. */
+  dailyBudgetUsd: number | null | 'absent';
+  pollIntervalSeconds?: number;
+  maxConcurrentJobs?: number;
+  triggerLabel?: string;
+  sandbox?: boolean;
+  agentBackend?: 'sdk' | 'cli';
+}
+
+/** `config.yml` complet : les champs omis par un test gardent leur valeur, sinon le schéma remettrait ses défauts. */
+function renderConfig(f: ConfigFields): string {
+  const lines = [
+    'github:',
+    `  appId: ${f.github.appId}`,
+    `  installationId: ${f.github.installationId}`,
+    `  privateKeyPath: ${f.github.privateKeyPath}`,
+    'repos:',
+    ...f.repos.map((r) => `  - ${r}`),
+    `dataDir: ${f.dataDir}`,
+  ];
+  if (f.dailyBudgetUsd !== 'absent') lines.push(`dailyBudgetUsd: ${f.dailyBudgetUsd}`);
+  if (f.pollIntervalSeconds !== undefined) lines.push(`pollIntervalSeconds: ${f.pollIntervalSeconds}`);
+  if (f.maxConcurrentJobs !== undefined) lines.push(`maxConcurrentJobs: ${f.maxConcurrentJobs}`);
+  if (f.triggerLabel !== undefined) lines.push(`triggerLabel: ${f.triggerLabel}`);
+  if (f.sandbox !== undefined) lines.push(`sandbox: ${f.sandbox}`);
+  if (f.agentBackend !== undefined) lines.push(`agentBackend: ${f.agentBackend}`);
+  return `${lines.join('\n')}\n`;
+}
+
 export interface HarnessOptions {
   steps: ScriptedStep[];
   withConfig?: boolean;
-  dailyBudgetUsd?: number;
+  /** Ce qu'écrit `config.yml` : un nombre, `null` pour « aucun plafond », `'absent'` pour ne pas écrire la ligne. */
+  dailyBudgetUsd?: number | null | 'absent';
+  /** Backend de la config machine ; absent, le schéma retombe sur `sdk`. Ne change pas l'agent du harness, toujours scripté. */
+  agentBackend?: 'sdk' | 'cli';
   issues?: Array<{ number: number; title: string; author?: string; labeledBy?: string }>;
   /** Fichiers ajoutés au repo distant ; peuvent remplacer ceux du fixture, `sisyphe.yml` compris. */
   files?: Record<string, string>;
@@ -77,12 +114,26 @@ export async function makeHarness(o: HarnessOptions) {
     source.addIssue(repoRef, { ...issue, body: 'On veut hello.', author: issue.author ?? 'alice' });
   }
   const agent = new ScriptedAgentRunner(o.steps);
-  const machine = parseMachineConfig(
-    `github:\n  appId: 1\n  installationId: 1\n  privateKeyPath: /dev/null\nrepos:\n  - ${REPO}\ndataDir: ${paths.root}\ndailyBudgetUsd: ${o.dailyBudgetUsd ?? 60}\n`,
-  );
+  // Le fichier est écrit sur disque et non seulement analysé : `reload` relit celui-ci, jamais celui de la machine.
+  // `??` serait faux ici : `null` est une valeur demandée (aucun plafond), pas une absence d'option.
+  let fields: ConfigFields = {
+    github: { appId: 1, installationId: 1, privateKeyPath: '/dev/null' },
+    repos: [REPO],
+    dataDir: paths.root,
+    dailyBudgetUsd: o.dailyBudgetUsd === undefined ? 60 : o.dailyBudgetUsd,
+    ...(o.agentBackend === undefined ? {} : { agentBackend: o.agentBackend }),
+  };
+  const configPath = join(root, 'config.yml');
+  const machine = parseMachineConfig(renderConfig(fields));
+  /** Réécrit `config.yml` en cumulant les modifications : deux appels successifs ne s'annulent pas. */
+  const writeConfig = (over: Partial<ConfigFields> = {}) => {
+    fields = { ...fields, ...over };
+    return writeFile(configPath, renderConfig(fields), 'utf8');
+  };
+  await writeConfig();
   const deps: PipelineDeps = {
     store, phases, actions, source, agent, git: new Git(paths), paths, machine,
     log: pino({ level: 'silent' }), env: { PATH: process.env.PATH ?? '' }, scan: async () => [],
   };
-  return { root, paths, remotePath, headSha, store, phases, actions, source, agent, deps };
+  return { root, paths, configPath, writeConfig, remotePath, headSha, store, phases, actions, source, agent, deps };
 }

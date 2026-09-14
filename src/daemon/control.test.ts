@@ -34,7 +34,8 @@ function withinWait<T>(p: Promise<T>, what: string): Promise<T> {
 
 /** Daemon réel démarré sur les fakes, socket ouverte et joignable. Arrêté en fin de test, même en échec. */
 async function startDaemon(h: Harness, opts: { paused?: boolean } = {}) {
-  const daemon = new Daemon(h.deps, QUIET);
+  // `configPath` : `reload` doit relire le fichier du dossier temporaire, jamais la configuration de la machine.
+  const daemon = new Daemon(h.deps, { ...QUIET, configPath: h.configPath });
   if (opts.paused) daemon.pause('cli'); // la file se remplit au premier tick mais rien ne démarre
   const started = daemon.start();
   cleanups.push(async () => {
@@ -53,6 +54,8 @@ function slowCancelTarget(daemon: Daemon, delayMs: number): ControlTarget {
     requestTick: () => daemon.requestTick(),
     pause: (s) => daemon.pause(s),
     resume: (s) => daemon.resume(s),
+    reload: (s) => daemon.reload(s),
+    purgeBuildCache: (s) => daemon.purgeBuildCache(s),
     retryJob: (id, s) => daemon.retryJob(id, s),
     enqueueIssue: (i, s) => daemon.enqueueIssue(i, s),
     stop: () => daemon.stop(),
@@ -123,7 +126,7 @@ describe('socket de contrôle : cycle de vie', () => {
   it('close() est idempotent et supprime le fichier ; une connexion muette est fermée après le délai d’inactivité', async () => {
     const h = await makeHarness({ steps: [], issues: [] });
     const path = join(h.root, 'ctl.sock');
-    const daemon = new Daemon(h.deps, { ...QUIET, control: false });
+    const daemon = new Daemon(h.deps, { ...QUIET, control: false, configPath: h.configPath });
     const server = await startControlServer({ path, daemon, actions: h.actions, log: h.deps.log, idleTimeoutMs: 100 });
     cleanups.push(() => server.close());
 
@@ -143,7 +146,7 @@ describe('socket de contrôle : cycle de vie', () => {
   it('le délai d’inactivité ne coupe pas une commande qui attend derrière la porte du daemon', async () => {
     const h = await makeHarness({ steps: [], issues: [] });
     const path = join(h.root, 'ctl.sock');
-    const daemon = new Daemon(h.deps, { ...QUIET, control: false });
+    const daemon = new Daemon(h.deps, { ...QUIET, control: false, configPath: h.configPath });
     const server = await startControlServer({ path, daemon: slowCancelTarget(daemon, 300), actions: h.actions, log: h.deps.log, idleTimeoutMs: 100 });
     cleanups.push(() => server.close());
 
@@ -153,7 +156,7 @@ describe('socket de contrôle : cycle de vie', () => {
   it('un client qui ferme son côté émission sitôt sa ligne envoyée reçoit quand même la réponse d’une commande lente', async () => {
     const h = await makeHarness({ steps: [], issues: [] });
     const path = join(h.root, 'ctl.sock');
-    const daemon = new Daemon(h.deps, { ...QUIET, control: false });
+    const daemon = new Daemon(h.deps, { ...QUIET, control: false, configPath: h.configPath });
     const server = await startControlServer({ path, daemon: slowCancelTarget(daemon, 300), actions: h.actions, log: h.deps.log });
     cleanups.push(() => server.close());
 
@@ -169,7 +172,7 @@ describe('socket de contrôle : cycle de vie', () => {
     });
     // Le prologue interroge GitHub repo par repo : ici il ne rend jamais la main avant qu'on le libère.
     h.source.ensureLabels = () => blocked;
-    const daemon = new Daemon(h.deps, QUIET);
+    const daemon = new Daemon(h.deps, { ...QUIET, configPath: h.configPath });
     const started = daemon.start();
     cleanups.push(async () => {
       release(); // sans quoi start() reste bloqué dans le prologue et n'observerait jamais l'arrêt
@@ -190,7 +193,7 @@ describe('socket de contrôle : cycle de vie', () => {
       release = resolve;
     });
     h.source.ensureLabels = () => blocked;
-    const daemon = new Daemon(h.deps, QUIET);
+    const daemon = new Daemon(h.deps, { ...QUIET, configPath: h.configPath });
     const started = daemon.start();
     const client = new ControlClient(h.paths.controlSocketPath);
     await waitFor(() => client.isReachable());
@@ -207,7 +210,7 @@ describe('socket de contrôle : cycle de vie', () => {
 
   it('`control: false` : start() n’ouvre rien', async () => {
     const h = await makeHarness({ steps: [], issues: [] });
-    const daemon = new Daemon(h.deps, { ...QUIET, control: false });
+    const daemon = new Daemon(h.deps, { ...QUIET, control: false, configPath: h.configPath });
     const started = daemon.start();
     cleanups.push(async () => {
       await daemon.stop();
@@ -294,6 +297,25 @@ describe('socket de contrôle : commandes', () => {
     expect(res.result.id).not.toBe(job.id);
     expect(res.result.state).toBe('queued');
     expect(h.source.labelsOf({ repo: repoRef, number: 7 })).toContain('sisyphe');
+  });
+
+  it('reload : routé vers le daemon, applique le chaud, signale le structurel, et est journalisé', async () => {
+    const h = await makeHarness({ steps: [], issues: [] });
+    const { client } = await startDaemon(h);
+    await h.writeConfig({ dailyBudgetUsd: 12, repos: [REPO, 'acme/other'] });
+
+    expect(await client.send('reload', {}, 'ui')).toEqual({ ok: true, result: { applied: ['dailyBudgetUsd'], needsRestart: ['repos'] } });
+    expect(h.deps.machine.dailyBudgetUsd).toBe(12);
+    expect(h.deps.machine.repos).toEqual([REPO]);
+    expect(h.actions.listRecent(1)[0]).toMatchObject({ action: 'reload', source: 'ui', outcome: 'ok' });
+  });
+
+  it('purge : routée vers le daemon, place libérée rendue, et journalisée', async () => {
+    const h = await makeHarness({ steps: [], issues: [] });
+    const { client } = await startDaemon(h);
+
+    expect(await client.send('purge', {}, 'ui')).toEqual({ ok: true, result: { freedBytes: 0 } });
+    expect(h.actions.listRecent(1)[0]).toMatchObject({ action: 'purge', source: 'ui', outcome: 'ok' });
   });
 
   it('enqueue : job créé et label posé ; repo hors configuration refusé', async () => {

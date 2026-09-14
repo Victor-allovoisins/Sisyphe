@@ -19,7 +19,6 @@ export interface ReconcileDeps {
 }
 
 export const MAX_REQUEUES = 1;
-export const FAILED_WORKTREE_TTL_DAYS = 7;
 /** Fenêtre pendant laquelle une PR encore ouverte fait foi pour corriger un label in-progress orphelin. */
 const PR_LOOKBACK_DAYS = 30;
 
@@ -55,7 +54,9 @@ export async function reconcile(d: ReconcileDeps): Promise<void> {
             renderDoneComment({ jobId: job.id, prUrl: pr.url, status: final, costUsd: job.costUsd, durationMs: job.durationMs, attempts: job.attempt }),
           )
           .catch(() => undefined);
-        if (job.worktreePath && final === 'done') await d.git.removeWorktree(job.repo, job.worktreePath, job.branch ?? undefined).catch(() => undefined);
+        // Chemin jumeau de la fin de `runJob` : le clone part même en échec, sinon la réconciliation resterait
+        // le seul producteur de worktrees abandonnés. Le dossier `jobs/<id>/` du post-mortem n'est pas touché.
+        if (job.worktreePath) await d.git.removeWorktree(job.repo, job.worktreePath, job.branch ?? undefined).catch(() => undefined);
         d.log.info({ jobId: job.id, pr: pr.url }, 'réconciliation : PR retrouvée');
       } else {
         await requeueOrFail(job, d);
@@ -87,17 +88,17 @@ async function requeueOrFail(job: Job, d: ReconcileDeps): Promise<void> {
   }
 }
 
-/** Supprime les worktrees qui n'appartiennent ni à un job actif ni à un job failed récent. */
+/**
+ * Supprime les worktrees qui n'appartiennent à aucun job actif. Aucun chemin ne conserve plus volontairement
+ * le clone d'un job en échec : s'il en reste un, c'est que sa suppression a échoué (verrou git, permissions)
+ * et que l'erreur a été avalée — le garder sous un TTL reviendrait à protéger précisément ce qu'il faut reprendre.
+ */
 export async function purgeOrphanWorktrees(d: ReconcileDeps): Promise<void> {
   const keep = new Set<string>();
   for (const j of d.store.listActive()) {
     // Le pipeline crée le dossier avant d'écrire worktreePath en base : couvrir aussi le chemin calculé.
     keep.add(worktreePath(d.paths, j.repo, j.issueNumber));
     if (j.worktreePath) keep.add(j.worktreePath);
-  }
-  const cutoff = Date.now() - FAILED_WORKTREE_TTL_DAYS * 86_400_000;
-  for (const j of d.store.listByStates(['failed'])) {
-    if (j.worktreePath && j.finishedAt && Date.parse(j.finishedAt) > cutoff) keep.add(j.worktreePath);
   }
   let repoDirs: string[] = [];
   try {

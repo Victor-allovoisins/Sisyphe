@@ -4,6 +4,7 @@ import { AmbiguousJobPrefixError } from '../cli/resolve-job.js';
 import type { JobState } from '../store/types.js';
 import type { ActionResponse } from './actions.js';
 import { UiInputError, type UiData } from './data.js';
+import type { Diagnostics, DiskUsage, SettingsView } from './settings.js';
 
 /**
  * Page unique embarquée : tout est inline, aucune ressource externe, aucun `eval`. `frame-ancestors 'none'`
@@ -35,8 +36,20 @@ const MAX_ACTION_BODY_BYTES = 16 * 1024;
 /** Exécute une action déjà authentifiée par les gardes anti-CSRF et rend le couple statut · corps. */
 export type ActionRunner = (name: string, body: unknown) => Promise<ActionResponse>;
 
+/**
+ * Lectures de la page de réglages, servies telles quelles. Le même exemplaire de `createSettingsData` doit
+ * servir la purge du cache : c'est elle qui périme la mesure disque mémorisée.
+ */
+export interface UiSettings {
+  settingsView(): Promise<SettingsView>;
+  /** `fresh` : bouton « Relancer », qui passe outre la mémorisation sans doubler un calcul en cours. */
+  diagnostics(opts?: { fresh?: boolean }): Promise<Diagnostics>;
+  diskUsage(): Promise<DiskUsage>;
+}
+
 export interface UiServerOptions {
   data: UiData;
+  settings: UiSettings;
   page: string;
   port?: number;
   intervalMs?: number;
@@ -147,6 +160,13 @@ export async function startUiServer(o: UiServerOptions): Promise<UiServer> {
       return sendJson(res, 200, detail);
     }
     if (url.pathname === '/api/report') return sendJson(res, 200, data.report(strParam(url.searchParams.get('since'))));
+    // `readOnly` suit le branchement du contrôleur, seule source de vérité du mode côté serveur.
+    if (url.pathname === '/api/settings') return sendJson(res, 200, { ...(await o.settings.settingsView()), readOnly: !o.actions });
+    // Diagnostic et disque sont calculés à la demande et mémorisés 30 s par la couche de données.
+    if (url.pathname === '/api/diagnostics') {
+      return sendJson(res, 200, await o.settings.diagnostics({ fresh: url.searchParams.get('fresh') === '1' }));
+    }
+    if (url.pathname === '/api/disk') return sendJson(res, 200, await o.settings.diskUsage());
     if (url.pathname === '/api/events') return openStream(req, res);
     // Le navigateur demande toujours /favicon.ico : un 204 vaut mieux qu'un 404 JSON dans la console.
     if (url.pathname === '/favicon.ico') {

@@ -22,7 +22,8 @@ export const MachineConfigSchema = z.strictObject({
   triggerLabel: z.string().min(1).max(38).regex(/^[A-Za-z0-9][\w.-]*$/, 'lettres, chiffres, . _ -').default('sisyphe'),
   pollIntervalSeconds: z.number().int().min(10).max(3600).default(60),
   maxConcurrentJobs: z.number().int().min(1).max(8).default(1),
-  dailyBudgetUsd: z.number().positive().max(1000).default(60),
+  /** Trois formes : un nombre (le plafond), `null` (aucun plafond, explicitement), ou l'absence. Voir `effectiveDailyBudget`. */
+  dailyBudgetUsd: z.number().positive().max(1000).nullable().optional(),
   sandbox: z.boolean().default(false),
   /** `sdk` : Agent SDK, exige ANTHROPIC_API_KEY. `cli` : la CLI Claude Code locale (`claude -p`), donc l'abonnement claude.ai. */
   agentBackend: z.enum(['sdk', 'cli']).default('sdk'),
@@ -30,6 +31,33 @@ export const MachineConfigSchema = z.strictObject({
 });
 export type MachineConfig = z.infer<typeof MachineConfigSchema>;
 export type AgentBackend = MachineConfig['agentBackend'];
+
+/** Plafond historique, appliqué à une config `sdk` muette : sous clé API, le coût est facturé pour de bon. */
+const SDK_DEFAULT_DAILY_BUDGET_USD = 60;
+
+/**
+ * Plafond quotidien réellement appliqué, ou `undefined` quand il n'y en a aucun.
+ *
+ * La valeur brute est conservée telle quelle dans `MachineConfig` et résolue ici, à l'usage, parce que tout
+ * ce qui réécrit la configuration la recopie : résolue à la lecture, `sisyphe setup` graverait dans le fichier
+ * un plafond de 60 jamais saisi dès qu'une config `sdk` sans plafond passe en `cli`, et « aucun plafond »
+ * deviendrait inexprimable sous `sdk`, où l'absence du champ vaut 60.
+ */
+export function effectiveDailyBudget(machine: Pick<MachineConfig, 'dailyBudgetUsd' | 'agentBackend'>): number | undefined {
+  // `null` : plafond explicitement vidé depuis la page de réglages, quel que soit le backend.
+  if (machine.dailyBudgetUsd === null) return undefined;
+  if (machine.dailyBudgetUsd !== undefined) return machine.dailyBudgetUsd;
+  // Champ absent : `sdk` garde le plafond historique — rien n'est désactivé en silence sur une config
+  // existante ; `cli` n'en a aucun, le coût y étant notionnel et non facturé.
+  return machine.agentBackend === 'sdk' ? SDK_DEFAULT_DAILY_BUDGET_USD : undefined;
+}
+
+/**
+ * Combinaison que `createApp` refuse au démarrage. Le message vit ici pour que le refus du démarrage et
+ * celui de la page de réglages soient le même mot pour mot : la page doit dire ce que dirait le démarrage.
+ */
+export const SANDBOX_CLI_ERROR =
+  "`sandbox: true` n'est pas supporté par le backend agent `cli` : passer à `agentBackend: sdk` ou mettre `sandbox: false`.";
 
 export type MachineConfigErrorKind = 'missing' | 'invalid';
 
@@ -40,7 +68,14 @@ export class MachineConfigError extends Error {
   }
 }
 
-export function parseMachineConfig(yamlText: string): MachineConfig {
+/**
+ * Valide le YAML **sans développer les chemins** : la configuration telle qu'elle est écrite dans le fichier.
+ *
+ * C'est cette forme qu'il faut réécrire — celle de `parseMachineConfig` graverait `/Users/<nom>/.sisyphe`
+ * dans un fichier qui disait `~/.sisyphe`, à la première réécriture et pour toujours. Pour s'en servir,
+ * en revanche (ouvrir un fichier, calculer des chemins), c'est `parseMachineConfig` qu'il faut.
+ */
+export function parseMachineConfigAsWritten(yamlText: string): MachineConfig {
   let raw: unknown;
   try {
     raw = parse(yamlText);
@@ -52,7 +87,12 @@ export function parseMachineConfig(yamlText: string): MachineConfig {
     const issues = result.error.issues.map((i) => `- ${i.path.join('.') || '(racine)'} : ${i.message}`).join('\n');
     throw new MachineConfigError('invalid', `config.yml invalide :\n${issues}`);
   }
-  const c = result.data;
+  return result.data;
+}
+
+/** La configuration prête à l'usage : chemins développés (`~/…` → absolu). */
+export function parseMachineConfig(yamlText: string): MachineConfig {
+  const c = parseMachineConfigAsWritten(yamlText);
   return {
     ...c,
     dataDir: expandHome(c.dataDir),

@@ -1,6 +1,6 @@
 import { CliAgentRunner } from './agent/cli-runner.js';
 import { SdkAgentRunner } from './agent/sdk-runner.js';
-import { loadMachineConfig, type MachineConfig } from './config/machine.js';
+import { SANDBOX_CLI_ERROR, loadMachineConfig, type MachineConfig } from './config/machine.js';
 import { dataPaths, ensureDataDirs, machineConfigPath, type DataPaths } from './config/paths.js';
 import { Git } from './git/git.js';
 import { GitHubIssueSource } from './github/client.js';
@@ -33,7 +33,7 @@ export async function createApp(opts: { logToFile?: boolean; needsAgent?: boolea
     );
   }
   if (machine.sandbox && machine.agentBackend === 'cli') {
-    throw new Error("`sandbox: true` n'est pas supporté par le backend agent `cli` : passer à `agentBackend: sdk` ou mettre `sandbox: false`.");
+    throw new Error(SANDBOX_CLI_ERROR);
   }
   const paths = dataPaths(machine.dataDir);
   await ensureDataDirs(paths);

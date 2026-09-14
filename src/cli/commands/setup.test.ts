@@ -1,11 +1,12 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { stringify } from 'yaml';
-import { parseMachineConfig } from '../../config/machine.js';
-import { dataPaths } from '../../config/paths.js';
+import { effectiveDailyBudget, loadMachineConfig, parseMachineConfig, parseMachineConfigAsWritten } from '../../config/machine.js';
+import { dataPaths, expandHome } from '../../config/paths.js';
+import { writeMachineConfig } from '../../config/write.js';
 import type { ServiceManager, ServiceStatus } from '../../service/index.js';
 
 type ServiceManagerKind = ServiceStatus['kind'];
@@ -109,6 +110,14 @@ describe('validatePrivateKeyPath', () => {
 });
 
 describe('buildRawConfig', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'sisyphe-setup-write-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
   it('écrase github/repos et conserve le reste, y compris dataDir (triggerLabel...)', () => {
     const existing = parseMachineConfig(
       stringify({
@@ -130,6 +139,40 @@ describe('buildRawConfig', () => {
     expect(merged.dataDir).toBe('/old-data');
     expect(merged.triggerLabel).toBe('custom-label');
     expect(merged.pollIntervalSeconds).toBe(42);
+  });
+
+  it('un ~ hérité ou saisi survit à la réécriture, sans jamais être gravé en absolu', async () => {
+    const existingYaml = stringify({
+      github: { appId: 1, installationId: 2, privateKeyPath: '/old.pem' },
+      repos: ['old/repo'],
+      dataDir: '~/.sisyphe',
+    });
+    const answers = {
+      appId: 9, installationId: 10, privateKeyPath: '~/cles/app.pem', repos: ['new/repo'], dataDir: '/defaut', agentBackend: 'cli' as const,
+    };
+
+    // La cause, pinnée : repartir de la forme développée grave l'absolu dans un fichier qui disait `~`,
+    // à la première relance de setup et pour toujours.
+    expect(stringify(buildRawConfig(answers, parseMachineConfig(existingYaml)))).toContain(expandHome('~/.sisyphe'));
+
+    const raw = buildRawConfig(answers, parseMachineConfigAsWritten(existingYaml));
+
+    const written = stringify(raw);
+    expect(written).toContain('dataDir: ~/.sisyphe');
+    expect(written).toContain('privateKeyPath: ~/cles/app.pem');
+    expect(written).not.toContain(homedir());
+
+    // Et le fichier écrit se relit bien en la configuration répondue, chemins développés à l'usage.
+    const configPath = join(dir, 'config.yml');
+    await writeMachineConfig(configPath, parseMachineConfigAsWritten(written));
+    const reloaded = await loadMachineConfig(configPath);
+    expect(reloaded.repos).toEqual(['new/repo']);
+    expect(reloaded.github.appId).toBe(9);
+    expect(reloaded.agentBackend).toBe('cli');
+    expect(reloaded.dataDir).toBe(expandHome('~/.sisyphe'));
+    expect(reloaded.github.privateKeyPath).toBe(expandHome('~/cles/app.pem'));
+    // Le fichier lui-même n'a pas bougé : c'est la lecture qui développe, pas l'écriture.
+    expect(await readFile(configPath, 'utf8')).toContain('dataDir: ~/.sisyphe');
   });
 
   it('backend cli : sandbox forcé à false (sinon createApp refuse la config et setup ne la corrigerait jamais)', () => {
@@ -156,6 +199,32 @@ describe('buildRawConfig', () => {
     const merged = parseMachineConfig(stringify(raw));
     expect(merged.dataDir).toBe(existing.dataDir); // déjà étendu (expandHome) par le premier parseMachineConfig
     expect(merged.dataDir).not.toBe('/Users/x/.sisyphe');
+  });
+
+  it("une config sdk sans plafond passée en cli n'y grave aucun plafond", () => {
+    const existing = parseMachineConfig(
+      stringify({ github: { appId: 1, installationId: 2, privateKeyPath: '/old.pem' }, repos: ['old/repo'] }),
+    );
+    const raw = buildRawConfig(
+      { appId: 1, installationId: 2, privateKeyPath: '/k.pem', repos: ['a/b'], dataDir: '/d', agentBackend: 'cli' },
+      existing,
+    );
+    // setup recopie la config existante : un plafond résolu à la lecture s'y graverait sans que l'utilisateur l'ait saisi.
+    expect(stringify(raw)).not.toContain('dailyBudgetUsd');
+    expect(effectiveDailyBudget(parseMachineConfig(stringify(raw)))).toBeUndefined();
+  });
+
+  it("un plafond explicitement vidé reste vidé", () => {
+    const existing = parseMachineConfig(
+      stringify({ github: { appId: 1, installationId: 2, privateKeyPath: '/old.pem' }, repos: ['old/repo'], dailyBudgetUsd: null }),
+    );
+    const raw = buildRawConfig(
+      { appId: 1, installationId: 2, privateKeyPath: '/k.pem', repos: ['a/b'], dataDir: '/d', agentBackend: 'sdk' },
+      existing,
+    );
+    // Un writer qui laisserait tomber les `null` rétablirait le plafond de 60 sous `sdk` : l'image inverse du bug corrigé.
+    expect(stringify(raw)).toContain('dailyBudgetUsd: null');
+    expect(effectiveDailyBudget(parseMachineConfig(stringify(raw)))).toBeUndefined();
   });
 
   it('sans config existante, ne pose que les champs fournis (les défauts du schéma s’appliquent, dataDir vient des réponses)', () => {

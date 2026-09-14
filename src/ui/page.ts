@@ -107,7 +107,7 @@ export const PAGE_HTML = `<!doctype html>
   .s-queued { background: rgba(72, 79, 88, 0.25); color: var(--muted); border-color: var(--border); }
   .filters { display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 16px; }
   .filters label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
-  select, input[type="number"], button.action {
+  select, input[type="number"], input[type="text"], button.action {
     background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
     border-radius: 8px; padding: 8px 12px; font-size: 14px; font-family: inherit;
   }
@@ -125,6 +125,7 @@ export const PAGE_HTML = `<!doctype html>
   .banner {
     border-radius: 10px; padding: 10px 14px; margin-bottom: 16px; font-size: 14px; font-weight: 600;
     border: 1px solid rgba(210, 153, 34, 0.5); background: rgba(210, 153, 34, 0.12); color: #e3b341;
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
   }
   .new-job { align-items: flex-end; }
   .new-job input[type="number"] { width: 130px; }
@@ -134,6 +135,23 @@ export const PAGE_HTML = `<!doctype html>
   .card-actions { display: flex; gap: 8px; margin-top: 12px; }
   .a-ok { color: var(--done); }
   .a-ko { color: var(--failed); }
+  /* Réglages : formulaire groupé et blocs d'information. */
+  .field { display: flex; flex-direction: column; gap: 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+  .field input, .field select { font-size: 14px; text-transform: none; letter-spacing: 0; }
+  .field input[disabled] { opacity: 0.6; cursor: not-allowed; }
+  .field-error { color: #ff9b95; font-size: 12px; margin: 0; text-transform: none; letter-spacing: 0; }
+  .settings-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 16px; margin-bottom: 8px; }
+  .settings-actions { display: flex; align-items: center; gap: 14px; margin: 22px 0; flex-wrap: wrap; }
+  .block { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .block-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .block-head .spacer { flex: 1 1 auto; }
+  .repo-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .mono { font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+  .disks { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+  .disk-row { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+  .disk-row .label { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+  .disk-row .value { font-size: 22px; font-weight: 650; }
+  .disk-row .hint { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
   /* Une pile d'erreurs longues dépasserait la fenêtre et sortirait les plus anciennes de l'écran :
      la pile défile, chaque toast est borné, et le script n'en garde que les quatre derniers. */
   .toasts {
@@ -194,6 +212,7 @@ export const PAGE_HTML = `<!doctype html>
     <button type="button" class="tab is-active" data-tab="dash">Tableau de bord</button>
     <button type="button" class="tab" data-tab="jobs">Jobs</button>
     <button type="button" class="tab" data-tab="kpis">KPIs</button>
+    <button type="button" class="tab" data-tab="settings">Réglages</button>
   </nav>
   <div class="conn"><span class="dot" id="conn-dot"></span><span id="conn-text">connexion…</span></div>
 </header>
@@ -252,6 +271,60 @@ export const PAGE_HTML = `<!doctype html>
     <div class="kpis" id="kpis"></div>
     <div class="chart" id="chart"></div>
   </section>
+
+  <section class="view" id="view-settings" hidden>
+    <div class="banner" id="settings-banner" hidden></div>
+    <p class="error-box" id="settings-error" hidden></p>
+    <form id="settings-form">
+      <h2 class="section-title">Exécution</h2>
+      <div class="settings-grid">
+        <label class="field">Intervalle de poll (s)<input type="number" id="set-poll" min="10" max="3600" step="1"></label>
+        <label class="field">Jobs simultanés<input type="number" id="set-concurrent" min="1" max="8" step="1"></label>
+        <label class="field">Budget quotidien (USD)<input type="number" id="set-budget" min="0" step="0.01" placeholder="aucune limite"></label>
+      </div>
+      <h2 class="section-title">Agent</h2>
+      <div class="settings-grid">
+        <label class="field">Backend<select id="set-backend"><option value="sdk">sdk</option><option value="cli">cli</option></select></label>
+        <label class="field">Sandbox<select id="set-sandbox"><option value="false">non</option><option value="true">oui</option></select></label>
+      </div>
+      <h2 class="section-title">GitHub</h2>
+      <div class="settings-grid">
+        <label class="field">App ID<input type="number" id="set-app-id" min="1" step="1"></label>
+        <label class="field">Installation ID<input type="number" id="set-installation" min="1" step="1"></label>
+        <label class="field">Label de déclenchement<input type="text" id="set-label"></label>
+        <label class="field">Clé privée (chemin)<input type="text" id="set-key-path"></label>
+        <label class="field">Dossier de données<input type="text" id="set-data-dir" disabled></label>
+      </div>
+      <h2 class="section-title">Dépôts surveillés</h2>
+      <ul class="plain" id="set-repos"></ul>
+      <div class="filters">
+        <label class="field">Ajouter un dépôt<input type="text" id="set-repo-new" placeholder="owner/repo"></label>
+        <button type="button" class="action" id="set-repo-add">Ajouter</button>
+      </div>
+      <div class="settings-actions">
+        <button type="submit" class="action primary" id="set-save" disabled>Enregistrer</button>
+        <span class="hint muted" id="set-hint"></span>
+      </div>
+    </form>
+    <h2 class="section-title">Diagnostic</h2>
+    <div class="block">
+      <div class="block-head"><button type="button" class="action" id="diag-refresh">Relancer</button></div>
+      <ul class="plain" id="diag-list"></ul>
+    </div>
+    <h2 class="section-title">Espace disque</h2>
+    <div class="block">
+      <div class="disks" id="disk-list"></div>
+      <div class="block-head">
+        <span class="hint muted" id="disk-total"></span>
+        <span class="spacer"></span>
+        <button type="button" class="action danger" id="purge-cache">Vider le cache de build</button>
+      </div>
+    </div>
+    <h2 class="section-title">Environnement</h2>
+    <div class="block"><ul class="plain" id="env-list"></ul></div>
+    <h2 class="section-title">Dépôts</h2>
+    <div class="block"><ul class="plain" id="repos-list"></ul></div>
+  </section>
 </main>
 <div class="toasts" id="toasts" role="status" aria-live="polite" aria-atomic="false"></div>
 <script>
@@ -281,7 +354,7 @@ export const PAGE_HTML = `<!doctype html>
    * chargés par des routes qui ne portent pas ces champs. readOnly vaut vrai tant qu'aucun snapshot
    * n'est arrivé — une instance --read-only ne doit jamais laisser clignoter un bouton.
    */
-  var ui = { readOnly: true, reachable: false, paused: null, serviceRunning: false, repos: [] };
+  var ui = { readOnly: true, reachable: false, paused: null, serviceRunning: false, repos: [], pendingRestart: [] };
   /** Échéance d'un appel d'action : au-dessus des 30 s que le serveur s'accorde pour attendre un démarrage. */
   var ACTION_TIMEOUT_MS = 45000;
   /** Toasts empilés au plus ; au-delà les plus anciens quitteraient l'écran. */
@@ -397,6 +470,8 @@ export const PAGE_HTML = `<!doctype html>
       return res.json().then(function (parsed) { return parsed; }, function () { return null; }).then(function (parsed) {
         if (res.ok && parsed && parsed.ok === true) return { ok: true, result: parsed.result };
         var message = parsed && parsed.error ? String(parsed.error) : 'HTTP ' + res.status;
+        // issues : le détail par champ d'une configuration refusée, affiché sous chaque champ par la page.
+        if (parsed && parsed.issues) return { ok: false, error: message, issues: parsed.issues };
         return { ok: false, error: message };
       });
     }, function (err) {
@@ -591,8 +666,10 @@ export const PAGE_HTML = `<!doctype html>
 
   // ---------- Onglets ----------
 
-  var VIEWS = { dash: 'view-dash', jobs: 'view-jobs', kpis: 'view-kpis' };
+  var VIEWS = { dash: 'view-dash', jobs: 'view-jobs', kpis: 'view-kpis', settings: 'view-settings' };
   var loaded = { kpis: false };
+  /** Blocs d'information chargés au premier affichage de l'onglet, pas au chargement de la page. */
+  var blocks = { diagnostics: false, disk: false };
 
   function selectTab(name) {
     Object.keys(VIEWS).forEach(function (key) {
@@ -605,6 +682,11 @@ export const PAGE_HTML = `<!doctype html>
     // La liste des jobs bouge pendant qu'on regarde ailleurs : elle est rechargée à chaque entrée.
     if (name === 'jobs') loadJobs();
     if (name === 'kpis' && !loaded.kpis) loadReport();
+    if (name === 'settings') {
+      if (!settings.loaded && !settings.loading) loadSettings();
+      if (!blocks.diagnostics) { blocks.diagnostics = true; loadDiagnostics(false); }
+      if (!blocks.disk) { blocks.disk = true; loadDisk(); }
+    }
   }
 
   // ---------- Tableau de bord ----------
@@ -629,10 +711,17 @@ export const PAGE_HTML = `<!doctype html>
   function renderBudget(o) {
     var box = byId('budget');
     clear(box);
+    var cap = o.budget.dailyBudgetUsd;
     var head = el('div', 'budget-head');
     head.appendChild(el('div', 'label', 'Budget du jour'));
-    head.appendChild(el('div', 'budget-figure', fmtUsd(o.budget.spentTodayUsd) + ' / ' + fmtUsd(o.budget.dailyBudgetUsd)));
+    // Sans plafond, c'est la limite qui disparaît, pas la dépense : le coût du jour reste affiché.
+    var figure = cap === null ? fmtUsd(o.budget.spentTodayUsd) : fmtUsd(o.budget.spentTodayUsd) + ' / ' + fmtUsd(cap);
+    head.appendChild(el('div', 'budget-figure', figure));
     box.appendChild(head);
+    if (cap === null) {
+      box.appendChild(el('div', 'muted', 'aucune limite'));
+      return;
+    }
     var bar = el('div', 'bar');
     var fill = el('div', 'bar-fill');
     var ratio = Math.max(0, Math.min(1, Number(o.budget.ratio) || 0));
@@ -728,11 +817,17 @@ export const PAGE_HTML = `<!doctype html>
     ui.paused = o.daemon ? o.daemon.paused : null;
     ui.serviceRunning = !!svc.running || !!(o.daemon && o.daemon.running);
     ui.repos = o.repos || [];
+    ui.pendingRestart = (o.daemon && o.daemon.pendingRestart) || [];
     syncSysbar();
     renderSystem(o);
     renderBudget(o);
     renderActive(o);
     renderRecentActions(o.recentActions);
+    // Le rappel de redémarrage survit au rafraîchissement : il vient du daemon, pas de la réponse d'un enregistrement.
+    if (settings.loaded) {
+      applySettingsReadOnly();
+      renderSettingsBanner();
+    }
   }
 
   // ---------- Jobs ----------
@@ -1114,6 +1209,394 @@ export const PAGE_HTML = `<!doctype html>
     box.appendChild(svg);
   }
 
+  // ---------- Réglages ----------
+
+  /** Nom de configuration → id du champ, pour poser chaque erreur de validation sous le champ fautif. */
+  var FIELD_IDS = {
+    'github.appId': 'set-app-id',
+    'github.installationId': 'set-installation',
+    'github.privateKeyPath': 'set-key-path',
+    triggerLabel: 'set-label',
+    pollIntervalSeconds: 'set-poll',
+    maxConcurrentJobs: 'set-concurrent',
+    dailyBudgetUsd: 'set-budget',
+    sandbox: 'set-sandbox',
+    agentBackend: 'set-backend',
+    dataDir: 'set-data-dir'
+  };
+  var CHECK_ICON = { ok: '✅', warn: '⚠️', fail: '❌' };
+  var CHECK_CLASS = { ok: 's-done', warn: 's-blocked', fail: 's-failed' };
+  /** Suffixe des contrôles par dépôt de doctor : ceux-là nourrissent le bloc Dépôts, pas le bloc Diagnostic. */
+  var REPO_CHECK_SUFFIX = ' · sisyphe.yml';
+
+  /** État du formulaire : dernière config enregistrée (chaîne comparable) et liste de dépôts en cours d'édition. */
+  var settings = { loaded: false, loading: false, baseline: null, repos: [], notice: null, lastReadOnly: null };
+
+  function numberValue(id) {
+    var v = byId(id).value.trim();
+    return v === '' ? null : Number(v);
+  }
+
+  /** La configuration telle que le formulaire la porte. dailyBudgetUsd vide vaut null : « aucune limite ». */
+  function readSettingsConfig() {
+    return {
+      github: {
+        appId: numberValue('set-app-id'),
+        installationId: numberValue('set-installation'),
+        privateKeyPath: byId('set-key-path').value.trim()
+      },
+      repos: settings.repos.slice(),
+      triggerLabel: byId('set-label').value.trim(),
+      pollIntervalSeconds: numberValue('set-poll'),
+      maxConcurrentJobs: numberValue('set-concurrent'),
+      dailyBudgetUsd: numberValue('set-budget'),
+      sandbox: byId('set-sandbox').value === 'true',
+      agentBackend: byId('set-backend').value,
+      // Reposté tel quel : le serveur refuse une modification, et l'omettre ferait retomber le schéma sur sa valeur par défaut.
+      dataDir: byId('set-data-dir').value
+    };
+  }
+
+  function setField(id, value) {
+    byId(id).value = value === undefined || value === null ? '' : String(value);
+  }
+
+  function renderReposEditor() {
+    var list = byId('set-repos');
+    clear(list);
+    if (!settings.repos.length) {
+      list.appendChild(el('li', 'muted', 'Aucun dépôt surveillé.'));
+      return;
+    }
+    settings.repos.forEach(function (repo, index) {
+      var li = el('li', 'repo-row');
+      li.appendChild(el('span', null, repo));
+      if (!ui.readOnly) {
+        var remove = el('button', 'action small danger', 'Retirer');
+        remove.type = 'button';
+        remove.addEventListener('click', function () {
+          settings.repos.splice(index, 1);
+          renderReposEditor();
+          updateSaveState();
+        });
+        li.appendChild(remove);
+      }
+      list.appendChild(li);
+    });
+  }
+
+  function fillSettings(config, dataDir) {
+    setField('set-poll', config.pollIntervalSeconds);
+    setField('set-concurrent', config.maxConcurrentJobs);
+    setField('set-budget', config.dailyBudgetUsd === null || config.dailyBudgetUsd === undefined ? '' : config.dailyBudgetUsd);
+    byId('set-backend').value = config.agentBackend;
+    byId('set-sandbox').value = config.sandbox ? 'true' : 'false';
+    setField('set-app-id', config.github.appId);
+    setField('set-installation', config.github.installationId);
+    setField('set-label', config.triggerLabel);
+    setField('set-key-path', config.github.privateKeyPath);
+    setField('set-data-dir', dataDir);
+    settings.repos = config.repos.slice();
+    renderReposEditor();
+  }
+
+  function updateSaveState() {
+    var changed = settings.baseline !== null && JSON.stringify(readSettingsConfig()) !== settings.baseline;
+    byId('set-save').disabled = ui.readOnly || !changed;
+    byId('set-hint').textContent = changed ? 'modifications non enregistrées' : '';
+  }
+
+  function loadSettings() {
+    settings.loading = true;
+    return getJson('/api/settings').then(function (body) {
+      settings.loading = false;
+      settings.loaded = true;
+      fillSettings(body.config, body.dataDir);
+      // Référence de comparaison : c'est la forme réémettrice du formulaire, pas le JSON du serveur.
+      settings.baseline = JSON.stringify(readSettingsConfig());
+      applySettingsReadOnly();
+      updateSaveState();
+    }, function (err) {
+      settings.loading = false;
+      clear(byId('set-repos'));
+      byId('settings-error').hidden = false;
+      clear(byId('settings-error'));
+      byId('settings-error').appendChild(el('p', null, String(err.message)));
+    });
+  }
+
+  /** Désactive les champs en lecture seule ; dataDir reste verrouillé dans tous les cas (il se change par sisyphe setup). */
+  function applySettingsReadOnly() {
+    var disabled = ui.readOnly;
+    ['set-poll', 'set-concurrent', 'set-budget', 'set-backend', 'set-sandbox', 'set-app-id',
+      'set-installation', 'set-label', 'set-key-path'].forEach(function (id) {
+      byId(id).disabled = disabled;
+    });
+    byId('set-data-dir').disabled = true;
+    byId('set-repo-new').hidden = disabled;
+    byId('set-repo-add').hidden = disabled;
+    byId('set-save').hidden = disabled;
+    byId('purge-cache').hidden = disabled;
+    // La liste des dépôts n'a de boutons « Retirer » qu'en écriture : elle n'est reconstruite qu'au changement de mode.
+    if (settings.lastReadOnly !== disabled) {
+      settings.lastReadOnly = disabled;
+      if (settings.loaded) renderReposEditor();
+    }
+  }
+
+  function addRepo() {
+    var field = byId('set-repo-new');
+    var value = field.value.trim();
+    if (!value) return;
+    if (settings.repos.indexOf(value) >= 0) {
+      toast('ko', 'dépôt déjà surveillé : ' + value);
+      return;
+    }
+    settings.repos.push(value);
+    field.value = '';
+    renderReposEditor();
+    updateSaveState();
+  }
+
+  function clearFieldErrors() {
+    var nodes = document.querySelectorAll('.field-error');
+    for (var i = 0; i < nodes.length; i++) if (nodes[i].parentNode) nodes[i].parentNode.removeChild(nodes[i]);
+    var box = byId('settings-error');
+    box.hidden = true;
+    clear(box);
+  }
+
+  function fieldInput(path) {
+    if (FIELD_IDS[path]) return byId(FIELD_IDS[path]);
+    if (path === 'repos' || path.indexOf('repos.') === 0) return byId('set-repos');
+    return null;
+  }
+
+  function showFieldErrors(issues, error) {
+    var box = byId('settings-error');
+    var general = [];
+    (issues || []).forEach(function (issue) {
+      var input = fieldInput(issue.path);
+      if (input && input.parentNode) input.parentNode.appendChild(el('p', 'field-error', issue.message));
+      else general.push(issue);
+    });
+    if (!general.length && !error) return;
+    box.hidden = false;
+    if (error) box.appendChild(el('p', null, error));
+    general.forEach(function (issue) { box.appendChild(el('p', null, issue.message)); });
+  }
+
+  function submitSettings(button) {
+    clearFieldErrors();
+    busy++;
+    button.disabled = true;
+    api('settings', readSettingsConfig()).then(function (r) {
+      busy--;
+      if (!r.ok) {
+        showFieldErrors(r.issues, r.error);
+        toast('ko', 'réglages : ' + r.error);
+        updateSaveState();
+        return;
+      }
+      afterSave(r.result);
+    });
+  }
+
+  /**
+   * Traduit la réponse de l'enregistrement en un rappel. reloaded true : le daemon a relu le fichier.
+   * reloaded false : il est arrêté (changed prendra effet au démarrage) ou il a refusé (reloadError).
+   */
+  function afterSave(result) {
+    settings.notice = result;
+    if (result.reloaded) {
+      toast('ok', result.needsRestart && result.needsRestart.length ? 'réglages enregistrés · redémarrage requis' : 'réglages enregistrés');
+    } else if (result.reloadError) {
+      toast('ko', "enregistré, mais le daemon n'a pas rechargé");
+    } else {
+      toast('ok', 'réglages enregistrés · effet au démarrage');
+    }
+    // Relit le fichier écrit : la référence de comparaison repart de ce qui est désormais en place.
+    loadSettings();
+    renderSettingsBanner();
+  }
+
+  function restartDaemon(button) {
+    if (!window.confirm('Redémarrer le daemon ?')) return;
+    busy++;
+    button.disabled = true;
+    api('stop', {}).then(function (r) {
+      if (!r.ok) {
+        busy--;
+        button.disabled = false;
+        toast('ko', 'arrêt : ' + r.error);
+        syncSysbar();
+        return;
+      }
+      applyLocalEffect('stop');
+      return api('start', {}).then(function (r2) {
+        busy--;
+        button.disabled = false;
+        if (r2.ok) {
+          applyLocalEffect('start');
+          settings.notice = null;
+          toast('ok', "redémarrage : c'est fait");
+        } else {
+          toast('ko', 'démarrage : ' + r2.error);
+        }
+        syncSysbar();
+        renderSettingsBanner();
+      });
+    });
+  }
+
+  /**
+   * Le bandeau de redémarrage. Le rappel persistant vient de daemon.pendingRestart : il reste affiché tant
+   * que le daemon tourne sur une configuration dépassée, même après avoir quitté puis rouvert l'onglet.
+   * Un enregistrement daemon arrêté propose Démarrer, jamais Redémarrer.
+   */
+  function renderSettingsBanner() {
+    var banner = byId('settings-banner');
+    clear(banner);
+    var notice = settings.notice;
+    var pending = ui.pendingRestart || [];
+    var restartFields = null;
+    var stoppedFields = null;
+    var errorText = null;
+    if (ui.reachable && pending.length) restartFields = pending;
+    if (notice) {
+      if (notice.reloaded === false && notice.reloadError) errorText = notice.reloadError;
+      else if (notice.reloaded === false) stoppedFields = notice.changed || [];
+      else if (notice.needsRestart && notice.needsRestart.length) restartFields = restartFields || notice.needsRestart;
+    }
+    if (!restartFields && !stoppedFields && !errorText) {
+      banner.hidden = true;
+      return;
+    }
+    banner.hidden = false;
+    if (restartFields) {
+      banner.appendChild(el('span', null, "Redémarrage requis : " + restartFields.join(', ') + '. Le daemon tourne encore sur l\\'ancienne configuration.'));
+      if (!ui.readOnly) {
+        var restart = el('button', 'action small danger', 'Redémarrer');
+        restart.type = 'button';
+        restart.addEventListener('click', function () { restartDaemon(restart); });
+        banner.appendChild(restart);
+      }
+      return;
+    }
+    if (stoppedFields) {
+      banner.appendChild(el('span', null, (stoppedFields.length ? 'Enregistré. Prendra effet au démarrage : ' + stoppedFields.join(', ') + '.' : 'Enregistré. Prendra effet au prochain démarrage du daemon.')));
+      if (!ui.readOnly) {
+        var start = el('button', 'action small primary', 'Démarrer');
+        start.type = 'button';
+        start.addEventListener('click', function () { run(start, 'start', {}); });
+        banner.appendChild(start);
+      }
+      return;
+    }
+    banner.appendChild(el('span', null, "Enregistré, mais le daemon n'a pas rechargé : " + errorText + ". Il tourne encore sur l'ancienne configuration."));
+  }
+
+  function checkLine(check) {
+    var li = el('li');
+    li.appendChild(el('span', 'badge ' + (CHECK_CLASS[check.status] || 's-queued'), CHECK_ICON[check.status] || '?'));
+    li.appendChild(el('span', null, ' ' + check.name + ' · ' + check.detail));
+    return li;
+  }
+
+  /** Le contrôle d'accès à l'App et les contrôles par dépôt alimentent le bloc Dépôts, pas le bloc Diagnostic. */
+  function isRepoCheck(name) {
+    return name === 'GitHub App' || name.indexOf(REPO_CHECK_SUFFIX) > 0;
+  }
+
+  function renderDiagnostics(d) {
+    var general = byId('diag-list');
+    var repos = byId('repos-list');
+    clear(general);
+    clear(repos);
+    var repoChecks = [];
+    d.checks.forEach(function (check) {
+      if (isRepoCheck(check.name)) repoChecks.push(check);
+      else general.appendChild(checkLine(check));
+    });
+    if (!general.children.length) general.appendChild(el('li', 'muted', 'Aucun contrôle général.'));
+    if (!repoChecks.length) {
+      repos.appendChild(el('li', 'muted', 'Aucun dépôt contrôlé : diagnostic non lancé ou App GitHub inaccessible.'));
+    }
+    repoChecks.forEach(function (check) { repos.appendChild(checkLine(check)); });
+  }
+
+  function renderEnvironment(d) {
+    var list = byId('env-list');
+    clear(list);
+    var labels = { sisyphe: 'Sisyphe', node: 'Node', claude: 'Claude CLI', git: 'git', gitleaks: 'gitleaks' };
+    Object.keys(labels).forEach(function (key) {
+      list.appendChild(el('li', null, labels[key] + ' · ' + (d.versions[key] === null ? 'absent' : d.versions[key])));
+    });
+    var pathLabels = { config: 'Configuration', data: 'Données', socket: 'Socket', logs: 'Logs' };
+    Object.keys(pathLabels).forEach(function (key) {
+      var li = el('li');
+      li.appendChild(el('span', 'muted', pathLabels[key] + ' · '));
+      li.appendChild(el('span', 'mono', d.paths[key]));
+      list.appendChild(li);
+    });
+  }
+
+  function loadDiagnostics(fresh) {
+    return getJson('/api/diagnostics' + (fresh ? '?fresh=1' : '')).then(function (d) {
+      renderDiagnostics(d);
+      renderEnvironment(d);
+    }, function (err) {
+      var list = byId('diag-list');
+      clear(list);
+      list.appendChild(el('li', 'error-box', String(err.message)));
+    });
+  }
+
+  function fmtBytes(n) {
+    var v = Number(n);
+    if (!isFinite(v) || v < 0) v = 0;
+    var units = ['o', 'Ko', 'Mo', 'Go', 'To'];
+    var i = 0;
+    while (v >= 1024 && i < units.length - 1) { v = v / 1024; i++; }
+    return (i === 0 ? String(Math.round(v)) : v.toFixed(1)) + ' ' + units[i];
+  }
+
+  function renderDisk(d) {
+    var box = byId('disk-list');
+    clear(box);
+    d.entries.forEach(function (entry) {
+      var row = el('div', 'disk-row');
+      row.appendChild(el('div', 'label', entry.name));
+      row.appendChild(el('div', 'value', fmtBytes(entry.bytes)));
+      row.appendChild(el('div', 'hint', entry.path));
+      box.appendChild(row);
+    });
+    byId('disk-total').textContent = 'Total : ' + fmtBytes(d.totalBytes);
+  }
+
+  function loadDisk() {
+    return getJson('/api/disk').then(renderDisk, function (err) {
+      clear(byId('disk-list'));
+      byId('disk-total').textContent = String(err.message);
+    });
+  }
+
+  function purgeCache(button) {
+    if (!window.confirm('Vider le cache de build ? Il sera reconstruit au prochain build.')) return;
+    busy++;
+    button.disabled = true;
+    api('purge-cache', {}).then(function (r) {
+      busy--;
+      button.disabled = false;
+      if (r.ok) {
+        toast('ok', 'cache vidé · ' + fmtBytes(r.result && r.result.freedBytes) + ' libérés');
+        loadDisk();
+      } else {
+        toast('ko', 'purge : ' + r.error);
+      }
+    });
+  }
+
   // ---------- Temps réel ----------
 
   function setConnection(cls, text) {
@@ -1179,6 +1662,24 @@ export const PAGE_HTML = `<!doctype html>
       field.value = '';
     });
   });
+
+  // Onglet Réglages : le formulaire signale ses modifications, les blocs se chargent au premier affichage.
+  byId('settings-form').addEventListener('input', updateSaveState);
+  byId('settings-form').addEventListener('change', updateSaveState);
+  byId('settings-form').addEventListener('submit', function (event) {
+    event.preventDefault();
+    if (ui.readOnly) return;
+    submitSettings(byId('set-save'));
+  });
+  byId('set-repo-add').addEventListener('click', addRepo);
+  byId('set-repo-new').addEventListener('keydown', function (event) {
+    if (event.key !== 'Enter') return;
+    // Sans cela, Entrée soumettrait le formulaire au lieu d'ajouter le dépôt.
+    event.preventDefault();
+    addRepo();
+  });
+  byId('diag-refresh').addEventListener('click', function () { loadDiagnostics(true); });
+  byId('purge-cache').addEventListener('click', function () { purgeCache(byId('purge-cache')); });
 
   syncSysbar();
 })();

@@ -1,13 +1,25 @@
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { stringify } from 'yaml';
+import { parseMachineConfigAsWritten } from '../config/machine.js';
 import { dataPaths, type DataPaths } from '../config/paths.js';
 import { DaemonUnreachableError } from '../daemon/control-client.js';
 import type { CommandResult } from '../daemon/control-types.js';
 import type { Exec } from '../service/exec.js';
 import type { ServiceKind, ServiceStatus } from '../service/types.js';
-import { createControlProbe, runAction, serviceLogTail, type ActionClient, type ActionService, type RunActionDeps } from './actions.js';
+import { JOB_STATES, type JobState } from '../store/types.js';
+import {
+  createControlProbe,
+  runAction,
+  serviceLogTail,
+  type ActionClient,
+  type ActionJobs,
+  type ActionService,
+  type ActionSettings,
+  type RunActionDeps,
+} from './actions.js';
 
 const statusOf = (kind: ServiceKind = 'launchd'): ServiceStatus => ({
   kind,
@@ -49,9 +61,57 @@ async function makePaths(): Promise<DataPaths> {
   return paths;
 }
 
-async function deps(over: Partial<RunActionDeps> = {}): Promise<RunActionDeps> {
-  return { client: fakeClient(), service: fakeService(), paths: await makePaths(), ...fakeClock(), ...over };
+/** Compteurs de jobs : tous à zéro, sauf ceux qu'un test fixe. */
+function fakeJobs(over: Partial<Record<JobState, number>> = {}): ActionJobs {
+  const zeros = Object.fromEntries(JOB_STATES.map((s) => [s, 0])) as Record<JobState, number>;
+  return { countByState: () => ({ ...zeros, ...over }) };
 }
+
+/** Couche de données factice : aucun test de contrôleur ne supprime un dossier. */
+function fakeSettings(): ActionSettings {
+  return {
+    purgeCache: vi.fn<ActionSettings['purgeCache']>(async () => ({ freedBytes: 42 })),
+    invalidateDiagnostics: vi.fn<ActionSettings['invalidateDiagnostics']>(),
+    invalidateDisk: vi.fn<ActionSettings['invalidateDisk']>(),
+  };
+}
+
+async function deps(over: Partial<RunActionDeps> = {}): Promise<RunActionDeps> {
+  const paths = over.paths ?? (await makePaths());
+  return {
+    client: fakeClient(),
+    service: fakeService(),
+    paths,
+    configPath: join(paths.root, 'config.yml'),
+    jobs: fakeJobs(),
+    settings: fakeSettings(),
+    ...fakeClock(),
+    ...over,
+  };
+}
+
+/** Installation de test : clé factice et `config.yml` en chemins absolus, sous un dossier temporaire. */
+async function settingsFixture() {
+  const paths = await makePaths();
+  const keyPath = join(paths.root, 'app.pem');
+  await writeFile(keyPath, 'clé factice');
+  const config = {
+    github: { appId: 1, installationId: 2, privateKeyPath: keyPath },
+    repos: ['acme/demo'],
+    triggerLabel: 'sisyphe',
+    pollIntervalSeconds: 60,
+    maxConcurrentJobs: 1,
+    sandbox: false,
+    agentBackend: 'sdk',
+    dataDir: paths.root,
+  };
+  const configPath = join(paths.root, 'config.yml');
+  await writeFile(configPath, stringify(config));
+  return { paths, configPath, config };
+}
+
+const unreachable = () =>
+  fakeClient({ send: vi.fn<ActionClient['send']>(() => Promise.reject(new DaemonUnreachableError('daemon injoignable (ENOENT)'))) });
 
 describe('runAction : traduction des résultats', () => {
   it('succès du daemon → 200 avec son résultat, commandé au nom de l’UI', async () => {
@@ -143,6 +203,178 @@ describe('runAction : validation', () => {
 
     expect((await runAction('poll', undefined, await deps({ client }))).status).toBe(200);
     expect(client.send).toHaveBeenCalledWith('poll', {}, 'ui');
+  });
+});
+
+describe('runAction : settings', () => {
+  it('écrit, périme le diagnostic, fait relire le daemon : `reloaded` et son résultat', async () => {
+    const { paths, configPath, config } = await settingsFixture();
+    const client = fakeClient({
+      send: vi.fn<ActionClient['send']>(async () => ({ ok: true, result: { applied: ['pollIntervalSeconds'], needsRestart: [] } })),
+    });
+    const settings = fakeSettings();
+
+    const res = await runAction('settings', { ...config, pollIntervalSeconds: 120 }, await deps({ client, paths, configPath, settings }));
+
+    expect(res).toEqual({ status: 200, body: { ok: true, result: { reloaded: true, applied: ['pollIntervalSeconds'], needsRestart: [] } } });
+    expect(client.send).toHaveBeenCalledWith('reload', {}, 'ui');
+    expect(settings.invalidateDiagnostics).toHaveBeenCalledOnce();
+    expect(parseMachineConfigAsWritten(await readFile(configPath, 'utf8')).pollIntervalSeconds).toBe(120);
+  });
+
+  it('refus de validation → 400 avec le détail par champ, fichier intact, rien envoyé ni périmé', async () => {
+    const { paths, configPath, config } = await settingsFixture();
+    const before = await readFile(configPath, 'utf8');
+    const client = fakeClient();
+    const settings = fakeSettings();
+    const d = await deps({ client, paths, configPath, settings });
+
+    const badSchema = await runAction('settings', { ...config, github: { ...config.github, appId: 'un' } }, d);
+    expect(badSchema.status).toBe(400);
+    expect(badSchema.body).toMatchObject({ error: 'Configuration refusée', issues: [{ path: 'github.appId' }] });
+
+    const movedData = await runAction('settings', { ...config, dataDir: join(paths.root, 'ailleurs') }, d);
+    expect(movedData.status).toBe(400);
+    expect(movedData.body).toMatchObject({ issues: [{ path: 'dataDir' }] });
+
+    expect(await readFile(configPath, 'utf8')).toBe(before);
+    expect(client.send).not.toHaveBeenCalled();
+    expect(settings.invalidateDiagnostics).not.toHaveBeenCalled();
+  });
+
+  it('daemon arrêté → 200 `reloaded: false`, avec tous les champs modifiés, à chaud comme structurels', async () => {
+    const { paths, configPath, config } = await settingsFixture();
+    const body = { ...config, pollIntervalSeconds: 120, triggerLabel: 'robot', repos: ['acme/demo', 'acme/other'] };
+
+    const res = await runAction('settings', body, await deps({ client: unreachable(), paths, configPath }));
+
+    expect(res).toEqual({ status: 200, body: { ok: true, result: { reloaded: false, changed: ['pollIntervalSeconds', 'repos', 'triggerLabel'] } } });
+    expect(parseMachineConfigAsWritten(await readFile(configPath, 'utf8')).triggerLabel).toBe('robot');
+  });
+
+  it('rechargement refusé par le daemon → 200 quand même, avec `reloadError` : le fichier est déjà écrit', async () => {
+    const { paths, configPath, config } = await settingsFixture();
+    const client = fakeClient({ send: vi.fn<ActionClient['send']>(async () => ({ ok: false, error: 'config.yml invalide' })) });
+
+    const res = await runAction('settings', { ...config, maxConcurrentJobs: 2 }, await deps({ client, paths, configPath }));
+
+    expect(res).toEqual({
+      status: 200,
+      body: { ok: true, result: { reloaded: false, changed: ['maxConcurrentJobs'], reloadError: 'config.yml invalide' } },
+    });
+    expect(parseMachineConfigAsWritten(await readFile(configPath, 'utf8')).maxConcurrentJobs).toBe(2);
+  });
+
+  it('délai dépassé sur le reload → 200 avec `reloadError` qui dit que le rechargement a pu avoir lieu', async () => {
+    const { paths, configPath, config } = await settingsFixture();
+    const client = fakeClient({
+      send: vi.fn<ActionClient['send']>(() => Promise.reject(new DaemonUnreachableError('le daemon ne répond pas', { timedOut: true }))),
+    });
+
+    const res = await runAction('settings', config, await deps({ client, paths, configPath }));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ ok: true, result: { reloaded: false, changed: [] } });
+    expect((res.body as { result: { reloadError: string } }).result.reloadError).toContain('peut-être eu lieu');
+  });
+
+  it('configuration actuelle illisible → 409, rien d’écrit, rien envoyé', async () => {
+    const { paths, configPath, config } = await settingsFixture();
+    await rm(configPath);
+    const client = fakeClient();
+
+    const res = await runAction('settings', config, await deps({ client, paths, configPath }));
+
+    expect(res.status).toBe(409);
+    expect((res.body as { error: string }).error).toContain('Configuration actuelle illisible');
+    await expect(readFile(configPath, 'utf8')).rejects.toThrow();
+    expect(client.send).not.toHaveBeenCalled();
+  });
+
+  // En root, un dossier en 0500 reste inscriptible : le test ne prouverait rien.
+  it.skipIf(process.getuid?.() === 0)('écriture impossible → 409, fichier intact, rien envoyé au daemon', async () => {
+    const { paths, configPath, config } = await settingsFixture();
+    const before = await readFile(configPath, 'utf8');
+    const client = fakeClient();
+    // Dossier en lecture seule : la config et la clé restent lisibles, le fichier temporaire ne peut pas naître.
+    await chmod(paths.root, 0o500);
+    try {
+      const res = await runAction('settings', { ...config, pollIntervalSeconds: 120 }, await deps({ client, paths, configPath }));
+
+      expect(res.status).toBe(409);
+      expect((res.body as { error: string }).error).toContain('impossible');
+    } finally {
+      await chmod(paths.root, 0o700);
+    }
+    expect(await readFile(configPath, 'utf8')).toBe(before);
+    expect(client.send).not.toHaveBeenCalled();
+  });
+});
+
+describe('runAction : purge-cache', () => {
+  it('daemon joignable : c’est lui qui purge, la mesure disque est périmée, aucune purge locale', async () => {
+    const client = fakeClient({ send: vi.fn<ActionClient['send']>(async () => ({ ok: true, result: { freedBytes: 7 } })) });
+    const settings = fakeSettings();
+
+    const res = await runAction('purge-cache', undefined, await deps({ client, settings, jobs: fakeJobs({ queued: 3 }) }));
+
+    expect(res).toEqual({ status: 200, body: { ok: true, result: { freedBytes: 7 } } });
+    expect(client.send).toHaveBeenCalledWith('purge', {}, 'ui');
+    expect(settings.invalidateDisk).toHaveBeenCalledOnce();
+    expect(settings.purgeCache).not.toHaveBeenCalled();
+  });
+
+  it('refus du daemon (job en cours) → 409 avec son message, aucune purge locale', async () => {
+    const client = fakeClient({ send: vi.fn<ActionClient['send']>(async () => ({ ok: false, error: 'purge refusée : 1 job(s) en cours' })) });
+    const settings = fakeSettings();
+
+    const res = await runAction('purge-cache', {}, await deps({ client, settings }));
+
+    expect(res).toEqual({ status: 409, body: { error: 'purge refusée : 1 job(s) en cours' } });
+    expect(settings.purgeCache).not.toHaveBeenCalled();
+  });
+
+  it('daemon arrêté : refusée en 409 tant qu’un job n’est pas terminal, file comprise, avec la marche à suivre', async () => {
+    for (const state of ['implementing', 'queued'] as const) {
+      const settings = fakeSettings();
+
+      const res = await runAction('purge-cache', {}, await deps({ client: unreachable(), jobs: fakeJobs({ [state]: 1 }), settings }));
+
+      expect(res.status, state).toBe(409);
+      expect((res.body as { error: string }).error).toContain('Annuler les jobs en file');
+      expect(settings.purgeCache).not.toHaveBeenCalled();
+    }
+  });
+
+  it('daemon arrêté, aucun job actif : purge locale par la couche de données', async () => {
+    const settings = fakeSettings();
+
+    const res = await runAction('purge-cache', {}, await deps({ client: unreachable(), jobs: fakeJobs({ done: 3, failed: 1 }), settings }));
+
+    expect(res).toEqual({ status: 200, body: { ok: true, result: { freedBytes: 42 } } });
+    expect(settings.purgeCache).toHaveBeenCalledOnce();
+  });
+
+  it('délai dépassé → 502, mesure disque périmée, pas de purge locale par-dessus', async () => {
+    const client = fakeClient({
+      send: vi.fn<ActionClient['send']>(() => Promise.reject(new DaemonUnreachableError('le daemon ne répond pas', { timedOut: true }))),
+    });
+    const settings = fakeSettings();
+
+    const res = await runAction('purge-cache', {}, await deps({ client, settings }));
+
+    expect(res.status).toBe(502);
+    expect(settings.invalidateDisk).toHaveBeenCalledOnce();
+    expect(settings.purgeCache).not.toHaveBeenCalled();
+  });
+
+  it('argument inattendu → 400, rien n’est purgé ni envoyé', async () => {
+    const client = fakeClient();
+    const settings = fakeSettings();
+
+    expect((await runAction('purge-cache', { dir: '/' }, await deps({ client, settings }))).status).toBe(400);
+    expect(settings.purgeCache).not.toHaveBeenCalled();
+    expect(client.send).not.toHaveBeenCalled();
   });
 });
 

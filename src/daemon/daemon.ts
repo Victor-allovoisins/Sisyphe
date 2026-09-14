@@ -1,4 +1,7 @@
 import type { Logger } from 'pino';
+import { diffMachineConfig } from '../config/diff.js';
+import { effectiveDailyBudget, loadMachineConfig, type MachineConfig } from '../config/machine.js';
+import { machineConfigPath } from '../config/paths.js';
 import { renderBudgetPauseComment } from '../deliver/comments.js';
 import { issueRefOf, parseRepo, type Issue } from '../github/source.js';
 import { CANCELLED, SHUTDOWN, runJob, type PipelineDeps } from '../jobs/pipeline.js';
@@ -7,9 +10,18 @@ import { canStartJob, startOfLocalDay } from '../jobs/scheduler.js';
 import { purgeOldFiles } from '../log/logger.js';
 import type { ActionInput, ActionName, ActionSource } from '../store/actions.js';
 import { isTerminal, type Job, type JobState } from '../store/types.js';
+import { purgeCache, type PurgeResult } from '../util/cache.js';
 import { startCaffeinate } from './caffeinate.js';
 import { startControlServer, type ControlServer } from './control.js';
-import type { CommandResult, DaemonStatus, EnqueueIssueInput } from './control-types.js';
+import {
+  RESTART_REQUIRED_FIELDS,
+  type CommandResult,
+  type DaemonStatus,
+  type EnqueueIssueInput,
+  type HotReloadField,
+  type ReloadResult,
+  type RestartRequiredField,
+} from './control-types.js';
 import { pollOnce } from './poll.js';
 
 /** Délai maximal laissé aux jobs en vol pour se terminer avant que stop() abandonne (ex. sleep de rate limit d'une heure). */
@@ -17,6 +29,23 @@ const STOP_GRACE_MS = 30_000;
 
 const STOPPING_ERROR = "daemon en cours d'arrêt";
 const RETRYABLE_STATES: ReadonlySet<JobState> = new Set<JobState>(['failed', 'blocked', 'cancelled']);
+
+/**
+ * Un recopieur par champ à chaud, qui pose la valeur du fichier sur la configuration vivante. `Record` : un
+ * champ classé à chaud sans recopieur ne compile pas. Savoir *si* un champ a changé revient à
+ * `diffMachineConfig`, partagé avec la page de réglages.
+ */
+const COPY_HOT: Record<HotReloadField, (current: MachineConfig, next: MachineConfig) => void> = {
+  dailyBudgetUsd: (c, n) => {
+    c.dailyBudgetUsd = n.dailyBudgetUsd;
+  },
+  maxConcurrentJobs: (c, n) => {
+    c.maxConcurrentJobs = n.maxConcurrentJobs;
+  },
+  pollIntervalSeconds: (c, n) => {
+    c.pollIntervalSeconds = n.pollIntervalSeconds;
+  },
+};
 
 /** Ce qu'une commande sait du job visé au moment d'être journalisée ; rempli au fil de son exécution. */
 type ActionRef = Pick<ActionInput, 'jobId' | 'repo' | 'issueNumber'>;
@@ -30,12 +59,21 @@ export interface DaemonOptions {
   stopGraceMs?: number;
   /** `start()` ouvre la socket de contrôle (`paths.controlSocketPath`) ; false pour les tests qui n'en veulent pas. */
   control?: boolean;
+  /**
+   * Fichier relu par `reload` ; par défaut `machineConfigPath()`, résolu à l'appel et non à la construction,
+   * pour qu'un test qui ne recharge jamais rien n'aille pas chercher la configuration réelle de la machine.
+   */
+  configPath?: string;
 }
 
 export class Daemon {
   private readonly running = new Map<string, AbortController>();
   private readonly inflight = new Set<Promise<unknown>>();
   private readonly timers: NodeJS.Timeout[] = [];
+  /** Minuteur de poll, retenu à part pour que `reload` reprogramme celui-là et lui seul. */
+  private pollTimer: NodeJS.Timeout | null = null;
+  /** Champs structurels vus différents du fichier depuis le démarrage : seul un redémarrage les efface. */
+  private readonly pendingRestart = new Set<RestartRequiredField>();
   private readonly budgetAnnounced = new Set<string>();
   private budgetDay = '';
   private stopCaffeinate: (() => void) | null = null;
@@ -47,7 +85,8 @@ export class Daemon {
   private tickQueued: Promise<void> | null = null;
   private tickRunning = false;
   private paused = false;
-  private purging = false;
+  /** Purges en cours (périodique, commande) : tant qu'il y en a une, rien ne démarre. Compteur, pour que la fin de l'une ne rouvre pas la porte à l'autre. */
+  private purging = 0;
   private readonly startedAt = new Date().toISOString();
   private stopped: Promise<void> | null = null;
   private resolveStopped: (() => void) | null = null;
@@ -98,7 +137,7 @@ export class Daemon {
     }
     const iv = this.opts.intervals ?? {};
     const pollMs = iv.pollMs ?? this.d.machine.pollIntervalSeconds * 1000;
-    this.timers.push(setInterval(() => void this.tick(), pollMs));
+    this.schedulePoll(pollMs);
     this.timers.push(setInterval(() => void this.watchCancellations(), iv.cancelMs ?? 60_000));
     this.timers.push(setInterval(() => void this.trackPullRequests(), iv.prTrackMs ?? 3_600_000));
     this.timers.push(setInterval(() => void this.purge(), iv.purgeMs ?? 3_600_000));
@@ -129,6 +168,8 @@ export class Daemon {
   private async doStop(): Promise<void> {
     this.stopping = true;
     for (const t of this.timers) clearInterval(t);
+    // Le champ ne doit pas survivre au minuteur qu'il nomme.
+    this.pollTimer = null;
     // La socket d'abord : plus aucune commande n'entre pendant l'arrêt.
     await this.closeControl();
     for (const c of this.running.values()) c.abort(SHUTDOWN);
@@ -220,17 +261,17 @@ export class Daemon {
   private startNext(): Promise<unknown> | null {
     if (this.stopping) return null;
     if (this.paused) return null;
-    if (this.purging) return null;
+    if (this.purging > 0) return null;
     const check = canStartJob({
       activeCount: this.running.size,
       maxConcurrent: this.d.machine.maxConcurrentJobs,
       spentTodayUsd: this.d.phases.costSince(startOfLocalDay()),
-      dailyBudgetUsd: this.d.machine.dailyBudgetUsd,
+      dailyBudgetUsd: effectiveDailyBudget(this.d.machine),
     });
     if (!check.ok) {
       if (check.reason === 'budget') {
         // Suivi dans inflight pour que runOnce() et stop() attendent les commentaires.
-        const p: Promise<unknown> = this.announceBudgetPause().finally(() => this.inflight.delete(p));
+        const p: Promise<unknown> = this.announceBudgetPause(check.capUsd).finally(() => this.inflight.delete(p));
         this.inflight.add(p);
       }
       return null;
@@ -255,7 +296,7 @@ export class Daemon {
     return p;
   }
 
-  private async announceBudgetPause(): Promise<void> {
+  private async announceBudgetPause(dailyBudgetUsd: number): Promise<void> {
     const day = startOfLocalDay();
     if (day !== this.budgetDay) {
       this.budgetDay = day;
@@ -266,7 +307,7 @@ export class Daemon {
       if (this.budgetAnnounced.has(key)) continue;
       this.budgetAnnounced.add(key);
       this.log.warn({ jobId: job.id }, 'budget quotidien atteint');
-      await this.d.source.comment(issueRefOf(job), renderBudgetPauseComment(this.d.machine.dailyBudgetUsd)).catch(() => undefined);
+      await this.d.source.comment(issueRefOf(job), renderBudgetPauseComment(dailyBudgetUsd)).catch(() => undefined);
     }
   }
 
@@ -325,6 +366,91 @@ export class Daemon {
     return this.status();
   }
 
+  /**
+   * Relit `config.yml` et applique à chaud les seuls champs relus à chaque décision : le budget quotidien
+   * et la concurrence maximale valent dès le prochain `startNext`, l'intervalle de poll reprogramme son
+   * minuteur. Les champs structurels sont seulement nommés dans `needsRestart`. Une configuration devenue
+   * invalide ne change rien : le daemon continue avec celle qu'il avait, et le refus porte l'erreur.
+   */
+  reload(source: ActionSource): Promise<CommandResult<ReloadResult>> {
+    return this.command('reload', source, async () => {
+      const path = this.opts.configPath ?? machineConfigPath();
+      let next: MachineConfig;
+      try {
+        next = await loadMachineConfig(path);
+      } catch (err) {
+        return { ok: false, error: messageOf(err) };
+      }
+      // Rien n'est touché avant que la lecture ait abouti : la configuration précédente est conservée par
+      // construction, pas par discipline.
+      const current = this.d.machine;
+      const { hot, restart: needsRestart } = diffMachineConfig(current, next);
+      // Le rappel persistant suit ce que le daemon exécute, pas ce que le dernier `reload` a vu : un champ
+      // ramené à sa valeur vivante en sort, un champ changé par un enregistrement antérieur y reste.
+      for (const field of RESTART_REQUIRED_FIELDS) {
+        if (needsRestart.includes(field)) this.pendingRestart.add(field);
+        else this.pendingRestart.delete(field);
+      }
+      const applied: HotReloadField[] = [];
+      for (const field of hot) {
+        // Le budget ne voyage pas sans son backend : `effectiveDailyBudget` résout la **paire** (valeur brute,
+        // backend), et `agentBackend` n'est pas rechargeable. Recopier le budget seul poserait le daemon sur un
+        // plafond résolu à partir d'un backend que le fichier ne demande plus — ni celui d'avant, ni celui
+        // d'après : un `{sdk, 40}` vivant face à un fichier `{cli, budget absent}` donnerait 60, que personne
+        // n'a écrit. `agentBackend` est dans `needsRestart` : il porte les deux jusqu'au redémarrage.
+        if (field === 'dailyBudgetUsd' && needsRestart.includes('agentBackend')) continue;
+        COPY_HOT[field](current, next);
+        applied.push(field);
+      }
+      if (applied.includes('pollIntervalSeconds')) this.reschedulePoll();
+      this.log.info({ source, path, applied, needsRestart }, 'configuration relue');
+      return { ok: true, result: { applied, needsRestart } };
+    });
+  }
+
+  /**
+   * Vide le cache de build à la demande (page de réglages). Sérialisée par la porte comme toute commande,
+   * refusée tant qu'un job tourne ; le contrôle et la levée de `purging` sont faits d'un même tenant, avant
+   * tout `await` : aucun job ne peut démarrer entre les deux, ni pendant la suppression. Un job lancé en cours
+   * de route casserait son build sur un cache à moitié vidé. Les jobs en file attendent le tick suivant.
+   */
+  purgeBuildCache(source: ActionSource): Promise<CommandResult<PurgeResult>> {
+    return this.command('purge', source, async () => {
+      if (this.running.size > 0) return { ok: false, error: `purge refusée : ${this.running.size} job(s) en cours` };
+      this.purging++;
+      try {
+        const result = await purgeCache(this.d.paths);
+        this.log.info({ source, freedBytes: result.freedBytes }, 'cache de build vidé');
+        return { ok: true, result };
+      } finally {
+        this.purging--;
+      }
+    });
+  }
+
+  /** Reprogramme le minuteur de poll sur l'intervalle de la configuration courante, si c'est bien lui qui le fixe. */
+  private reschedulePoll(): void {
+    // Intervalle imposé par les options : il prime sur le fichier, au rechargement comme au démarrage.
+    if (this.opts.intervals?.pollMs !== undefined) return;
+    // Aucun minuteur posé : `start()` n'a pas été appelé, et en créer un ici ferait tourner un daemon
+    // que personne n'a démarré.
+    if (this.pollTimer === null) return;
+    this.schedulePoll(this.d.machine.pollIntervalSeconds * 1000);
+  }
+
+  /**
+   * Pose le minuteur de poll, ou remplace le précédent à sa place dans `this.timers` : `stop()` annule les
+   * minuteurs par cette liste, un minuteur laissé hors liste survivrait à l'arrêt du daemon.
+   */
+  private schedulePoll(pollMs: number): void {
+    const at = this.pollTimer === null ? -1 : this.timers.indexOf(this.pollTimer);
+    if (this.pollTimer !== null) clearInterval(this.pollTimer);
+    const timer = setInterval(() => void this.tick(), pollMs);
+    if (at === -1) this.timers.push(timer);
+    else this.timers[at] = timer;
+    this.pollTimer = timer;
+  }
+
   status(): DaemonStatus {
     return {
       pid: process.pid,
@@ -332,6 +458,9 @@ export class Daemon {
       running: this.running.size,
       queued: this.d.store.countByState().queued,
       startedAt: this.startedAt,
+      // Filtré depuis la liste de référence plutôt que rendu dans l'ordre d'insertion : la page affiche
+      // toujours les champs dans le même ordre, quel que soit celui des enregistrements successifs.
+      pendingRestart: RESTART_REQUIRED_FIELDS.filter((f) => this.pendingRestart.has(f)),
     };
   }
 
@@ -472,13 +601,13 @@ export class Daemon {
   private async purge(): Promise<void> {
     // Pas de purge pendant qu'un job tourne : `keep` est un instantané (voir purgeOrphanWorktrees).
     if (this.running.size === 0) {
-      this.purging = true;
+      this.purging++;
       try {
         await purgeOrphanWorktrees(this.d);
       } catch (err) {
         this.log.warn({ err }, 'purge des worktrees');
       } finally {
-        this.purging = false;
+        this.purging--;
       }
     }
     await purgeOldFiles(this.d.paths.logsDir, 14).catch(() => undefined);
