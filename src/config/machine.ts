@@ -9,6 +9,10 @@ const homeOrAbsolute = z.string().regex(/^(~\/|\/)/, 'chemin absolu ou commença
 /** Owner GitHub : lettres, chiffres, tirets, jamais `_`. Garantit que le premier `__` d'un repoKey est le séparateur. */
 const REPO_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/;
 
+/** Les backends canoniques, dans l'ordre d'affichage. `cli` n'en fait pas partie : c'est un alias lu de `claude-code`. */
+export const AGENT_BACKENDS = ['sdk', 'claude-code', 'codex', 'opencode'] as const;
+export type AgentBackend = (typeof AGENT_BACKENDS)[number];
+
 export const MachineConfigSchema = z.strictObject({
   github: z.strictObject({
     appId: z.number().int().positive(),
@@ -25,12 +29,20 @@ export const MachineConfigSchema = z.strictObject({
   /** Trois formes : un nombre (le plafond), `null` (aucun plafond, explicitement), ou l'absence. Voir `effectiveDailyBudget`. */
   dailyBudgetUsd: z.number().positive().max(1000).nullable().optional(),
   sandbox: z.boolean().default(false),
-  /** `sdk` : Agent SDK, exige ANTHROPIC_API_KEY. `cli` : la CLI Claude Code locale (`claude -p`), donc l'abonnement claude.ai. */
-  agentBackend: z.enum(['sdk', 'cli']).default('sdk'),
+  /**
+   * `sdk` : Agent SDK, exige ANTHROPIC_API_KEY. `claude-code` : la CLI Claude Code locale (`claude -p`),
+   * donc l'abonnement claude.ai. `codex` et `opencode` : leurs CLI locales. L'alias historique `cli` est lu
+   * comme `claude-code` au parse et n'est jamais réécrit tel quel.
+   */
+  agentBackend: z.enum(['sdk', 'claude-code', 'codex', 'opencode', 'cli']).transform((v) => (v === 'cli' ? 'claude-code' : v)).default('sdk'),
+  /** Surcharge de modèle par phase pour `codex`/`opencode` ; absent, chaque CLI applique son défaut. */
+  agentModels: z.strictObject({
+    triage: z.string().min(1).max(100).optional(),
+    implement: z.string().min(1).max(100).optional(),
+  }).optional(),
   dataDir: homeOrAbsolute.default('~/.sisyphe'),
 });
 export type MachineConfig = z.infer<typeof MachineConfigSchema>;
-export type AgentBackend = MachineConfig['agentBackend'];
 
 /** Plafond historique, appliqué à une config `sdk` muette : sous clé API, le coût est facturé pour de bon. */
 const SDK_DEFAULT_DAILY_BUDGET_USD = 60;
@@ -40,7 +52,7 @@ const SDK_DEFAULT_DAILY_BUDGET_USD = 60;
  *
  * La valeur brute est conservée telle quelle dans `MachineConfig` et résolue ici, à l'usage, parce que tout
  * ce qui réécrit la configuration la recopie : résolue à la lecture, `sisyphe setup` graverait dans le fichier
- * un plafond de 60 jamais saisi dès qu'une config `sdk` sans plafond passe en `cli`, et « aucun plafond »
+ * un plafond de 60 jamais saisi dès qu'une config `sdk` sans plafond passe en CLI, et « aucun plafond »
  * deviendrait inexprimable sous `sdk`, où l'absence du champ vaut 60.
  */
 export function effectiveDailyBudget(machine: Pick<MachineConfig, 'dailyBudgetUsd' | 'agentBackend'>): number | undefined {
@@ -48,16 +60,32 @@ export function effectiveDailyBudget(machine: Pick<MachineConfig, 'dailyBudgetUs
   if (machine.dailyBudgetUsd === null) return undefined;
   if (machine.dailyBudgetUsd !== undefined) return machine.dailyBudgetUsd;
   // Champ absent : `sdk` garde le plafond historique — rien n'est désactivé en silence sur une config
-  // existante ; `cli` n'en a aucun, le coût y étant notionnel et non facturé.
+  // existante ; les backends CLI n'en ont aucun, le coût y étant notionnel et non facturé.
   return machine.agentBackend === 'sdk' ? SDK_DEFAULT_DAILY_BUDGET_USD : undefined;
+}
+
+/**
+ * Modèle à passer au runner pour une phase.
+ *
+ * `sdk` et `claude-code` gardent les modèles de `sisyphe.yml` (noms Claude). `codex` et `opencode` prennent
+ * la surcharge machine `agentModels` ; absente, `undefined` laisse chaque CLI appliquer son propre défaut —
+ * on ne leur impose jamais un nom de modèle Claude qui n'existerait pas chez eux.
+ */
+export function phaseModel(
+  machine: Pick<MachineConfig, 'agentBackend' | 'agentModels'>,
+  phase: 'triage' | 'implement',
+  repoModel: string,
+): string | undefined {
+  if (machine.agentBackend === 'sdk' || machine.agentBackend === 'claude-code') return repoModel;
+  return machine.agentModels?.[phase];
 }
 
 /**
  * Combinaison que `createApp` refuse au démarrage. Le message vit ici pour que le refus du démarrage et
  * celui de la page de réglages soient le même mot pour mot : la page doit dire ce que dirait le démarrage.
  */
-export const SANDBOX_CLI_ERROR =
-  "`sandbox: true` n'est pas supporté par le backend agent `cli` : passer à `agentBackend: sdk` ou mettre `sandbox: false`.";
+export const SANDBOX_BACKEND_ERROR =
+  "`sandbox: true` n'est supporté que par le backend `sdk` : mettre `sandbox: false` ou `agentBackend: sdk`";
 
 export type MachineConfigErrorKind = 'missing' | 'invalid';
 

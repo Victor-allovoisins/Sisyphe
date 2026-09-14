@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parse, stringify } from 'yaml';
-import { SANDBOX_CLI_ERROR, loadMachineConfig, parseMachineConfig, type MachineConfig } from './machine.js';
+import { SANDBOX_BACKEND_ERROR, loadMachineConfig, parseMachineConfig, type MachineConfig } from './machine.js';
 import { expandHome } from './paths.js';
 import { validateMachineConfigInput, writeMachineConfig, type ConfigIssue, type ValidateMachineConfigResult } from './write.js';
 
@@ -95,14 +95,16 @@ describe('validateMachineConfigInput', () => {
     expect(issues).toEqual([{ path: 'github.privateKeyPath', message: expect.stringContaining(dossier) }]);
   });
 
-  it('refuse sandbox avec le backend cli, du même refus que le démarrage', async () => {
+  it('refuse sandbox pour tout backend autre que sdk, du même refus que le démarrage', async () => {
     // `createApp` refuse cette paire : l'accepter ici enregistrerait une config que le prochain démarrage
     // rejette, avec un bandeau « Redémarrer » qui mène droit dans la panne.
-    const issues = expectIssues(await validateMachineConfigInput(rawInput({ sandbox: true, agentBackend: 'cli' }), current));
-    expect(issues).toEqual([{ path: 'sandbox', message: SANDBOX_CLI_ERROR }]);
-    // Les deux autres combinaisons restent acceptées.
+    for (const backend of ['claude-code', 'codex', 'opencode'] as const) {
+      const issues = expectIssues(await validateMachineConfigInput(rawInput({ sandbox: true, agentBackend: backend }), current));
+      expect(issues).toEqual([{ path: 'sandbox', message: SANDBOX_BACKEND_ERROR }]);
+      // Sans sandbox, le backend passe.
+      expect(expectOk(await validateMachineConfigInput(rawInput({ sandbox: false, agentBackend: backend }), current)).sandbox).toBe(false);
+    }
     expect(expectOk(await validateMachineConfigInput(rawInput({ sandbox: true, agentBackend: 'sdk' }), current)).sandbox).toBe(true);
-    expect(expectOk(await validateMachineConfigInput(rawInput({ sandbox: false, agentBackend: 'cli' }), current)).sandbox).toBe(false);
   });
 
   it('cumule les règles locales', async () => {
@@ -112,7 +114,7 @@ describe('validateMachineConfigInput', () => {
           dataDir: join(dir, 'ailleurs'),
           github: { appId: 12, installationId: 34, privateKeyPath: join(dir, 'absente.pem') },
           sandbox: true,
-          agentBackend: 'cli',
+          agentBackend: 'claude-code',
         }),
         current,
       ),

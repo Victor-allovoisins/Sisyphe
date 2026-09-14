@@ -50,6 +50,36 @@ describe('PAGE_HTML', () => {
     expect(PAGE_HTML).toContain('placeholder="aucune limite"');
   });
 
+  it('expose les quatre backends et les surcharges de modèle de l’onglet Réglages', () => {
+    // Le select BACKEND vaut les valeurs canoniques ; l’ancienne `cli` a disparu de l’interface.
+    for (const value of ['sdk', 'claude-code', 'codex', 'opencode']) {
+      expect(PAGE_HTML).toContain(`<option value="${value}">${value}</option>`);
+    }
+    expect(PAGE_HTML).not.toContain('<option value="cli"');
+    for (const id of ['set-model-triage', 'set-model-implement']) {
+      expect(PAGE_HTML).toContain(`id="${id}"`);
+    }
+    // Les erreurs de validation `agentModels.*` atterrissent sous le bon champ.
+    expect(PAGE_HTML).toContain("'agentModels.triage': 'set-model-triage'");
+    expect(PAGE_HTML).toContain("'agentModels.implement': 'set-model-implement'");
+    // L’aide rappelle que sdk/claude-code suivent les modèles du dépôt.
+    expect(PAGE_HTML).toContain('sisyphe.yml');
+  });
+
+  it('n’envoie agentModels que si une surcharge de modèle est renseignée', () => {
+    const start = PAGE_HTML.indexOf('function readSettingsConfig()');
+    const end = PAGE_HTML.indexOf('\n  }', start);
+    const body = PAGE_HTML.slice(start, end);
+    expect(body).toContain('if (triage || implement)');
+    expect(body).toContain('config.agentModels = {};');
+    expect(body).toContain('config.agentModels.triage = triage;');
+    expect(body).toContain('config.agentModels.implement = implement;');
+    // Le remplissage repart de `config.agentModels`, vide quand il est absent.
+    expect(PAGE_HTML).toContain('var models = config.agentModels || {};');
+    expect(PAGE_HTML).toContain("setField('set-model-triage', models.triage);");
+    expect(PAGE_HTML).toContain("setField('set-model-implement', models.implement);");
+  });
+
   it('affiche les quatre blocs d’information et charge aux routes dédiées', () => {
     for (const id of ['diag-list', 'disk-list', 'env-list', 'repos-list']) {
       expect(PAGE_HTML).toContain(`id="${id}"`);
@@ -235,6 +265,10 @@ describe('PAGE_HTML', () => {
     expect(PAGE_HTML).toContain("byId('set-repo-add').hidden = disabled;");
     // `dataDir` reste verrouillé même en écriture : il se change par `sisyphe setup`.
     expect(PAGE_HTML).toContain("byId('set-data-dir').disabled = true;");
+    // Les surcharges de modèle sont désactivées comme le reste du formulaire en lecture seule.
+    const start = PAGE_HTML.indexOf('function applySettingsReadOnly()');
+    const list = PAGE_HTML.slice(start, PAGE_HTML.indexOf('].forEach', start));
+    for (const id of ['set-model-triage', 'set-model-implement']) expect(list).toContain(`'${id}'`);
   });
 
   it('vide le cache de build après confirmation et montre l’espace disque', () => {

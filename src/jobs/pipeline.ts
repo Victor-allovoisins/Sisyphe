@@ -8,12 +8,12 @@ import {
   ImplementationReportSchema, TriageVerdictSchema, fallbackReport, reportJsonSchema, triageJsonSchema,
   type ImplementationReport, type TriageVerdict,
 } from '../agent/schemas.js';
-import type { MachineConfig } from '../config/machine.js';
+import { phaseModel, type MachineConfig } from '../config/machine.js';
 import { jobDir as jobDirFor, repoCachePath, type DataPaths } from '../config/paths.js';
 import { REPO_CONFIG_FILENAME, RepoConfigError, parseRepoConfig, type RepoConfig } from '../config/repo.js';
 import {
   renderBlockedComment, renderCancelledComment, renderConfigProblemComment, renderFailedComment,
-  renderNoChangesComment, renderSecretsComment, renderTakeoverComment,
+  renderNoChangesComment, renderProtectedPathsComment, renderSecretsComment, renderTakeoverComment,
 } from '../deliver/comments.js';
 import { deliver } from '../deliver/deliver.js';
 import type { Git } from '../git/git.js';
@@ -173,10 +173,12 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
       config.models.triage,
       () =>
         deps.agent.run<TriageVerdict>({
-          cwd: wtPath, model: config.models.triage, systemPromptAppend: appendix,
+          cwd: wtPath, model: phaseModel(deps.machine, 'triage', config.models.triage), phase: 'triage', systemPromptAppend: appendix,
           prompt: triagePrompt(issue, config), outputSchema: triageJsonSchema,
           maxTurns: TRIAGE_MAX_TURNS, maxBudgetUsd: config.budget.triageUsd,
-          allowedTools: TRIAGE_TOOLS, disallowedTools: TRIAGE_DENY, env: agentEnvVars,
+          allowedTools: TRIAGE_TOOLS, disallowedTools: TRIAGE_DENY,
+          pathGuard: { worktreePath: wtPath, protectedPatterns: config.protectedPaths },
+          env: agentEnvVars,
           timeoutMs: minutes(config.timeouts.triageMinutes), signal, transcriptPath: join(dir, 'transcript-triage-1.jsonl'),
         }),
       (res) => ({
@@ -218,7 +220,7 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
         config.models.implement,
         () =>
           deps.agent.run<ImplementationReport>({
-            cwd: wtPath, model: config.models.implement, systemPromptAppend: appendix,
+            cwd: wtPath, model: phaseModel(deps.machine, 'implement', config.models.implement), phase: 'implement', systemPromptAppend: appendix,
             prompt, outputSchema: reportJsonSchema,
             maxTurns: IMPLEMENT_MAX_TURNS, maxBudgetUsd: config.budget.implementUsd, resumeSessionId: resume,
             allowedTools: IMPLEMENT_TOOLS, disallowedTools: IMPLEMENT_DENY,
@@ -262,6 +264,12 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
         await source.setStatus(issueRef, 'failed');
         await cleanup();
         return finish('failed', { error: 'secrets détectés dans le diff' });
+      }
+      if (verify.flags.protectedPathsTouched.length > 0) {
+        await source.comment(issueRef, renderProtectedPathsComment(verify.flags.protectedPathsTouched, trigger));
+        await source.setStatus(issueRef, 'failed');
+        await cleanup();
+        return finish('failed', { error: 'chemins protégés modifiés dans le diff' });
       }
       if (verify.ok) break;
       log.warn({ attempt, step: verify.failedStep }, 'vérification échouée');

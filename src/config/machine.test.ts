@@ -3,7 +3,7 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { stringify } from 'yaml';
-import { effectiveDailyBudget, loadMachineConfig, MachineConfigError, parseMachineConfig } from './machine.js';
+import { AGENT_BACKENDS, effectiveDailyBudget, loadMachineConfig, MachineConfigError, parseMachineConfig, phaseModel } from './machine.js';
 
 const minimal = `
 github:
@@ -47,9 +47,16 @@ describe('parseMachineConfig', () => {
     expect(stringify(parseMachineConfig(minimal))).not.toContain('dailyBudgetUsd');
   });
 
-  it('accepte agentBackend cli, refuse une valeur inconnue', () => {
-    expect(parseMachineConfig(`${minimal}agentBackend: cli\n`).agentBackend).toBe('cli');
+  it("normalise l'alias cli en claude-code, refuse une valeur inconnue", () => {
+    expect(parseMachineConfig(`${minimal}agentBackend: cli\n`).agentBackend).toBe('claude-code');
     expect(() => parseMachineConfig(`${minimal}agentBackend: bedrock\n`)).toThrow(/agentBackend/);
+  });
+
+  it('accepte les quatre backends et garde sdk par défaut', () => {
+    expect(parseMachineConfig(minimal).agentBackend).toBe('sdk');
+    for (const backend of AGENT_BACKENDS) {
+      expect(parseMachineConfig(`${minimal}agentBackend: ${backend}\n`).agentBackend).toBe(backend);
+    }
   });
 
   it('refuse un repo mal formé', () => {
@@ -76,16 +83,53 @@ describe('parseMachineConfig', () => {
   });
 });
 
+describe('agentModels', () => {
+  it('absent est accepté', () => {
+    expect(parseMachineConfig(minimal).agentModels).toBeUndefined();
+  });
+
+  it('accepte une surcharge par phase', () => {
+    const c = parseMachineConfig(`${minimal}agentModels:\n  triage: gpt-5-codex\n  implement: gpt-5-codex\n`);
+    expect(c.agentModels).toEqual({ triage: 'gpt-5-codex', implement: 'gpt-5-codex' });
+  });
+
+  it('refuse une clé inconnue', () => {
+    expect(() => parseMachineConfig(`${minimal}agentModels:\n  retry: x\n`)).toThrow(/agentModels/);
+  });
+
+  it('refuse une chaîne vide', () => {
+    expect(() => parseMachineConfig(`${minimal}agentModels:\n  triage: ""\n`)).toThrow(/agentModels/);
+  });
+});
+
+describe('phaseModel', () => {
+  it('sdk et claude-code gardent le modèle de sisyphe.yml', () => {
+    expect(phaseModel(parseMachineConfig(minimal), 'triage', 'claude-haiku')).toBe('claude-haiku');
+    expect(phaseModel(parseMachineConfig(`${minimal}agentBackend: claude-code\n`), 'implement', 'claude-sonnet')).toBe('claude-sonnet');
+  });
+
+  it('codex et opencode prennent la surcharge machine', () => {
+    const codex = parseMachineConfig(`${minimal}agentBackend: codex\nagentModels:\n  triage: gpt-5-codex\n`);
+    expect(phaseModel(codex, 'triage', 'claude-haiku')).toBe('gpt-5-codex');
+    const opencode = parseMachineConfig(`${minimal}agentBackend: opencode\nagentModels:\n  implement: openai/gpt-5\n`);
+    expect(phaseModel(opencode, 'implement', 'claude-sonnet')).toBe('openai/gpt-5');
+  });
+
+  it('sans surcharge machine, ne retombe pas sur le modèle Claude', () => {
+    expect(phaseModel(parseMachineConfig(`${minimal}agentBackend: codex\n`), 'triage', 'claude-haiku')).toBeUndefined();
+  });
+});
+
 describe('effectiveDailyBudget', () => {
   it('résout les quatre formes du plafond quotidien', () => {
     // Un nombre vaut plafond, quel que soit le backend.
     expect(effectiveDailyBudget(parseMachineConfig(`${minimal}dailyBudgetUsd: 12.5\n`))).toBe(12.5);
-    expect(effectiveDailyBudget(parseMachineConfig(`${minimal}agentBackend: cli\ndailyBudgetUsd: 12.5\n`))).toBe(12.5);
+    expect(effectiveDailyBudget(parseMachineConfig(`${minimal}agentBackend: claude-code\ndailyBudgetUsd: 12.5\n`))).toBe(12.5);
     // `null` : plafond explicitement vidé, y compris sous `sdk` — ce que l'absence ne peut pas dire.
     expect(effectiveDailyBudget(parseMachineConfig(`${minimal}dailyBudgetUsd: null\n`))).toBeUndefined();
-    // Absent : 60 sous `sdk` (le défaut historique), aucun plafond sous `cli`.
+    // Absent : 60 sous `sdk` (le défaut historique), aucun plafond sous les backends CLI.
     expect(effectiveDailyBudget(parseMachineConfig(minimal))).toBe(60);
-    expect(effectiveDailyBudget(parseMachineConfig(`${minimal}agentBackend: cli\n`))).toBeUndefined();
+    expect(effectiveDailyBudget(parseMachineConfig(`${minimal}agentBackend: claude-code\n`))).toBeUndefined();
   });
 });
 

@@ -9,7 +9,7 @@ import { REPO_CONFIG_FILENAME } from '../../config/repo.js';
 import { MAX_SOCKET_PATH_BYTES } from '../../daemon/control.js';
 import { renderPlist } from '../../service/launchd.js';
 import type { ServiceStatus } from '../../service/index.js';
-import { buildChecks, parseAuthStatus, type DoctorGitHub, type DoctorService } from './doctor.js';
+import { buildChecks, parseAuthStatus, parseOpenCodeAuthStatus, type DoctorGitHub, type DoctorService } from './doctor.js';
 
 /** Répertoires de fixtures (plists), effacés à la fin. */
 const tempDirs: string[] = [];
@@ -86,13 +86,45 @@ describe('buildChecks — composition de la liste', () => {
     expect(buildChecks({ env: { ANTHROPIC_API_KEY: 'sk-x' } }).map((c) => c.name)).toContain('clé API (appel minimal)');
   });
 
-  it('backend cli : les checks de clé API cèdent la place aux checks de la CLI claude', () => {
-    const machine = machineWith(['acme/one'], { agentBackend: 'cli' });
+  it('backend claude-code (et son alias cli) : les checks de clé API cèdent la place aux checks de la CLI claude', () => {
+    for (const agentBackend of ['cli', 'claude-code']) {
+      const machine = machineWith(['acme/one'], { agentBackend });
+      const names = buildChecks({ env: { ANTHROPIC_API_KEY: 'sk-x' }, machine, github: fakeGithub(async () => null) }).map((c) => c.name);
+      expect(names).toContain('claude (CLI)');
+      expect(names).toContain('claude auth status');
+      expect(names).not.toContain('ANTHROPIC_API_KEY');
+      expect(names).not.toContain('clé API (appel minimal)');
+    }
+  });
+
+  it('backend codex : checks codex, ni claude ni clé API', () => {
+    const machine = machineWith(['acme/one'], { agentBackend: 'codex' });
     const names = buildChecks({ env: { ANTHROPIC_API_KEY: 'sk-x' }, machine, github: fakeGithub(async () => null) }).map((c) => c.name);
-    expect(names).toContain('claude (CLI)');
-    expect(names).toContain('claude auth status');
+    expect(names).toEqual(expect.arrayContaining(['codex (CLI)', 'codex login status']));
+    expect(names).not.toContain('claude (CLI)');
+    expect(names).not.toContain('claude auth status');
     expect(names).not.toContain('ANTHROPIC_API_KEY');
     expect(names).not.toContain('clé API (appel minimal)');
+  });
+
+  it('backend opencode : checks opencode, ni claude ni clé API', () => {
+    const machine = machineWith(['acme/one'], { agentBackend: 'opencode' });
+    const names = buildChecks({ env: { ANTHROPIC_API_KEY: 'sk-x' }, machine, github: fakeGithub(async () => null) }).map((c) => c.name);
+    expect(names).toEqual(expect.arrayContaining(['opencode (CLI)', 'opencode auth list']));
+    expect(names).not.toContain('claude (CLI)');
+    expect(names).not.toContain('codex (CLI)');
+    expect(names).not.toContain('ANTHROPIC_API_KEY');
+    expect(names).not.toContain('clé API (appel minimal)');
+  });
+
+  it('backend sdk : clé API, aucun check de CLI', () => {
+    const machine = machineWith(['acme/one'], { agentBackend: 'sdk' });
+    const names = buildChecks({ env: { ANTHROPIC_API_KEY: 'sk-x' }, machine, github: fakeGithub(async () => null) }).map((c) => c.name);
+    expect(names).toContain('ANTHROPIC_API_KEY');
+    expect(names).toContain('clé API (appel minimal)');
+    expect(names).not.toContain('claude (CLI)');
+    expect(names).not.toContain('codex (CLI)');
+    expect(names).not.toContain('opencode (CLI)');
   });
 
   it('backend sdk (défaut) : pas de check de la CLI claude', () => {
@@ -292,6 +324,23 @@ describe('parseAuthStatus', () => {
     expect(() => parseAuthStatus(JSON.stringify({ loggedIn: false }))).toThrow(/claude login/);
     expect(() => parseAuthStatus('pas du json')).toThrow(/illisible/);
     expect(() => parseAuthStatus('null')).toThrow();
+  });
+});
+
+describe('parseOpenCodeAuthStatus', () => {
+  // Capture réelle de `opencode auth list` (1.18.30) : sortie encadrée et colorisée, jamais affichée telle quelle.
+  const REAL = '\u001b[0m\n┌  Credentials \u001b[90m~/.local/share/opencode/auth.json\n│\n●  Anthropic \u001b[90moauth\n│\n●  DeepSeek \u001b[90mapi\n│\n└  8 credentials\n';
+
+  it('nettoie l’ANSI et résume le nombre de fournisseurs connectés', () => {
+    expect(parseOpenCodeAuthStatus(REAL)).toBe('8 fournisseur(s) connecté(s)');
+  });
+
+  it('aucun identifiant : échec nommant la commande de login', () => {
+    expect(() => parseOpenCodeAuthStatus('└  0 credentials')).toThrow(/opencode auth login/);
+  });
+
+  it('sortie vide : échec nommant la commande de login', () => {
+    expect(() => parseOpenCodeAuthStatus('   \n')).toThrow(/opencode auth login/);
   });
 });
 

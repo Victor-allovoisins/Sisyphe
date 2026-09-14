@@ -5,7 +5,7 @@ import { createInterface } from 'node:readline/promises';
 import { stringify } from 'yaml';
 import { createApp, type App } from '../../app.js';
 import {
-  MachineConfigError, parseMachineConfig, parseMachineConfigAsWritten, type AgentBackend, type MachineConfig,
+  AGENT_BACKENDS, MachineConfigError, parseMachineConfig, parseMachineConfigAsWritten, type AgentBackend, type MachineConfig,
 } from '../../config/machine.js';
 import { writeMachineConfig } from '../../config/write.js';
 import { dataPaths, defaultDataDir, ensureDataDirs, expandHome, machineConfigPath, type DataPaths } from '../../config/paths.js';
@@ -62,8 +62,11 @@ export function validateApiKey(s: string): string | null {
   return s.trim() ? null : 'Clé requise.';
 }
 
+/** Backends acceptés à la question : les canoniques, plus l'alias historique `cli` (normalisé au parse). */
+const ACCEPTED_BACKENDS = new Set<string>([...AGENT_BACKENDS, 'cli']);
+
 export function validateBackend(s: string): string | null {
-  return s === 'cli' || s === 'sdk' ? null : 'Répondre cli ou sdk.';
+  return ACCEPTED_BACKENDS.has(s) ? null : `Répondre ${AGENT_BACKENDS.join(', ')} ou cli.`;
 }
 
 export async function validatePrivateKeyPath(p: string): Promise<string | null> {
@@ -89,8 +92,9 @@ export interface SetupAnswers {
  * dataDir n'est redemandé nulle part ici — un dataDir personnalisé déjà présent dans la config existante
  * est conservé (setup ne doit pas silencieusement ramener les données vers la racine par défaut). Tout le
  * reste (triggerLabel, pollIntervalSeconds, maxConcurrentJobs, dailyBudgetUsd…) est conservé aussi. Seul
- * `sandbox` est forcé à false pour le backend `cli`, qui ne le supporte pas : un `sandbox: true` hérité
- * rendrait la config inutilisable (createApp la refuse) sans que setup puisse jamais la réparer.
+ * `sandbox` est forcé à false dès que le backend n'est pas `sdk`, qui est le seul à le supporter : un
+ * `sandbox: true` hérité rendrait la config inutilisable (createApp la refuse) sans que setup puisse jamais
+ * la réparer. L'alias `cli` (normalisé en `claude-code` au parse) est couvert par ce même test.
  */
 export function buildRawConfig(answers: SetupAnswers, existing?: MachineConfig): Record<string, unknown> {
   return {
@@ -98,7 +102,7 @@ export function buildRawConfig(answers: SetupAnswers, existing?: MachineConfig):
     github: { appId: answers.appId, installationId: answers.installationId, privateKeyPath: answers.privateKeyPath },
     repos: answers.repos,
     agentBackend: answers.agentBackend,
-    ...(answers.agentBackend === 'cli' ? { sandbox: false } : {}),
+    ...(answers.agentBackend !== 'sdk' ? { sandbox: false } : {}),
     dataDir: existing?.dataDir ?? answers.dataDir,
   };
 }
@@ -118,6 +122,18 @@ export function assertBuiltEntry(): void {
   if (!isBuiltEntry(entry)) throw new Error(`Installer le service depuis le build : node dist/cli/index.js setup (entrée = ${entry}).`);
 }
 
+/** Binaire de la CLI et libellé d'installation, par backend non-SDK : le daemon doit pouvoir le joindre. */
+const BACKEND_BINARY: Record<Exclude<AgentBackend, 'sdk'>, { bin: string; label: string }> = {
+  'claude-code': { bin: 'claude', label: 'Claude Code' },
+  codex: { bin: 'codex', label: 'Codex CLI' },
+  opencode: { bin: 'opencode', label: 'opencode' },
+};
+
+/** Seams injectables pour les tests ; en production, `which` exécute le vrai `which` de checks.ts. */
+export interface InstallServiceDeps {
+  which?: (bin: string) => Promise<string>;
+}
+
 /**
  * Installe (ou réinstalle) le service sans rien démarrer, après avoir vérifié que le daemon aura de quoi
  * travailler, et affiche ses avertissements non bloquants (linger systemd…). Renvoie `false` sur une
@@ -127,14 +143,16 @@ export async function installService(
   machine: Pick<MachineConfig, 'agentBackend'>,
   manager: ServiceManager,
   apiKey?: string,
+  deps: InstallServiceDeps = {},
 ): Promise<boolean> {
-  // Backend `cli` : la session claude.ai remplace la clé API, mais `claude` doit être joignable depuis le
-  // PATH que le service transmettra au daemon — sinon chaque job échouerait.
-  if (machine.agentBackend === 'cli') {
+  // Backend CLI (`claude-code`, `codex`, `opencode`) : sa session remplace la clé API, mais le binaire doit
+  // être joignable depuis le PATH que le service transmettra au daemon — sinon chaque job échouerait.
+  if (machine.agentBackend !== 'sdk') {
+    const { bin, label } = BACKEND_BINARY[machine.agentBackend];
     try {
-      await which('claude');
+      await (deps.which ?? which)(bin);
     } catch {
-      throw new Error('claude introuvable sur le PATH : installer Claude Code puis relancer setup.');
+      throw new Error(`${bin} introuvable sur le PATH : installer ${label} puis relancer setup.`);
     }
   }
   // Backend `sdk` : la clé vient de la question de setup ou de l'environnement. Absente — cas de
@@ -156,7 +174,10 @@ export interface SetupOptions {
   reinstallService?: boolean;
 }
 
-export async function setupCommand(opts: SetupOptions = {}, deps: { createManager?: CreateManager } = {}): Promise<void> {
+export async function setupCommand(
+  opts: SetupOptions = {},
+  deps: { createManager?: CreateManager } & InstallServiceDeps = {},
+): Promise<void> {
   // En tête des deux branches : échouer en une seconde plutôt qu'après tout l'entretien.
   assertBuiltEntry();
 
@@ -165,7 +186,7 @@ export async function setupCommand(opts: SetupOptions = {}, deps: { createManage
     // Les dossiers et la base d'abord : le plist et l'unité référencent `logsDir` et la racine des données,
     // et c'est cette commande que doctor conseille pour réparer une installation.
     await prepareData(paths);
-    if (await installService(machine, manager)) console.log(`Service réinstallé, daemon non démarré.\n${START_HINT}`);
+    if (await installService(machine, manager, undefined, deps)) console.log(`Service réinstallé, daemon non démarré.\n${START_HINT}`);
     return;
   }
 
@@ -220,12 +241,12 @@ export async function setupCommand(opts: SetupOptions = {}, deps: { createManage
     const reposAnswer = await askValidated('Repos à surveiller (owner/repo, séparés par des virgules)', validateRepos);
     const repos = parseReposAnswer(reposAnswer);
 
-    // Le backend décide de la suite : la clé API n'existe que pour le SDK, la CLI utilise la session
-    // claude.ai déjà ouverte sur la machine (`claude auth status`).
+    // Le backend décide de la suite : la clé API n'existe que pour le SDK ; les CLI s'appuient sur leur
+    // session déjà ouverte sur la machine (`claude auth status`, login codex, `opencode auth list`).
     const agentBackend = (await askValidated(
-      'Backend agent (cli = abonnement Claude Code, sdk = clé API)',
+      'Backend agent (claude-code, codex, opencode = CLI locale ; sdk = clé API)',
       validateBackend,
-      existing?.agentBackend ?? 'cli',
+      existing?.agentBackend ?? 'claude-code',
     )) as AgentBackend;
 
     let apiKey = '';
@@ -289,7 +310,7 @@ export async function setupCommand(opts: SetupOptions = {}, deps: { createManage
 
     await prepareData(paths);
     const manager = await serviceManagerFor(paths, machine, { createManager: deps.createManager, apiKey });
-    if (await installService(machine, manager, apiKey)) {
+    if (await installService(machine, manager, apiKey, deps)) {
       console.log(`Service installé, daemon non démarré. Logs : ${paths.logsDir}`);
       console.log(`${START_HINT} Vérifier l'installation avec \`sisyphe doctor\`.`);
     }

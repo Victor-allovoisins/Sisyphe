@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { access, chmod, constants, copyFile, rename, rm, stat } from 'node:fs/promises';
 import { stringify } from 'yaml';
 import { write0600 } from '../service/files.js';
-import { MachineConfigSchema, SANDBOX_CLI_ERROR, type MachineConfig } from './machine.js';
+import { MachineConfigSchema, SANDBOX_BACKEND_ERROR, type MachineConfig } from './machine.js';
 import { expandHome } from './paths.js';
 
 /** Un champ refusé : `path` en notation pointée (`github.appId`, `repos.1`), `message` tel que zod l'a produit. */
@@ -18,7 +18,7 @@ export type ValidateMachineConfigResult = { ok: true; config: MachineConfig } | 
  *
  * Deux couches, dans cet ordre : `MachineConfigSchema`, puis trois règles que le schéma ne peut pas porter —
  * `dataDir` immuable (le modifier déplacerait la base que l'interface est en train de lire), clé privée
- * lisible, et `sandbox` incompatible avec le backend `cli`. Les règles locales ne sont jouées que sur une
+ * lisible, et `sandbox` réservé au backend `sdk`. Les règles locales ne sont jouées que sur une
  * entrée déjà valide au schéma : sinon elles porteraient sur des champs dont on ne sait pas encore s'ils sont
  * des chaînes. Elles sont jouées ensemble, pour que la page affiche toutes les erreurs d'un coup plutôt
  * qu'une par aller-retour.
@@ -61,8 +61,8 @@ export async function validateMachineConfigInput(
   }
   // Combinaison que `createApp` refuse : sans cette règle, la page enregistrerait une configuration que le
   // prochain démarrage rejetterait, et le bandeau « Redémarrer » conduirait l'opérateur droit dans la panne.
-  if (config.sandbox && config.agentBackend === 'cli') {
-    issues.push({ path: 'sandbox', message: SANDBOX_CLI_ERROR });
+  if (config.sandbox && config.agentBackend !== 'sdk') {
+    issues.push({ path: 'sandbox', message: SANDBOX_BACKEND_ERROR });
   }
   return issues.length > 0 ? { ok: false, issues } : { ok: true, config };
 }

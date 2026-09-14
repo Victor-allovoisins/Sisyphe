@@ -185,8 +185,8 @@ describe('overview', () => {
   it('champ absent : l’interface montre le plafond effectif, pas la valeur brute', async () => {
     // `sdk` sans ligne `dailyBudgetUsd` : la page affiche les 60 $ réellement appliqués.
     expect((await (await makeUi({ dailyBudgetUsd: 'absent' })).data.overview()).budget.dailyBudgetUsd).toBe(60);
-    // `cli` sans ligne : aucun plafond appliqué, donc rien à afficher.
-    const cli = await makeUi({ dailyBudgetUsd: 'absent', agentBackend: 'cli' });
+    // `claude-code` sans ligne : aucun plafond appliqué, donc rien à afficher.
+    const cli = await makeUi({ dailyBudgetUsd: 'absent', agentBackend: 'claude-code' });
     expect((await cli.data.overview()).budget.dailyBudgetUsd).toBeNull();
   });
 

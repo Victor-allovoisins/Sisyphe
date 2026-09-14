@@ -150,8 +150,9 @@ export function repoEnv(base: NodeJS.ProcessEnv, extra: { cacheDir: string; issu
 
 /**
  * Environnement de l'agent : comme repoEnv, plus la clé API dont le SDK a besoin (exposition connue, spec §9).
- * Backend `cli` : la clé reste retirée, sinon la CLI l'utiliserait à la place de la session claude.ai et la
- * facturation basculerait en silence sur le compte API.
+ * `sdk` est le seul backend à réajouter `ANTHROPIC_API_KEY`. `codex` retire en plus `OPENAI_API_KEY` : lui
+ * laisser la clé ferait basculer en silence le login ChatGPT sur l'API facturée, règle symétrique de Claude.
+ * `claude-code` et `opencode` ne réajoutent rien de spécifique : leurs CLI s'authentifient par une session.
  */
 export function agentEnv(
   base: NodeJS.ProcessEnv,
@@ -159,6 +160,10 @@ export function agentEnv(
   agentBackend: AgentBackend = 'sdk',
 ): Record<string, string> {
   const env = repoEnv(base, extra);
-  if (agentBackend === 'sdk' && base.ANTHROPIC_API_KEY) env.ANTHROPIC_API_KEY = base.ANTHROPIC_API_KEY;
+  if (agentBackend === 'sdk') {
+    if (base.ANTHROPIC_API_KEY) env.ANTHROPIC_API_KEY = base.ANTHROPIC_API_KEY;
+    return env;
+  }
+  if (agentBackend === 'codex') delete env.OPENAI_API_KEY;
   return env;
 }

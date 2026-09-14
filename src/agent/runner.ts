@@ -4,7 +4,10 @@ export type AgentStopReason = 'completed' | 'max_turns' | 'max_budget' | 'timeou
 
 export interface AgentRunOptions {
   cwd: string;
-  model: string;
+  /** Absent = la CLI choisit son modèle par défaut. */
+  model?: string;
+  /** Les CLI sans liste d'outils s'en servent pour choisir leur mode (triage vs implémentation). */
+  phase?: 'triage' | 'implement';
   systemPromptAppend: string;
   prompt: string;
   outputSchema?: Record<string, unknown>;

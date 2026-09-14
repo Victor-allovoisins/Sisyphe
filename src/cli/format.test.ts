@@ -83,4 +83,42 @@ describe('summarizeTranscript', () => {
     ];
     expect(summarizeTranscript(lines)).toEqual(['🔧 Bash echo a echo b echo c']);
   });
+
+  it('résume un échantillon codex (message, commande, fichier, résultat)', () => {
+    const lines = [
+      JSON.stringify({ type: 'thread.started', thread_id: 't-1' }),
+      JSON.stringify({ type: 'turn.started' }),
+      JSON.stringify({ type: 'item.completed', item: { id: 'item_0', type: 'reasoning', text: '**Réfléchit**' } }),
+      JSON.stringify({ type: 'item.completed', item: { id: 'item_1', type: 'command_execution', command: 'bash -lc ls', aggregated_output: '', exit_code: 0, status: 'completed' } }),
+      JSON.stringify({ type: 'item.completed', item: { id: 'item_2', type: 'file_change', changes: [{ path: 'src/a.ts', kind: 'update' }, { path: 'src/b.ts', kind: 'add' }], status: 'completed' } }),
+      JSON.stringify({ type: 'item.completed', item: { id: 'item_3', type: 'agent_message', text: 'C’est fini.\nDeux fichiers.' } }),
+      JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 100, cached_input_tokens: 5, output_tokens: 20 } }),
+    ];
+    expect(summarizeTranscript(lines)).toEqual([
+      '🔧 bash -lc ls',
+      '📝 src/a.ts, src/b.ts',
+      '💬 C’est fini. Deux fichiers.',
+      '✅ result · coût non communiqué',
+    ]);
+  });
+
+  it('résume un échantillon opencode (parties texte et outil, formes réelles)', () => {
+    const lines = [
+      JSON.stringify({ type: 'step_start', sessionID: 'ses-1', part: { type: 'step-start', messageID: 'msg-1' } }),
+      JSON.stringify({ type: 'text', sessionID: 'ses-1', part: { type: 'text', text: 'Je regarde.', messageID: 'msg-1' } }),
+      JSON.stringify({ type: 'tool_use', sessionID: 'ses-1', part: { type: 'tool', tool: 'bash', callID: 'call-1', state: { status: 'completed', input: { command: 'ls -la' }, title: 'Liste' }, messageID: 'msg-1' } }),
+      JSON.stringify({ type: 'tool_use', sessionID: 'ses-1', part: { type: 'tool', tool: 'edit', callID: 'call-2', state: { status: 'completed', input: { filePath: 'src/a.ts' } }, messageID: 'msg-1' } }),
+      JSON.stringify({ type: 'step_finish', sessionID: 'ses-1', part: { type: 'step-finish', tokens: { input: 100, output: 20, cache: { read: 0, write: 0 } }, cost: 0.03, messageID: 'msg-1' } }),
+    ];
+    expect(summarizeTranscript(lines)).toEqual(['💬 Je regarde.', '🔧 bash ls -la', '🔧 edit src/a.ts']);
+  });
+
+  it('ignore un événement codex ou opencode inconnu', () => {
+    const lines = [
+      JSON.stringify({ type: 'item.completed', item: { type: 'mcp_tool_call', id: 'item_9' } }),
+      JSON.stringify({ type: 'item.completed', item: { type: 'web_search', id: 'item_10' } }),
+      JSON.stringify({ type: 'session.idle', sessionID: 'ses-1' }),
+    ];
+    expect(summarizeTranscript(lines)).toEqual([]);
+  });
 });

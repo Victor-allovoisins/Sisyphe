@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { jobDir } from '../../src/config/paths.js';
 import { runJob } from '../../src/jobs/pipeline.js';
 import { REPO, SISYPHE_YML, makeHarness, readyVerdict, repoRef, report, writeFeature } from '../helpers/harness.js';
-import { remoteBranchSha, remoteCommitParents } from '../helpers/git-fixture.js';
+import { remoteBranchSha, remoteCommitParents, writeFiles } from '../helpers/git-fixture.js';
 
 const BRANCH = 'feature/issue-7-ajouter-feature-hello';
 const issue7 = { repo: repoRef, number: 7 };
@@ -39,10 +39,41 @@ describe('runJob', () => {
     expect(existsSync(done.worktreePath!)).toBe(false);
 
     expect(h.agent.calls[0].allowedTools).toEqual(['Read', 'Glob', 'Grep']);
+    expect(h.agent.calls[0].pathGuard).toEqual({ worktreePath: h.agent.calls[0].cwd, protectedPatterns: ['secrets/**'] });
     expect(h.agent.calls[0].prompt).toContain('On veut hello.');
     expect(h.agent.calls[1].disallowedTools).toContain('Bash(git push:*)');
     expect(h.agent.calls[1].pathGuard).toEqual({ worktreePath: h.agent.calls[1].cwd, protectedPatterns: ['secrets/**'] });
     expect(h.agent.calls[1].prompt).toContain('1. créer src/feature.txt');
+  });
+
+  it('agentBackend codex : le runner reçoit le modèle surchargé par phase ; la phase garde le modèle sisyphe.yml', async () => {
+    const h = await makeHarness({
+      steps: [{ output: readyVerdict }, { output: report('Créé'), sideEffect: writeFeature('hello\n') }],
+      agentBackend: 'codex',
+      agentModels: { triage: 'gpt-5', implement: 'gpt-5-codex' },
+    });
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    const done = await runJob(job.id, h.deps, signal());
+    expect(done.state).toBe('done');
+    expect(h.agent.calls[0].model).toBe('gpt-5');
+    expect(h.agent.calls[0].phase).toBe('triage');
+    expect(h.agent.calls[1].model).toBe('gpt-5-codex');
+    expect(h.agent.calls[1].phase).toBe('implement');
+    const phases = h.phases.listForJob(done.id);
+    expect(phases.find((p) => p.name === 'triage')?.model).toBe('claude-sonnet-5');
+    expect(phases.find((p) => p.name === 'implement')?.model).toBe('claude-opus-5');
+  });
+
+  it('agentBackend codex sans agentModels : aucun modèle imposé, la CLI choisit son défaut', async () => {
+    const h = await makeHarness({
+      steps: [{ output: readyVerdict }, { output: report('Créé'), sideEffect: writeFeature('hello\n') }],
+      agentBackend: 'codex',
+    });
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    const done = await runJob(job.id, h.deps, signal());
+    expect(done.state).toBe('done');
+    expect(h.agent.calls[0].model).toBeUndefined();
+    expect(h.agent.calls[1].model).toBeUndefined();
   });
 
   it('accumule durationMs au lieu de l’écraser (cas d’un job requeué)', async () => {
@@ -121,6 +152,29 @@ describe('runJob', () => {
     expect(await remoteBranchSha(h.remotePath, BRANCH)).toBeNull();
     expect(h.source.pulls).toHaveLength(0);
     expect(h.source.commentsOf(issue7).at(-1)).toContain('aws-access-token');
+    expect(existsSync(done.worktreePath!)).toBe(false);
+    expect(existsSync(jobDir(h.paths, done.id))).toBe(true);
+  });
+
+  it('chemin protégé touché : failed, aucune PR, worktree nettoyé', async () => {
+    const h = await makeHarness({
+      steps: [
+        { output: readyVerdict },
+        { output: report('v1'), sideEffect: async (opts) => writeFiles(opts.cwd, { 'src/feature.txt': 'hello\n', 'secrets/key.txt': 's3cret\n' }) },
+      ],
+    });
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    const done = await runJob(job.id, h.deps, signal());
+    expect(done.state).toBe('failed');
+    expect(done.flags.protectedPathsTouched).toEqual(['secrets/key.txt']);
+    expect(done.error).toContain('chemins protégés');
+    expect(await remoteBranchSha(h.remotePath, BRANCH)).toBeNull();
+    expect(h.source.pulls).toHaveLength(0);
+    expect(h.source.labelsOf(issue7)).toEqual(['sisyphe', 'sisyphe:failed']);
+    const comment = h.source.commentsOf(issue7).at(-1)!;
+    expect(comment).toContain('secrets/key.txt');
+    expect(comment).toContain('chemins protégés');
+    expect(comment).toContain('worktree est supprimé');
     expect(existsSync(done.worktreePath!)).toBe(false);
     expect(existsSync(jobDir(h.paths, done.id))).toBe(true);
   });

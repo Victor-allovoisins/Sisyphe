@@ -68,9 +68,10 @@ describe('validateApiKey', () => {
 });
 
 describe('validateBackend', () => {
-  it('accepte cli et sdk, rejette le reste', () => {
-    expect(validateBackend('cli')).toBeNull();
-    expect(validateBackend('sdk')).toBeNull();
+  it("accepte les quatre backends canoniques et l'alias cli, rejette le reste", () => {
+    for (const backend of ['sdk', 'claude-code', 'codex', 'opencode', 'cli']) {
+      expect(validateBackend(backend)).toBeNull();
+    }
     expect(validateBackend('')).not.toBeNull();
     expect(validateBackend('bedrock')).not.toBeNull();
   });
@@ -129,11 +130,11 @@ describe('buildRawConfig', () => {
       }),
     );
     const raw = buildRawConfig(
-      { appId: 9, installationId: 10, privateKeyPath: '/new.pem', repos: ['new/repo'], dataDir: '/new-data', agentBackend: 'cli' },
+      { appId: 9, installationId: 10, privateKeyPath: '/new.pem', repos: ['new/repo'], dataDir: '/new-data', agentBackend: 'claude-code' },
       existing,
     );
     const merged = parseMachineConfig(stringify(raw));
-    expect(merged.agentBackend).toBe('cli');
+    expect(merged.agentBackend).toBe('claude-code');
     expect(merged.github.appId).toBe(9);
     expect(merged.repos).toEqual(['new/repo']);
     expect(merged.dataDir).toBe('/old-data');
@@ -148,7 +149,7 @@ describe('buildRawConfig', () => {
       dataDir: '~/.sisyphe',
     });
     const answers = {
-      appId: 9, installationId: 10, privateKeyPath: '~/cles/app.pem', repos: ['new/repo'], dataDir: '/defaut', agentBackend: 'cli' as const,
+      appId: 9, installationId: 10, privateKeyPath: '~/cles/app.pem', repos: ['new/repo'], dataDir: '/defaut', agentBackend: 'claude-code' as const,
     };
 
     // La cause, pinnée : repartir de la forme développée grave l'absolu dans un fichier qui disait `~`,
@@ -168,19 +169,19 @@ describe('buildRawConfig', () => {
     const reloaded = await loadMachineConfig(configPath);
     expect(reloaded.repos).toEqual(['new/repo']);
     expect(reloaded.github.appId).toBe(9);
-    expect(reloaded.agentBackend).toBe('cli');
+    expect(reloaded.agentBackend).toBe('claude-code');
     expect(reloaded.dataDir).toBe(expandHome('~/.sisyphe'));
     expect(reloaded.github.privateKeyPath).toBe(expandHome('~/cles/app.pem'));
     // Le fichier lui-même n'a pas bougé : c'est la lecture qui développe, pas l'écriture.
     expect(await readFile(configPath, 'utf8')).toContain('dataDir: ~/.sisyphe');
   });
 
-  it('backend cli : sandbox forcé à false (sinon createApp refuse la config et setup ne la corrigerait jamais)', () => {
+  it('backend claude-code : sandbox forcé à false (sinon createApp refuse la config et setup ne la corrigerait jamais)', () => {
     const existing = parseMachineConfig(
       stringify({ github: { appId: 1, installationId: 2, privateKeyPath: '/old.pem' }, repos: ['old/repo'], sandbox: true }),
     );
     const answers = { appId: 1, installationId: 2, privateKeyPath: '/k.pem', repos: ['a/b'], dataDir: '/d' };
-    expect(parseMachineConfig(stringify(buildRawConfig({ ...answers, agentBackend: 'cli' }, existing))).sandbox).toBe(false);
+    expect(parseMachineConfig(stringify(buildRawConfig({ ...answers, agentBackend: 'claude-code' }, existing))).sandbox).toBe(false);
     expect(parseMachineConfig(stringify(buildRawConfig({ ...answers, agentBackend: 'sdk' }, existing))).sandbox).toBe(true);
   });
 
@@ -201,12 +202,12 @@ describe('buildRawConfig', () => {
     expect(merged.dataDir).not.toBe('/Users/x/.sisyphe');
   });
 
-  it("une config sdk sans plafond passée en cli n'y grave aucun plafond", () => {
+  it("une config sdk sans plafond passée en claude-code n'y grave aucun plafond", () => {
     const existing = parseMachineConfig(
       stringify({ github: { appId: 1, installationId: 2, privateKeyPath: '/old.pem' }, repos: ['old/repo'] }),
     );
     const raw = buildRawConfig(
-      { appId: 1, installationId: 2, privateKeyPath: '/k.pem', repos: ['a/b'], dataDir: '/d', agentBackend: 'cli' },
+      { appId: 1, installationId: 2, privateKeyPath: '/k.pem', repos: ['a/b'], dataDir: '/d', agentBackend: 'claude-code' },
       existing,
     );
     // setup recopie la config existante : un plafond résolu à la lecture s'y graverait sans que l'utilisateur l'ait saisi.
@@ -228,11 +229,11 @@ describe('buildRawConfig', () => {
   });
 
   it('sans config existante, ne pose que les champs fournis (les défauts du schéma s’appliquent, dataDir vient des réponses)', () => {
-    const raw = buildRawConfig({ appId: 1, installationId: 2, privateKeyPath: '/k.pem', repos: ['a/b'], dataDir: '/d', agentBackend: 'cli' });
+    const raw = buildRawConfig({ appId: 1, installationId: 2, privateKeyPath: '/k.pem', repos: ['a/b'], dataDir: '/d', agentBackend: 'claude-code' });
     const merged = parseMachineConfig(stringify(raw));
     expect(merged.triggerLabel).toBe('sisyphe');
     expect(merged.dataDir).toBe('/d');
-    expect(merged.agentBackend).toBe('cli');
+    expect(merged.agentBackend).toBe('claude-code');
   });
 });
 
@@ -358,6 +359,40 @@ describe('installService', () => {
 
     // Clé recueillie par setup : elle voyage en paramètre, pas par `process.env`.
     expect(await installService({ agentBackend: 'sdk' }, manager, 'sk-repondue')).toBe(true);
+  });
+
+  it('vérifie le binaire du backend choisi sur le PATH (et aucun pour sdk)', async () => {
+    const cases: { agentBackend: 'claude-code' | 'codex' | 'opencode'; bin: string }[] = [
+      { agentBackend: 'claude-code', bin: 'claude' },
+      { agentBackend: 'codex', bin: 'codex' },
+      { agentBackend: 'opencode', bin: 'opencode' },
+    ];
+    for (const { agentBackend, bin } of cases) {
+      const { manager } = fakeManager();
+      const which = vi.fn(async (b: string) => `/usr/local/bin/${b}`);
+
+      expect(await installService({ agentBackend }, manager, undefined, { which })).toBe(true);
+
+      expect(which).toHaveBeenCalledWith(bin);
+    }
+
+    const { manager } = fakeManager();
+    const which = vi.fn(async (b: string) => `/usr/local/bin/${b}`);
+    expect(await installService({ agentBackend: 'sdk' }, manager, undefined, { which })).toBe(true);
+    expect(which).not.toHaveBeenCalled();
+  });
+
+  it('binaire du backend introuvable : refuse l’installation et nomme le binaire', async () => {
+    const { manager, calls } = fakeManager();
+    const which = async (b: string): Promise<string> => {
+      if (b === 'codex') throw new Error('codex introuvable sur le PATH');
+      return `/usr/local/bin/${b}`;
+    };
+
+    await expect(installService({ agentBackend: 'codex' }, manager, undefined, { which })).rejects.toThrow(
+      'codex introuvable sur le PATH : installer Codex CLI puis relancer setup.',
+    );
+    expect(calls).toEqual([]);
   });
 });
 

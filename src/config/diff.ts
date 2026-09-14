@@ -40,6 +40,11 @@ const SAME_RESTART: Record<RestartRequiredField, Same> = {
   triggerLabel: (a, b) => a.triggerLabel === b.triggerLabel,
   sandbox: (a, b) => a.sandbox === b.sandbox,
   agentBackend: (a, b) => a.agentBackend === b.agentBackend,
+  // Champ absent et sous-champ absent se comparent pareil (`null`) : ajouter ou retirer une surcharge est un
+  // changement, mais deux formes équivalentes de l'objet ne doivent pas réclamer un redémarrage pour rien.
+  agentModels: (a, b) =>
+    (a.agentModels?.triage ?? null) === (b.agentModels?.triage ?? null)
+    && (a.agentModels?.implement ?? null) === (b.agentModels?.implement ?? null),
   dataDir: (a, b) => samePath(a.dataDir, b.dataDir),
 };
 
