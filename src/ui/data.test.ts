@@ -104,13 +104,13 @@ describe('overview', () => {
   it("daemon.running est faux sans fichier de verrou, vrai avec le pid courant, faux avec un pid mort", async () => {
     const ui = await makeUi();
 
-    expect((await ui.data.overview()).daemon).toEqual({ running: false, pid: null, paused: null });
+    expect((await ui.data.overview()).daemon).toEqual({ running: false, pid: null, paused: null, pendingRestart: [] });
 
     await writeFile(join(ui.paths.root, 'daemon.lock'), String(process.pid));
-    expect(await ui.data.overview().then((o) => o.daemon)).toEqual({ running: true, pid: process.pid, paused: null });
+    expect(await ui.data.overview().then((o) => o.daemon)).toEqual({ running: true, pid: process.pid, paused: null, pendingRestart: [] });
 
     await writeFile(join(ui.paths.root, 'daemon.lock'), String(DEAD_PID));
-    expect(await ui.data.overview().then((o) => o.daemon)).toEqual({ running: false, pid: DEAD_PID, paused: null });
+    expect(await ui.data.overview().then((o) => o.daemon)).toEqual({ running: false, pid: DEAD_PID, paused: null, pendingRestart: [] });
   });
 
   it('daemon injoignable : paused null et control.reachable faux', async () => {
@@ -124,6 +124,17 @@ describe('overview', () => {
     expect(await (await makeUi({ control: online(true) })).data.overview().then((o) => o.daemon.paused)).toBe(true);
     expect(await (await makeUi({ control: online(false) })).data.overview().then((o) => o.daemon.paused)).toBe(false);
     expect(await (await makeUi({ control: online(false) })).data.overview().then((o) => o.control.reachable)).toBe(true);
+  });
+
+  it('publie les champs en attente de redémarrage rapportés par le daemon', async () => {
+    const control: UiControl = {
+      ping: async () => ({
+        pid: 7, paused: false, running: 0, queued: 0, startedAt: '2026-09-13T08:00:00.000Z',
+        pendingRestart: ['repos', 'triggerLabel'],
+      }),
+    };
+    const o = await (await makeUi({ control })).data.overview();
+    expect(o.daemon.pendingRestart).toEqual(['repos', 'triggerLabel']);
   });
 
   it('readOnly est publié tel qu’il a été injecté : la page en dépend pour masquer les boutons', async () => {

@@ -7,7 +7,7 @@ import { AmbiguousJobPrefixError, findJob } from '../cli/resolve-job.js';
 import { effectiveDailyBudget, type AgentBackend, type MachineConfig } from '../config/machine.js';
 import { jobDir, type DataPaths } from '../config/paths.js';
 import { DaemonUnreachableError } from '../daemon/control-client.js';
-import type { DaemonStatus } from '../daemon/control-types.js';
+import type { DaemonStatus, RestartRequiredField } from '../daemon/control-types.js';
 import { readLock } from '../daemon/lock.js';
 import type { ActionRow, ActionStore } from '../store/actions.js';
 import { startOfLocalDay } from '../jobs/scheduler.js';
@@ -99,7 +99,7 @@ export interface ActiveJob extends Job {
 export interface Overview {
   now: string;
   /** `paused` vient de la socket de contrôle : `null` quand le daemon ne répond pas. */
-  daemon: { running: boolean; pid: number | null; paused: boolean | null };
+  daemon: { running: boolean; pid: number | null; paused: boolean | null; pendingRestart: RestartRequiredField[] };
   control: { reachable: boolean };
   readOnly: boolean;
   recentActions: ActionRow[];
@@ -312,7 +312,13 @@ export function createUiData(deps: UiDataDeps): UiData {
     const cap = effectiveDailyBudget(machine);
     return {
       now: at.toISOString(),
-      daemon: { running: lock?.alive ?? false, pid: lock?.pid ?? null, paused: status?.paused ?? null },
+      daemon: {
+        running: lock?.alive ?? false,
+        pid: lock?.pid ?? null,
+        paused: status?.paused ?? null,
+        // Rappel persistant de la page de réglages : le daemon accumule les champs structurels modifiés, il les dit ici.
+        pendingRestart: status?.pendingRestart ?? [],
+      },
       control: { reachable: status !== null },
       readOnly: deps.readOnly,
       recentActions: deps.actions.listRecent(RECENT_ACTIONS),

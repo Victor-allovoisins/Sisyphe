@@ -147,7 +147,7 @@ describe('startUiServer', () => {
 
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toBe('application/json; charset=utf-8');
-    expect(body.daemon).toEqual({ running: false, pid: null, paused: null });
+    expect(body.daemon).toEqual({ running: false, pid: null, paused: null, pendingRestart: [] });
     expect(body.counts.active).toBe(1);
     expect(body.active[0].id).toBe('ov1');
   });
