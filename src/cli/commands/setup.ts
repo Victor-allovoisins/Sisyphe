@@ -89,8 +89,9 @@ export interface SetupAnswers {
  * dataDir n'est redemandé nulle part ici — un dataDir personnalisé déjà présent dans la config existante
  * est conservé (setup ne doit pas silencieusement ramener les données vers la racine par défaut). Tout le
  * reste (triggerLabel, pollIntervalSeconds, maxConcurrentJobs, dailyBudgetUsd…) est conservé aussi. Seul
- * `sandbox` est forcé à false pour le backend `cli`, qui ne le supporte pas : un `sandbox: true` hérité
- * rendrait la config inutilisable (createApp la refuse) sans que setup puisse jamais la réparer.
+ * `sandbox` est forcé à false dès que le backend n'est pas `sdk`, qui est le seul à le supporter : un
+ * `sandbox: true` hérité rendrait la config inutilisable (createApp la refuse) sans que setup puisse jamais
+ * la réparer. L'alias `cli` (normalisé en `claude-code` au parse) est couvert par ce même test.
  */
 export function buildRawConfig(answers: SetupAnswers, existing?: MachineConfig): Record<string, unknown> {
   return {
@@ -98,7 +99,7 @@ export function buildRawConfig(answers: SetupAnswers, existing?: MachineConfig):
     github: { appId: answers.appId, installationId: answers.installationId, privateKeyPath: answers.privateKeyPath },
     repos: answers.repos,
     agentBackend: answers.agentBackend,
-    ...(answers.agentBackend === 'cli' ? { sandbox: false } : {}),
+    ...(answers.agentBackend !== 'sdk' ? { sandbox: false } : {}),
     dataDir: existing?.dataDir ?? answers.dataDir,
   };
 }
@@ -128,9 +129,9 @@ export async function installService(
   manager: ServiceManager,
   apiKey?: string,
 ): Promise<boolean> {
-  // Backend `cli` : la session claude.ai remplace la clé API, mais `claude` doit être joignable depuis le
-  // PATH que le service transmettra au daemon — sinon chaque job échouerait.
-  if (machine.agentBackend === 'cli') {
+  // Backend `claude-code` (ex-`cli`) : la session claude.ai remplace la clé API, mais `claude` doit être
+  // joignable depuis le PATH que le service transmettra au daemon — sinon chaque job échouerait.
+  if (machine.agentBackend === 'claude-code') {
     try {
       await which('claude');
     } catch {

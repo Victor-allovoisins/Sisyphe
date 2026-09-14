@@ -165,9 +165,9 @@ export function buildChecks(input: BuildChecksInput): Check[] {
   // `caffeinate` est un outil macOS : ailleurs, le daemon n'a aucune veille à empêcher.
   if (platform === 'darwin') checks.push({ name: 'caffeinate', warn: true, run: () => which('caffeinate') });
 
-  // Backend `cli` : c'est la CLI locale et sa session claude.ai qui remplacent la clé API.
+  // Backend `claude-code` (ex-`cli`) : c'est la CLI locale et sa session claude.ai qui remplacent la clé API.
   // Config absente ou illisible (machine indéfinie) : on reste sur le défaut du schéma, `sdk`.
-  if (input.machine?.agentBackend === 'cli') {
+  if (input.machine?.agentBackend === 'claude-code') {
     checks.push({ name: 'claude (CLI)', run: () => checkClaudeCli(platform) });
     checks.push({ name: 'claude auth status', run: checkClaudeAuth });
   } else if (input.apiKeyChecks !== false) {

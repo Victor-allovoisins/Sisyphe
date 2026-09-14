@@ -52,7 +52,7 @@ export interface ConfigFields {
   maxConcurrentJobs?: number;
   triggerLabel?: string;
   sandbox?: boolean;
-  agentBackend?: 'sdk' | 'cli';
+  agentBackend?: 'sdk' | 'cli' | 'claude-code' | 'codex' | 'opencode';
 }
 
 /** `config.yml` complet : les champs omis par un test gardent leur valeur, sinon le schéma remettrait ses défauts. */
@@ -81,7 +81,7 @@ export interface HarnessOptions {
   /** Ce qu'écrit `config.yml` : un nombre, `null` pour « aucun plafond », `'absent'` pour ne pas écrire la ligne. */
   dailyBudgetUsd?: number | null | 'absent';
   /** Backend de la config machine ; absent, le schéma retombe sur `sdk`. Ne change pas l'agent du harness, toujours scripté. */
-  agentBackend?: 'sdk' | 'cli';
+  agentBackend?: 'sdk' | 'cli' | 'claude-code' | 'codex' | 'opencode';
   issues?: Array<{ number: number; title: string; author?: string; labeledBy?: string }>;
   /** Fichiers ajoutés au repo distant ; peuvent remplacer ceux du fixture, `sisyphe.yml` compris. */
   files?: Record<string, string>;

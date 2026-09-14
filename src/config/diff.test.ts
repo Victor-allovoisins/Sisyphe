@@ -33,4 +33,15 @@ describe('diffMachineConfig', () => {
   it('budget : `null` et champ absent sont deux valeurs distinctes', () => {
     expect(diffMachineConfig({ ...base, dailyBudgetUsd: undefined }, { ...base, dailyBudgetUsd: null }).hot).toEqual(['dailyBudgetUsd']);
   });
+
+  it('agentModels : un changement de triage seul est structurel', () => {
+    const next: MachineConfig = { ...base, agentModels: { triage: 'gpt-5-codex' } };
+    expect(diffMachineConfig(base, next)).toEqual({ hot: [], restart: ['agentModels'] });
+  });
+
+  it('agentModels : un objet équivalent ne remonte rien', () => {
+    const a: MachineConfig = { ...base, agentModels: { triage: 'gpt-5-codex', implement: 'gpt-5-codex' } };
+    const b: MachineConfig = { ...base, agentModels: { triage: 'gpt-5-codex', implement: 'gpt-5-codex' } };
+    expect(diffMachineConfig(a, b)).toEqual({ hot: [], restart: [] });
+  });
 });

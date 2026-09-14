@@ -72,7 +72,7 @@ describe('defaultServiceContext', () => {
   });
 
   it('remplit node, le script CLI buildé, home, uid et un exec réel', () => {
-    const ctx = defaultServiceContext({ paths, client, machine: { agentBackend: 'cli' } });
+    const ctx = defaultServiceContext({ paths, client, machine: { agentBackend: 'claude-code' } });
     expect(ctx.paths).toBe(paths);
     expect(ctx.client).toBe(client);
     expect(ctx.nodePath).toBe(process.execPath);
@@ -82,11 +82,11 @@ describe('defaultServiceContext', () => {
     expect(typeof ctx.exec).toBe('function');
   });
 
-  it('env : PATH et HOME seulement quand SISYPHE_HOME est absente et le backend est cli', () => {
+  it('env : PATH et HOME seulement quand SISYPHE_HOME est absente et le backend est claude-code', () => {
     vi.stubEnv('PATH', '/sisyphe-test/a:/sisyphe-test/b');
     vi.stubEnv('SISYPHE_HOME', '');
     vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
-    const ctx = defaultServiceContext({ paths, client, machine: { agentBackend: 'cli' } });
+    const ctx = defaultServiceContext({ paths, client, machine: { agentBackend: 'claude-code' } });
     // Le répertoire du node courant en tête : aucun des lanceurs n'hérite du PATH d'un shell.
     expect(ctx.env).toEqual({
       PATH: `${nodeDir}:/sisyphe-test/a:/sisyphe-test/b:${join(homedir(), '.local', 'bin')}:${STANDARD_DIRS.join(':')}`,
@@ -96,7 +96,7 @@ describe('defaultServiceContext', () => {
 
   it('env : le PATH garde le node en tête, ~/.local/bin et le socle système, sans doublon', () => {
     vi.stubEnv('PATH', `/sisyphe-test/a:${nodeDir}:/usr/bin:/sisyphe-test/b`);
-    const { PATH } = defaultServiceContext({ paths, client, machine: { agentBackend: 'cli' } }).env;
+    const { PATH } = defaultServiceContext({ paths, client, machine: { agentBackend: 'claude-code' } }).env;
     const dirs = PATH!.split(':');
     expect(dirs[0]).toBe(nodeDir);
     expect(dirs).toContain(join(homedir(), '.local', 'bin'));
@@ -106,27 +106,27 @@ describe('defaultServiceContext', () => {
 
   it('env : SISYPHE_HOME reprise du process quand elle est définie', () => {
     vi.stubEnv('SISYPHE_HOME', '/srv/sisyphe');
-    const ctx = defaultServiceContext({ paths, client, machine: { agentBackend: 'cli' } });
+    const ctx = defaultServiceContext({ paths, client, machine: { agentBackend: 'claude-code' } });
     expect(ctx.env.SISYPHE_HOME).toBe('/srv/sisyphe');
   });
 
   it('env : la clé fournie explicitement l’emporte sur celle de l’environnement, et reste réservée au backend sdk', () => {
     vi.stubEnv('ANTHROPIC_API_KEY', 'sk-environnement');
     expect(defaultServiceContext({ paths, client, machine: { agentBackend: 'sdk' }, apiKey: 'sk-repondue' }).env.ANTHROPIC_API_KEY).toBe('sk-repondue');
-    expect(defaultServiceContext({ paths, client, machine: { agentBackend: 'cli' }, apiKey: 'sk-repondue' }).env).not.toHaveProperty('ANTHROPIC_API_KEY');
+    expect(defaultServiceContext({ paths, client, machine: { agentBackend: 'claude-code' }, apiKey: 'sk-repondue' }).env).not.toHaveProperty('ANTHROPIC_API_KEY');
   });
 
   it('env : ANTHROPIC_API_KEY transmise seulement au backend sdk, et seulement si elle est définie', () => {
     vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
     expect(defaultServiceContext({ paths, client, machine: { agentBackend: 'sdk' } }).env.ANTHROPIC_API_KEY).toBe('sk-test');
-    expect(defaultServiceContext({ paths, client, machine: { agentBackend: 'cli' } }).env).not.toHaveProperty('ANTHROPIC_API_KEY');
+    expect(defaultServiceContext({ paths, client, machine: { agentBackend: 'claude-code' } }).env).not.toHaveProperty('ANTHROPIC_API_KEY');
     vi.stubEnv('ANTHROPIC_API_KEY', '');
     expect(defaultServiceContext({ paths, client, machine: { agentBackend: 'sdk' } }).env).not.toHaveProperty('ANTHROPIC_API_KEY');
   });
 
   it('env : PATH absent du process → le node et le socle suffisent, jamais un PATH vide', () => {
     vi.stubEnv('PATH', undefined);
-    expect(defaultServiceContext({ paths, client, machine: { agentBackend: 'cli' } }).env.PATH).toBe(
+    expect(defaultServiceContext({ paths, client, machine: { agentBackend: 'claude-code' } }).env.PATH).toBe(
       `${nodeDir}:${join(homedir(), '.local', 'bin')}:${STANDARD_DIRS.join(':')}`,
     );
   });

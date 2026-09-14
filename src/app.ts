@@ -1,6 +1,6 @@
 import { CliAgentRunner } from './agent/cli-runner.js';
 import { SdkAgentRunner } from './agent/sdk-runner.js';
-import { SANDBOX_CLI_ERROR, loadMachineConfig, type MachineConfig } from './config/machine.js';
+import { SANDBOX_BACKEND_ERROR, loadMachineConfig, type MachineConfig } from './config/machine.js';
 import { dataPaths, ensureDataDirs, machineConfigPath, type DataPaths } from './config/paths.js';
 import { Git } from './git/git.js';
 import { GitHubIssueSource } from './github/client.js';
@@ -29,11 +29,11 @@ export async function createApp(opts: { logToFile?: boolean; needsAgent?: boolea
   const machine = await loadMachineConfig(configPath);
   if (opts.needsAgent !== false && machine.agentBackend === 'sdk' && !process.env.ANTHROPIC_API_KEY) {
     throw new Error(
-      "ANTHROPIC_API_KEY absente de l'environnement. Le Agent SDK exige une clé API ; pour utiliser l'abonnement Claude Code, mettre `agentBackend: cli` dans la config machine.",
+      "ANTHROPIC_API_KEY absente de l'environnement. Le Agent SDK exige une clé API ; pour utiliser l'abonnement Claude Code, mettre `agentBackend: claude-code` dans la config machine.",
     );
   }
-  if (machine.sandbox && machine.agentBackend === 'cli') {
-    throw new Error(SANDBOX_CLI_ERROR);
+  if (machine.sandbox && machine.agentBackend !== 'sdk') {
+    throw new Error(SANDBOX_BACKEND_ERROR);
   }
   const paths = dataPaths(machine.dataDir);
   await ensureDataDirs(paths);
@@ -46,7 +46,7 @@ export async function createApp(opts: { logToFile?: boolean; needsAgent?: boolea
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(`Impossible d'initialiser le client GitHub : ${message}. Vérifier github.privateKeyPath dans ${configPath}.`);
   }
-  const agent = machine.agentBackend === 'cli' ? new CliAgentRunner({}) : new SdkAgentRunner({ sandbox: machine.sandbox });
+  const agent = machine.agentBackend === 'claude-code' ? new CliAgentRunner({}) : new SdkAgentRunner({ sandbox: machine.sandbox });
   const deps: PipelineDeps = {
     store: new JobStore(db), phases: new PhaseStore(db), actions: new ActionStore(db), source: github, agent, git: new Git(paths), paths, machine, log, env: process.env,
   };
