@@ -31,8 +31,10 @@ Petit projet Node sans dépendance :
 
 ```bash
 ./install.sh                   # installation ou mise à jour du clone (prérequis et options : README)
-claude auth status --json      # backend cli : loggedIn true attendu, sinon `claude login`
-sisyphe setup                  # backend agent (cli/sdk), App ID, Installation ID, chemin .pem, repos : <owner>/sisyphe-playground
+claude auth status --json      # backend claude-code : loggedIn true attendu, sinon `claude login`
+codex login status             # backend codex : « Logged in using ChatGPT » attendu, sinon `codex login`
+opencode auth list             # backend opencode : au moins un fournisseur, sinon `opencode auth login`
+sisyphe setup                  # backend agent (claude-code/sdk/codex/opencode), App ID, Installation ID, chemin .pem, repos : <owner>/sisyphe-playground
 sisyphe doctor                 # aucun ❌ (les ⚠️ — service, caffeinate, espace disque — n'empêchent pas de continuer)
 sisyphe service status         # installé mais arrêté après setup
 sisyphe service stop           # pour piloter le daemon à la main pendant la validation
@@ -41,12 +43,12 @@ sisyphe ui                     # http://127.0.0.1:7777, à garder ouvert pendant
 
 L'interface suffit ensuite pour piloter la validation sans revenir au terminal : Démarrer et Arrêter (barre système du tableau de bord), Pause / Reprendre et Poll maintenant, Annuler ou Relancer un job, et le formulaire « Nouveau job » de l'onglet Jobs pour déclencher une issue sans passer par le label. L'onglet Réglages modifie `config.yml` depuis la page (Exécution, Agent, GitHub, dépôts), avec un bandeau de redémarrage pour les champs structurels et quatre blocs d'information (Diagnostic, Espace disque, Environnement, Dépôts) chargés au premier affichage. Ce qui est déclenché — depuis la page comme depuis la CLI — apparaît dans « Dernières actions ». Pour regarder sans risque de cliquer (démo, écran partagé) : `sisyphe ui --read-only`, qui n'affiche aucun bouton et verrouille les champs de réglages.
 
-Le backend agent est enregistré dans `~/.sisyphe/config.yml` sous `agentBackend` : `cli` lance la CLI Claude Code locale (`claude -p`, abonnement claude.ai, pas de clé API, pas de sandbox), `sdk` garde le Agent SDK et sa clé API. Avec `cli`, `sisyphe doctor` remplace les checks de clé par `claude (CLI)` et `claude auth status`.
+Le backend agent est enregistré dans `~/.sisyphe/config.yml` sous `agentBackend` : `claude-code` (alias historique `cli`) lance la CLI Claude Code locale (`claude -p`, abonnement claude.ai, pas de clé API, pas de sandbox) ; `sdk` garde le Agent SDK et sa clé API ; `codex` lance la CLI OpenAI Codex (`codex exec`, abonnement ChatGPT) ; `opencode` lance la CLI opencode (`opencode run`, multi-fournisseur). `sisyphe doctor` adapte ses checks : `claude (CLI)` + `claude auth status` pour `claude-code`, `codex (CLI)` + `codex login status` pour `codex`, `opencode (CLI)` + `opencode auth list` pour `opencode`, et la clé `ANTHROPIC_API_KEY` seulement pour `sdk`.
 
 Deux pièges connus de cette étape :
 
 - Backend `sdk` : la question `ANTHROPIC_API_KEY` est affichée en clair par readline pendant la frappe. `export ANTHROPIC_API_KEY=...` avant `setup` fait apparaître un défaut `[valeur de l'environnement]` : appuyer sur Entrée pour l'accepter évite de retaper (et de réafficher) la clé.
-- Backend `cli` : le daemon lancé par launchd doit voir `claude` sur son PATH et le vrai `HOME` (la session vit dans `~/.claude`) ; `sisyphe setup` résout `claude` et met son dossier dans le PATH du plist (setup refuse d'installer si `claude` est introuvable).
+- Backend CLI (`claude-code`, `codex`, `opencode`) : le daemon lancé par launchd doit voir le binaire sur son PATH et le vrai `HOME` (les sessions vivent sous `~/.claude`, `~/.codex`, `~/.local/share/opencode`) ; `sisyphe setup` résout le binaire du backend choisi et met son dossier dans le PATH du plist (setup refuse d'installer si ce binaire est introuvable).
 
 ### Validation réelle du backend `cli` — 2026-09-09, claude 2.1.265
 
@@ -66,6 +68,32 @@ Drapeaux validés tels que `buildCliArgs` les produit :
 - **Isolation** : lancé dans un dossier contenant un `CLAUDE.md` (« réponds toujours BANANA ») et un `.claude/settings.json` plantés, l'agent a répondu `OK` — ni l'un ni l'autre n'a été chargé ; `mcp_servers: []`, `plugins: []`, `apiKeySource: none`.
 - **Hook de garde** : second appel avec `--settings <cli-settings>.json`, `--tools Write --allowedTools Write` et `SISYPHE_GUARD_*`. La tentative d'écriture dans `secrets/leak.txt` a été refusée par le hook avec la raison exacte de `decidePath` (`Chemin protégé par sisyphe.yml : secrets/leak.txt`), refus enregistré dans `permission_denials`, aucun fichier créé.
 - **Non couvert** : `--resume` n'a été exercé que contre le faux binaire des tests.
+
+### Validation par backend (claude-code, sdk, codex, opencode)
+
+Le backend se change dans `~/.sisyphe/config.yml` (`agentBackend`) ou via l'onglet Réglages, puis un redémarrage du daemon. Pour chacun, lancer un cycle borné sur une issue claire du playground et vérifier le transcript résumé (`sisyphe logs <jobId>`) et les KPI. Les limites sont communes : pas de plafond budget/tours hors `sdk`/`claude-code`, coût nul pour codex et best-effort pour opencode, et un chemin protégé touché fait échouer le job.
+
+**claude-code** — couvert par la validation réelle du 2026-09-09 ci-dessus (drapeaux, `structured_output`, hook PreToolUse).
+
+**sdk** — `export ANTHROPIC_API_KEY=...`, puis `sisyphe start --once`. Observer : coût réel non nul, `maxBudgetUsd`/`maxTurns` respectés (le job s'arrête sur budget/tours), hook de chemins actif dans le transcript.
+
+**codex** — prérequis `codex login status` (« Logged in using ChatGPT »). Run trivial borné :
+
+```bash
+codex exec --json --sandbox read-only --skip-git-repo-check "réponds exactement OK" | head
+```
+
+Observer le flux d'événements : `thread.started` (porte `thread_id`), `turn.started`, `item.completed` (`agent_message`, `command_execution`, `file_change`), `turn.completed` (usage `input_tokens`/`cached_input_tokens`/`output_tokens`). `sisyphe logs` doit rendre lisibles `💬`/`🔧`/`📝`. Coupure réseau attendue : `-c web_search="disabled" -c tools.web_search=false -c mcp_servers={}`. **Capture réelle du 2026-09-14 (codex 0.154)** : quota ChatGPT épuisé, donc seul le chemin d'échec a été observé — `error` (`message` racine) puis `turn.failed` (`error.message`) ; le succès, `item.completed` et `turn.completed.usage` restent issus du schéma codex-rs. Le coût reporté est toujours 0, seul le timeout de Sisyphe borne le run.
+
+**opencode** — prérequis `opencode auth list` (au moins un fournisseur). Choisir un modèle authentifié (`opencode models`), puis :
+
+```bash
+OPENCODE_PERMISSION='{"*":"deny","read":"allow"}' opencode run --format json --auto -m <provider/modèle> "réponds exactement OK" | head
+```
+
+Observer : `step_start`/`text`/`step_finish` (`sessionID` racine, `messageID` dans `part`) ; `part.tokens` avec `cache: { read, write }` et `part.cost` **par étape** (Sisyphe somme les étapes) ; `tool_use` avec `part.type: "tool"`, `part.tool`, `part.state.input` ; un échec d'authentification donne `type: "error"` avec `error.data.message`. `sisyphe logs` doit rendre `💬`/`🔧`. Le `OPENCODE_PERMISSION` ci-dessus (allowlist `*: deny` puis `read/glob/grep: allow`) a été vérifié en réel : l'agent a refusé `bash` et basculé sur `read`. Coût best-effort, pas de plafond budget/tours.
+
+**Garde de chemins** : `sdk`/`claude-code` bloquent a priori (hook, refus visible dans `permission_denials`) ; `codex`/`opencode` bloquent en amont par bac à sable/permissions, puis, dans tous les cas, le contrôle a posteriori de Sisyphe fait **échouer** tout job ayant touché un chemin protégé — aucun push, aucune PR.
 
 ## 4. Scénarios à dérouler (dans l'ordre)
 
