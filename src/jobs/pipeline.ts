@@ -176,7 +176,9 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
           cwd: wtPath, model: phaseModel(deps.machine, 'triage', config.models.triage), phase: 'triage', systemPromptAppend: appendix,
           prompt: triagePrompt(issue, config), outputSchema: triageJsonSchema,
           maxTurns: TRIAGE_MAX_TURNS, maxBudgetUsd: config.budget.triageUsd,
-          allowedTools: TRIAGE_TOOLS, disallowedTools: TRIAGE_DENY, env: agentEnvVars,
+          allowedTools: TRIAGE_TOOLS, disallowedTools: TRIAGE_DENY,
+          pathGuard: { worktreePath: wtPath, protectedPatterns: config.protectedPaths },
+          env: agentEnvVars,
           timeoutMs: minutes(config.timeouts.triageMinutes), signal, transcriptPath: join(dir, 'transcript-triage-1.jsonl'),
         }),
       (res) => ({

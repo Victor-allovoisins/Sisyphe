@@ -37,23 +37,34 @@ function isTerminalError(type: string): boolean {
 
 /**
  * Permission `OPENCODE_PERMISSION` : `*: deny` puis autorisations ciblées. En triage, seuls la
- * lecture et la recherche sont ouvertes. En implémentation (`allowedTools` contient `Edit` ou
- * `Write`), `edit` s'ouvre par `*: allow` puis chaque motif protégé est refusé sous ses deux formes
- * (le motif tel quel et le motif préfixé d'un double-étoile-slash) — la dernière règle qui matche
- * gagne, donc les refus priment. `bash` est
- * alors autorisé ; `webfetch`/`websearch` ne le sont jamais (couverts par `*: deny`).
+ * lecture et la recherche sont ouvertes. `read` reste ouvert (`*: allow`) mais chaque motif protégé
+ * est refusé sous ses deux formes (le motif tel quel et le motif préfixé d'un double-étoile-slash) :
+ * la dernière règle qui matche gagne, donc les refus priment — un fichier protégé ne peut être lu,
+ * ni en triage ni en implémentation. En implémentation (`allowedTools` contient `Edit` ou `Write`),
+ * `edit` s'ouvre de la même façon puis subit les mêmes refus, et `bash` est alors autorisé ;
+ * `webfetch`/`websearch` ne le sont jamais (couverts par `*: deny`).
  */
 export function buildOpenCodePermission(o: AgentRunOptions): Record<string, unknown> {
+  const patterns = o.pathGuard?.protectedPatterns ?? [];
+  // La permission `read` est ouverte (`*`), mais les motifs protégés restent refusés sous leurs deux
+  // formes : la dernière règle qui matche gagne, donc le `deny` prime. Sans motif, `read` reste `allow`.
+  const read: Record<string, unknown> | string = patterns.length === 0 ? 'allow' : { '*': 'allow' };
+  if (typeof read !== 'string') {
+    for (const pattern of patterns) {
+      read[pattern] = 'deny';
+      read[`**/${pattern}`] = 'deny';
+    }
+  }
   const permission: Record<string, unknown> = {
     '*': 'deny',
-    read: 'allow',
+    read,
     glob: 'allow',
     grep: 'allow',
     external_directory: 'deny',
   };
   if (o.allowedTools.includes('Edit') || o.allowedTools.includes('Write')) {
     const edit: Record<string, unknown> = { '*': 'allow' };
-    for (const pattern of o.pathGuard?.protectedPatterns ?? []) {
+    for (const pattern of patterns) {
       edit[pattern] = 'deny';
       edit[`**/${pattern}`] = 'deny';
     }
@@ -74,10 +85,16 @@ export function buildOpenCodeArgs(o: AgentRunOptions): string[] {
 /**
  * `opencode run` n'a pas de drapeau de system prompt : l'appendice de Sisyphe (règles absolues,
  * chemins protégés, instructions du repo, CLAUDE.md) est concaténé au prompt sur stdin, séparé par
- * une ligne vide — même raisonnement que pour codex.
+ * une ligne vide — même raisonnement que pour codex. opencode n'a pas non plus de drapeau de schéma :
+ * le schéma de sortie est ajouté en clair après le prompt, dans un bloc JSON délimité, pour que
+ * l'agent sache précisément quels champs produire (les prompts y renvoient sans les lister).
  */
 export function buildOpenCodeStdin(o: AgentRunOptions): string {
-  return [o.systemPromptAppend, o.prompt].filter((part) => part !== '').join('\n\n');
+  const parts = [o.systemPromptAppend, o.prompt];
+  if (o.outputSchema) {
+    parts.push(`Schéma JSON à respecter :\n\`\`\`json\n${JSON.stringify(o.outputSchema, null, 2)}\n\`\`\``);
+  }
+  return parts.filter((part) => part !== '').join('\n\n');
 }
 
 /**
@@ -237,7 +254,7 @@ export class OpenCodeAgentRunner implements AgentRunner {
     // exemple avant un appel d'outil) ne doit jamais être repris comme verdict final : le pipeline le
     // revaliderait par zod et accepterait un verdict périmé. On segmente donc par message : un nouvel
     // identifiant de message repart d'un texte vide. Sans aucun identifiant, tout le flux ne forme
-    // qu'un seul segment (repli tolérant tant que le schéma d'événements n'est pas épinglé).
+    // qu'un seul segment.
     let finalAssistantText = '';
     let currentMessageKey: string | null = null;
     let costUsd = 0;

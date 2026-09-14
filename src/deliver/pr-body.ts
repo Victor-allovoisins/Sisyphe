@@ -54,7 +54,6 @@ export function renderPrBody(i: PrBodyInput): string {
 
   const attention: string[] = [];
   if (job.flags.verificationFailed) attention.push(`⚠️ La vérification a échoué après ${job.attempt} tentative(s) : PR en draft pour inspection.`);
-  if (job.flags.protectedPathsTouched.length) attention.push(`⚠️ Chemins protégés modifiés : ${job.flags.protectedPathsTouched.map((p) => `\`${p}\``).join(', ')}`);
   if (job.flags.largeDiff) attention.push(`⚠️ Diff volumineux : ${verify.changedLines} lignes modifiées.`);
   if (job.flags.earlyStop) attention.push(`⚠️ L'agent s'est arrêté avant la fin : ${job.flags.earlyStop}.`);
   if (verify.driftedFiles.length) {

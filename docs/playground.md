@@ -85,10 +85,12 @@ codex exec --json --sandbox read-only --skip-git-repo-check "réponds exactement
 
 Observer le flux d'événements : `thread.started` (porte `thread_id`), `turn.started`, `item.completed` (`agent_message`, `command_execution`, `file_change`), `turn.completed` (usage `input_tokens`/`cached_input_tokens`/`output_tokens`). `sisyphe logs` doit rendre lisibles `💬`/`🔧`/`📝`. Coupure réseau attendue : `-c web_search="disabled" -c tools.web_search=false -c mcp_servers={}`. **Capture réelle du 2026-09-14 (codex 0.154)** : quota ChatGPT épuisé, donc seul le chemin d'échec a été observé — `error` (`message` racine) puis `turn.failed` (`error.message`) ; le succès, `item.completed` et `turn.completed.usage` restent issus du schéma codex-rs. Le coût reporté est toujours 0, seul le timeout de Sisyphe borne le run.
 
+- [ ] **À valider : succès codex contre la vraie CLI.** Backend encore expérimental (voir README) : la capture du 2026-09-14, bloquée par le quota ChatGPT, n'a couvert que l'échec. Après retour du quota, relancer un cycle borné sur une issue triviale du playground et vérifier le succès de bout en bout — événements `thread.started`/`item.completed` (`agent_message`)/`turn.completed.usage`, fichier `-o` relu comme `output`, `stopReason: completed` dans le transcript, `sisyphe logs` lisible et PR ouverte.
+
 **opencode** — prérequis `opencode auth list` (au moins un fournisseur). Choisir un modèle authentifié (`opencode models`), puis :
 
 ```bash
-OPENCODE_PERMISSION='{"*":"deny","read":"allow"}' opencode run --format json --auto -m <provider/modèle> "réponds exactement OK" | head
+OPENCODE_PERMISSION='{"*":"deny","read":"allow","glob":"allow","grep":"allow","external_directory":"deny"}' opencode run --format json --auto -m <provider/modèle> "réponds exactement OK" | head
 ```
 
 Observer : `step_start`/`text`/`step_finish` (`sessionID` racine, `messageID` dans `part`) ; `part.tokens` avec `cache: { read, write }` et `part.cost` **par étape** (Sisyphe somme les étapes) ; `tool_use` avec `part.type: "tool"`, `part.tool`, `part.state.input` ; un échec d'authentification donne `type: "error"` avec `error.data.message`. `sisyphe logs` doit rendre `💬`/`🔧`. Le `OPENCODE_PERMISSION` ci-dessus (allowlist `*: deny` puis `read/glob/grep: allow`) a été vérifié en réel : l'agent a refusé `bash` et basculé sur `read`. Coût best-effort, pas de plafond budget/tours.

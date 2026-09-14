@@ -50,7 +50,6 @@ describe('renderPrBody', () => {
     expect(body).toContain('test : ⏱️ délai de vérification dépassé après 2 min');
     expect(body).toContain('lint : ⏭️ non exécutée');
     expect(body).toContain('non inclus dans ce commit : `Package.resolved`');
-    expect(body).toContain('Chemins protégés modifiés : `App/Config.xcconfig`');
     expect(body).toContain('900 lignes');
     expect(body).toContain('max_budget');
     expect(body).toContain('triage (tentative 1, claude-sonnet-5) : $0.20, 6 tours');

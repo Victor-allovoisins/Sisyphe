@@ -108,6 +108,17 @@ describe('buildOpenCodePermission : allowlist des outils', () => {
     expect(perm.bash).toBeUndefined();
   });
 
+  it('triage avec chemins protégés : read reste autorisé sauf les motifs protégés', () => {
+    const perm = buildOpenCodePermission({
+      allowedTools: ['Read'],
+      phase: 'triage',
+      pathGuard: { worktreePath: '/wt', protectedPatterns: ['secrets/**'] },
+    } as AgentRunOptions);
+    expect(perm.read).toEqual({ '*': 'allow', 'secrets/**': 'deny', '**/secrets/**': 'deny' });
+    expect(perm.edit).toBeUndefined();
+    expect(perm.bash).toBeUndefined();
+  });
+
   it('implémentation (Edit) : edit autorisé puis motifs protégés en deny, bash autorisé', () => {
     const perm = buildOpenCodePermission({
       allowedTools: ['Read', 'Edit'],
@@ -115,6 +126,7 @@ describe('buildOpenCodePermission : allowlist des outils', () => {
     } as AgentRunOptions);
     expect(perm).toEqual({
       ...BASE_PERMISSION,
+      read: { '*': 'allow', 'secrets/**': 'deny', '**/secrets/**': 'deny', '.env': 'deny', '**/.env': 'deny' },
       edit: { '*': 'allow', 'secrets/**': 'deny', '**/secrets/**': 'deny', '.env': 'deny', '**/.env': 'deny' },
       bash: 'allow',
     });
@@ -205,7 +217,24 @@ describe('OpenCodeAgentRunner : arguments et environnement', () => {
         .filter(Boolean)
         .map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)] as const),
     );
-    expect(JSON.parse(childEnv.get('OPENCODE_PERMISSION')!)).toEqual(BASE_PERMISSION);
+    expect(JSON.parse(childEnv.get('OPENCODE_PERMISSION')!)).toEqual({
+      ...BASE_PERMISSION,
+      read: { '*': 'allow', 'secrets/**': 'deny', '**/secrets/**': 'deny' },
+    });
+  });
+
+  it('ajoute le schéma JSON sérialisé après le prompt quand outputSchema est fourni', async () => {
+    const schema = { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } };
+    const c = await ctx({ lines: [textLine('{"answer":"ok"}')], opts: { outputSchema: schema } });
+    await runner().run(c.opts);
+    const stdin = await readFile(c.promptFile, 'utf8');
+    const systemIdx = stdin.indexOf('consignes maison');
+    const promptIdx = stdin.indexOf('fais le job');
+    const schemaIdx = stdin.indexOf('Schéma JSON à respecter :');
+    expect(systemIdx).toBeGreaterThanOrEqual(0);
+    expect(promptIdx).toBeGreaterThan(systemIdx);
+    expect(schemaIdx).toBeGreaterThan(promptIdx);
+    expect(stdin).toContain(JSON.stringify(schema, null, 2));
   });
 
   it('sans modèle : -m disparaît, la CLI choisit son défaut', async () => {
@@ -231,6 +260,7 @@ describe('OpenCodeAgentRunner : arguments et environnement', () => {
     );
     expect(perm.bash).toBe('allow');
     expect(perm.edit).toEqual({ '*': 'allow', 'secrets/**': 'deny', '**/secrets/**': 'deny' });
+    expect(perm.read).toEqual({ '*': 'allow', 'secrets/**': 'deny', '**/secrets/**': 'deny' });
     expect(perm.webfetch).toBeUndefined();
     expect(perm.websearch).toBeUndefined();
   });

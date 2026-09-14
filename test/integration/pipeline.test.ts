@@ -39,6 +39,7 @@ describe('runJob', () => {
     expect(existsSync(done.worktreePath!)).toBe(false);
 
     expect(h.agent.calls[0].allowedTools).toEqual(['Read', 'Glob', 'Grep']);
+    expect(h.agent.calls[0].pathGuard).toEqual({ worktreePath: h.agent.calls[0].cwd, protectedPatterns: ['secrets/**'] });
     expect(h.agent.calls[0].prompt).toContain('On veut hello.');
     expect(h.agent.calls[1].disallowedTools).toContain('Bash(git push:*)');
     expect(h.agent.calls[1].pathGuard).toEqual({ worktreePath: h.agent.calls[1].cwd, protectedPatterns: ['secrets/**'] });

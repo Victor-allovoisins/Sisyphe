@@ -51,7 +51,7 @@ export function prTitle(job: Job): string {
 
 /** Les drapeaux calculés par la vérification sont lus à la source (`verify.flags`), pas dans leur copie sur le job. */
 export function shouldBeDraft(job: Job, verify: VerifyResult, config: RepoConfig): boolean {
-  return config.pr.draft || job.flags.verificationFailed || verify.flags.protectedPathsTouched.length > 0 || verify.flags.largeDiff;
+  return config.pr.draft || job.flags.verificationFailed || verify.flags.largeDiff;
 }
 
 /**
