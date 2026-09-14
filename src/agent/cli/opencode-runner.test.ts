@@ -13,8 +13,8 @@ import type { AgentRunOptions } from '../runner.js';
 
 const FAKE_OPENCODE = fileURLToPath(new URL('../../../test/fakes/fake-opencode.sh', import.meta.url));
 
-const textLine = (text: string, sessionID = 'ses-1') =>
-  JSON.stringify({ type: 'text', sessionID, part: { type: 'text', text } });
+const textLine = (text: string, sessionID = 'ses-1', messageID?: string) =>
+  JSON.stringify({ type: 'text', sessionID, ...(messageID ? { messageID } : {}), part: { type: 'text', text } });
 const usageLine = (over: Record<string, unknown> = {}) =>
   JSON.stringify({
     type: 'step_finish',
@@ -282,6 +282,39 @@ describe('OpenCodeAgentRunner : résultat', () => {
     expect(r.stopReason).toBe('error');
     expect(r.output).toEqual({ answer: 'ok' });
     expect(r.errorMessage).toBeTruthy();
+  });
+
+  it('un JSON d’un message assistant antérieur n’est pas repris si le message final n’en contient pas', async () => {
+    const c = await ctx({
+      lines: [
+        textLine('Voici le verdict.\n\n```json\n{"answer":"périmé"}\n```', 'ses-1', 'msg-1'),
+        textLine('Je n’ai finalement rien à rendre.', 'ses-1', 'msg-2'),
+      ],
+    });
+    const r = await runner().run(c.opts);
+    expect(r.stopReason).toBe('error');
+    expect(r.output).toBeNull();
+  });
+
+  it('seul le JSON du message assistant final est retenu', async () => {
+    const c = await ctx({
+      lines: [
+        textLine('Réflexion intermédiaire sans JSON.', 'ses-1', 'msg-1'),
+        textLine('Je termine.\n\n```json\n{"answer":"ok"}\n```', 'ses-1', 'msg-2'),
+      ],
+    });
+    const r = await runner().run<{ answer: string }>(c.opts);
+    expect(r.stopReason).toBe('completed');
+    expect(r.output).toEqual({ answer: 'ok' });
+  });
+
+  it('les fragments d’un même message sont recollés avant extraction', async () => {
+    const c = await ctx({
+      lines: [textLine('{"answer":', 'ses-1', 'msg-1'), textLine('"ok"}', 'ses-1', 'msg-1')],
+    });
+    const r = await runner().run<{ answer: string }>(c.opts);
+    expect(r.stopReason).toBe('completed');
+    expect(r.output).toEqual({ answer: 'ok' });
   });
 
   it('une ligne non JSON est conservée telle quelle sous sisyphe_raw', async () => {

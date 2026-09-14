@@ -130,6 +130,26 @@ function eventSessionId(e: Record<string, unknown>): string | null {
   return null;
 }
 
+/**
+ * Clé de frontière de message assistant, provisoire comme le reste du schéma d'événements
+ * (épinglé en Task 11). L'identifiant de **message** prime : il regroupe les multiples parties
+ * (texte, appels d'outils, streaming) d'un même message. Faute d'identifiant de message, on retombe
+ * sur l'identifiant de **partie**, mais seulement pour un événement porteur de texte — un événement
+ * technique (`step_finish`…) sans identifiant de message ne doit pas couper le message en cours.
+ * `null` = aucun identifiant exploitable : le flux entier est alors traité comme un seul segment.
+ */
+function messageBoundaryKey(e: Record<string, unknown>, hasText: boolean): string | null {
+  for (const key of ['messageID', 'message_id', 'messageId']) {
+    const v = e[key];
+    if (typeof v === 'string') return `msg:${v}`;
+  }
+  if (!hasText) return null;
+  const part = e.part;
+  const partId = part && typeof part === 'object' ? (part as Record<string, unknown>).id : undefined;
+  const id = partId ?? e.partID ?? e.part_id;
+  return typeof id === 'string' ? `part:${id}` : null;
+}
+
 /** Texte assistant d'un événement, si l'événement est bien une partie de texte (jamais un outil). */
 function eventText(e: Record<string, unknown>): string | null {
   const part = e.part;
@@ -196,7 +216,13 @@ export class OpenCodeAgentRunner implements AgentRunner {
     }
 
     let sessionId: string | null = null;
-    let assistantText = '';
+    // Texte du **dernier** message assistant uniquement. Un JSON émis dans un message antérieur (par
+    // exemple avant un appel d'outil) ne doit jamais être repris comme verdict final : le pipeline le
+    // revaliderait par zod et accepterait un verdict périmé. On segmente donc par message : un nouvel
+    // identifiant de message repart d'un texte vide. Sans aucun identifiant, tout le flux ne forme
+    // qu'un seul segment (repli tolérant tant que le schéma d'événements n'est pas épinglé).
+    let finalAssistantText = '';
+    let currentMessageKey: string | null = null;
     let costUsd = 0;
     let terminalFailure: string | null = null;
     const usage: AgentUsage = zeroUsage();
@@ -216,7 +242,12 @@ export class OpenCodeAgentRunner implements AgentRunner {
         const sid = eventSessionId(parsed);
         if (sid) sessionId = sid;
         const text = eventText(parsed);
-        if (text) assistantText += text;
+        const key = messageBoundaryKey(parsed, text !== null);
+        if (key !== null && key !== currentMessageKey) {
+          currentMessageKey = key;
+          finalAssistantText = '';
+        }
+        if (text) finalAssistantText += text;
         applyUsage(usage, parsed);
         const cost = eventCost(parsed);
         if (cost !== null) costUsd = cost;
@@ -230,7 +261,7 @@ export class OpenCodeAgentRunner implements AgentRunner {
     // opencode n'a pas de schéma : on extrait le dernier objet JSON du texte assistant accumulé.
     // `output` est surfacé dès qu'il est extrait, même si le run n'est pas `completed`.
     const aborted = o.signal.aborted;
-    const extracted = assistantText === '' ? null : extractLastJsonObject(assistantText);
+    const extracted = finalAssistantText === '' ? null : extractLastJsonObject(finalAssistantText);
     const output = extracted === null ? null : (extracted as T);
 
     // `completed` exige un code de sortie 0, un output extrait ET aucun échec terminal. Un timeout
