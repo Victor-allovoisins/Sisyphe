@@ -45,6 +45,36 @@ describe('runJob', () => {
     expect(h.agent.calls[1].prompt).toContain('1. créer src/feature.txt');
   });
 
+  it('agentBackend codex : le runner reçoit le modèle surchargé par phase ; la phase garde le modèle sisyphe.yml', async () => {
+    const h = await makeHarness({
+      steps: [{ output: readyVerdict }, { output: report('Créé'), sideEffect: writeFeature('hello\n') }],
+      agentBackend: 'codex',
+      agentModels: { triage: 'gpt-5', implement: 'gpt-5-codex' },
+    });
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    const done = await runJob(job.id, h.deps, signal());
+    expect(done.state).toBe('done');
+    expect(h.agent.calls[0].model).toBe('gpt-5');
+    expect(h.agent.calls[0].phase).toBe('triage');
+    expect(h.agent.calls[1].model).toBe('gpt-5-codex');
+    expect(h.agent.calls[1].phase).toBe('implement');
+    const phases = h.phases.listForJob(done.id);
+    expect(phases.find((p) => p.name === 'triage')?.model).toBe('claude-sonnet-5');
+    expect(phases.find((p) => p.name === 'implement')?.model).toBe('claude-opus-5');
+  });
+
+  it('agentBackend codex sans agentModels : aucun modèle imposé, la CLI choisit son défaut', async () => {
+    const h = await makeHarness({
+      steps: [{ output: readyVerdict }, { output: report('Créé'), sideEffect: writeFeature('hello\n') }],
+      agentBackend: 'codex',
+    });
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    const done = await runJob(job.id, h.deps, signal());
+    expect(done.state).toBe('done');
+    expect(h.agent.calls[0].model).toBeUndefined();
+    expect(h.agent.calls[1].model).toBeUndefined();
+  });
+
   it('accumule durationMs au lieu de l’écraser (cas d’un job requeué)', async () => {
     const h = await makeHarness({ steps: [{ output: readyVerdict }, { output: report('Créé'), sideEffect: writeFeature('hello\n') }] });
     const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });

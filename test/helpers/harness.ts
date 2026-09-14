@@ -53,6 +53,7 @@ export interface ConfigFields {
   triggerLabel?: string;
   sandbox?: boolean;
   agentBackend?: 'sdk' | 'cli' | 'claude-code' | 'codex' | 'opencode';
+  agentModels?: { triage?: string; implement?: string };
 }
 
 /** `config.yml` complet : les champs omis par un test gardent leur valeur, sinon le schéma remettrait ses défauts. */
@@ -72,6 +73,11 @@ function renderConfig(f: ConfigFields): string {
   if (f.triggerLabel !== undefined) lines.push(`triggerLabel: ${f.triggerLabel}`);
   if (f.sandbox !== undefined) lines.push(`sandbox: ${f.sandbox}`);
   if (f.agentBackend !== undefined) lines.push(`agentBackend: ${f.agentBackend}`);
+  if (f.agentModels !== undefined) {
+    lines.push('agentModels:');
+    if (f.agentModels.triage !== undefined) lines.push(`  triage: ${f.agentModels.triage}`);
+    if (f.agentModels.implement !== undefined) lines.push(`  implement: ${f.agentModels.implement}`);
+  }
   return `${lines.join('\n')}\n`;
 }
 
@@ -82,6 +88,8 @@ export interface HarnessOptions {
   dailyBudgetUsd?: number | null | 'absent';
   /** Backend de la config machine ; absent, le schéma retombe sur `sdk`. Ne change pas l'agent du harness, toujours scripté. */
   agentBackend?: 'sdk' | 'cli' | 'claude-code' | 'codex' | 'opencode';
+  /** Surcharge machine des modèles par phase (codex/opencode). */
+  agentModels?: { triage?: string; implement?: string };
   issues?: Array<{ number: number; title: string; author?: string; labeledBy?: string }>;
   /** Fichiers ajoutés au repo distant ; peuvent remplacer ceux du fixture, `sisyphe.yml` compris. */
   files?: Record<string, string>;
@@ -122,6 +130,7 @@ export async function makeHarness(o: HarnessOptions) {
     dataDir: paths.root,
     dailyBudgetUsd: o.dailyBudgetUsd === undefined ? 60 : o.dailyBudgetUsd,
     ...(o.agentBackend === undefined ? {} : { agentBackend: o.agentBackend }),
+    ...(o.agentModels === undefined ? {} : { agentModels: o.agentModels }),
   };
   const configPath = join(root, 'config.yml');
   const machine = parseMachineConfig(renderConfig(fields));

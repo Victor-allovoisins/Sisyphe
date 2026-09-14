@@ -8,7 +8,7 @@ import {
   ImplementationReportSchema, TriageVerdictSchema, fallbackReport, reportJsonSchema, triageJsonSchema,
   type ImplementationReport, type TriageVerdict,
 } from '../agent/schemas.js';
-import type { MachineConfig } from '../config/machine.js';
+import { phaseModel, type MachineConfig } from '../config/machine.js';
 import { jobDir as jobDirFor, repoCachePath, type DataPaths } from '../config/paths.js';
 import { REPO_CONFIG_FILENAME, RepoConfigError, parseRepoConfig, type RepoConfig } from '../config/repo.js';
 import {
@@ -173,7 +173,7 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
       config.models.triage,
       () =>
         deps.agent.run<TriageVerdict>({
-          cwd: wtPath, model: config.models.triage, systemPromptAppend: appendix,
+          cwd: wtPath, model: phaseModel(deps.machine, 'triage', config.models.triage), phase: 'triage', systemPromptAppend: appendix,
           prompt: triagePrompt(issue, config), outputSchema: triageJsonSchema,
           maxTurns: TRIAGE_MAX_TURNS, maxBudgetUsd: config.budget.triageUsd,
           allowedTools: TRIAGE_TOOLS, disallowedTools: TRIAGE_DENY, env: agentEnvVars,
@@ -218,7 +218,7 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
         config.models.implement,
         () =>
           deps.agent.run<ImplementationReport>({
-            cwd: wtPath, model: config.models.implement, systemPromptAppend: appendix,
+            cwd: wtPath, model: phaseModel(deps.machine, 'implement', config.models.implement), phase: 'implement', systemPromptAppend: appendix,
             prompt, outputSchema: reportJsonSchema,
             maxTurns: IMPLEMENT_MAX_TURNS, maxBudgetUsd: config.budget.implementUsd, resumeSessionId: resume,
             allowedTools: IMPLEMENT_TOOLS, disallowedTools: IMPLEMENT_DENY,
