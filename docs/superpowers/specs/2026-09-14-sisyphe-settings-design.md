@@ -30,7 +30,7 @@ Le coût reste calculé, journalisé et affiché dans tous les cas, y compris sa
 
 ## 4. Blocs d'information
 
-- **Diagnostic** : les contrôles de `doctor` rendus dans la page (nom, état ✅ ⚠️ ❌, détail), relancés par un bouton, jamais au chargement automatique.
+- **Diagnostic** : les contrôles de `doctor` rendus dans la page (nom, état ✅ ⚠️ ❌, détail), relancés par un bouton, jamais au chargement automatique. Le contrôle de la clé API n'y figure pas : il lirait l'environnement de l'interface et non celui du service, et pourrait contredire le daemon en cours ; `sisyphe doctor` le conserve.
 - **Espace disque** : taille de `cache`, `mirrors`, `work`, `logs`, `jobs` et total, calculées à la demande ; bouton « Vider le cache de build » qui supprime le contenu de `cache/` et renvoie la place libérée. Ce cache est reconstruit au prochain build : c'est du temps, pas des données. La purge refuse un `cache/` qui serait un lien symbolique : elle en viderait la cible, hors du dossier de données. Pour placer le cache sur un autre disque, déplacer tout `dataDir`. Le parcours de l'occupation disque ne suit aucun lien, pour qu'un lien égaré dans des DerivedData ne fasse pas parcourir tout le disque.
 - **Environnement** : versions de Sisyphe, node, la CLI Claude, git, gitleaks ; chemins du fichier de config, du dossier de données, de la socket et des logs.
 - **Dépôts** : pour chaque dépôt surveillé, l'accès de l'App GitHub et la validité de son `sisyphe.yml` sur la branche par défaut.
@@ -40,12 +40,17 @@ Conséquence assumée : les blocs Diagnostic et Dépôts interrogent GitHub. La 
 ## 5. API
 
 - `GET /api/settings` → `{ config, dataDir, hotReloadable: string[], restartRequired: string[], readOnly }`. `config` est la configuration **telle qu'écrite sur disque**, obtenue en validant le YAML par le schéma sans passer par `loadMachineConfig`, qui développe les chemins : sinon la page renverrait des chemins absolus et le premier enregistrement effacerait tout raccourci `~/…` du fichier. Aucun secret n'y figure. Le corps envoyé en retour doit inclure `dataDir` : omis, la valeur par défaut du schéma s'appliquerait et un dossier de données personnalisé serait refusé comme une modification.
-- `POST /api/actions/settings` avec la configuration complète → validation, écriture, puis `reload` si la socket répond → `200 { ok: true, result: { applied, needsRestart } }` ; `400` sur un corps invalide, avec le détail par champ ; `409` si l'écriture échoue ; `403` en lecture seule.
-- `POST /api/actions/purge-cache` → vide `cache/` → `{ freedBytes }`. Refusé pendant qu'un job tourne, pour ne pas casser un build en cours.
-- `GET /api/diagnostics` → `{ checks, versions, paths }`, calculé à la demande, mémorisé 30 s.
+- `POST /api/actions/settings` avec la configuration complète → validation, écriture, puis `reload` si la socket répond. Le résultat dit explicitement si le daemon a rechargé, pour que la page n'affiche jamais un faux état :
+  - daemon joignable et rechargé → `200 { reloaded: true, applied, needsRestart }` ;
+  - daemon injoignable → `200 { reloaded: false, changed }`, où `changed` liste tous les champs modifiés, rechargeables ou non : ils prendront effet au démarrage ;
+  - fichier écrit mais rechargement refusé → `200 { reloaded: false, reloadError, changed }`, jamais une erreur : le fichier et sa sauvegarde ont déjà tourné, et un code d'échec ferait croire que l'enregistrement n'a pas eu lieu ;
+  - `400` sur un corps invalide, avec le détail par champ ; `409` si l'écriture échoue ou si la configuration actuelle est illisible ; `403` en lecture seule.
+  La comparaison des champs est une fonction pure unique, `diffMachineConfig`, partagée par le daemon et la route, appliquée aux valeurs développées pour qu'un `~/x` et son chemin absolu ne passent pas pour une modification.
+- `POST /api/actions/purge-cache` → vide `cache/` → `{ freedBytes }`. **Quand le daemon répond, la purge passe par sa commande `purge`** : il la sérialise derrière sa porte, la refuse si un job tourne, bloque tout démarrage de job pendant qu'elle s'exécute et la journalise. Sans cela, le daemon pourrait démarrer un job entre la vérification et la fin de la suppression, et casser son build. Daemon injoignable, aucun job ne peut démarrer : la purge se fait localement, refusée tant qu'un job non terminé existe, en attente compris, avec un message invitant à annuler les jobs en file.
+- `GET /api/diagnostics` → `{ checks, versions, paths }`, calculé à la demande, mémorisé 30 s, et invalidé après chaque enregistrement réussi. `?fresh=1`, utilisé par le bouton Relancer, ignore la mémorisation mais rejoint une exécution déjà en cours, pour que des clics répétés ne déclenchent pas d'appels GitHub en parallèle.
 - `GET /api/disk` → `{ entries: [{ name, path, bytes }], totalBytes }`, calculé à la demande, mémorisé 30 s.
 - Les deux actions passent par les mêmes garde-fous que les autres : `Content-Type` JSON, en-tête `X-Sisyphe-Action`, `Origin` local, corps plafonné, refus en lecture seule.
-- Nouvelles entrées de journal : `settings`, `reload` et `purge`. La colonne `action` n'a pas de contrainte SQL, aucune migration n'est nécessaire.
+- Nouvelles entrées de journal : `reload` et `purge`, écrites par le daemon. Un enregistrement avec le daemon joignable apparaît comme `reload` ; daemon arrêté, rien ne peut être journalisé, l'interface n'ayant qu'une connexion en lecture. La colonne `action` n'a pas de contrainte SQL, aucune migration n'est nécessaire.
 
 ## 6. Page
 
