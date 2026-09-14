@@ -92,7 +92,13 @@ describe('CodexAgentRunner : arguments', () => {
     const schemaPath = valueOf(args, '--output-schema')!;
     expect(JSON.parse(await readFile(schemaPath, 'utf8'))).toEqual(schema);
     expect(basename(valueOf(args, '-o')!)).toBe('result-transcript.json');
-    expect(await readFile(c.promptFile, 'utf8')).toBe('fais le job');
+    expect(await readFile(c.promptFile, 'utf8')).toContain('fais le job');
+  });
+
+  it('concatène l’appendice système au prompt sur stdin (codex n’a pas de system prompt dédié)', async () => {
+    const c = await ctx({ lines: [threadStarted(), turnCompleted()], fake: { FAKE_CODEX_RESULT: '{}' } });
+    await runner().run(c.opts);
+    expect(await readFile(c.promptFile, 'utf8')).toBe('consignes maison\n\nfais le job');
   });
 
   it('phase implement : sandbox workspace-write', async () => {
@@ -179,6 +185,32 @@ describe('CodexAgentRunner : résultat', () => {
     expect(r.errorMessage).toContain('le modèle a explosé');
   });
 
+  it('un événement error non terminal n’échoue pas un run réussi', async () => {
+    const c = await ctx({
+      lines: [threadStarted(), JSON.stringify({ type: 'error', message: 'transitoire' }), turnCompleted()],
+      fake: { FAKE_CODEX_RESULT: JSON.stringify({ answer: 'ok' }) },
+    });
+    const r = await runner().run<{ answer: string }>(c.opts);
+    expect(r.stopReason).toBe('completed');
+    expect(r.output).toEqual({ answer: 'ok' });
+    expect(r.errorMessage).toBeUndefined();
+  });
+
+  it('sortie non nulle avec résultat écrit : error, le code de sortie prime', async () => {
+    const c = await ctx({ lines: [threadStarted(), turnCompleted()], fake: { FAKE_CODEX_RESULT: '{"answer":"ok"}', FAKE_CODEX_EXIT: '1' } });
+    const r = await runner().run(c.opts);
+    expect(r.stopReason).toBe('error');
+    expect(r.errorMessage).toBeTruthy();
+  });
+
+  it('un résultat résiduel d’un run précédent est supprimé avant lancement', async () => {
+    const c = await ctx({ lines: [threadStarted(), turnCompleted()] });
+    await writeFile(join(c.dir, 'result-transcript.json'), '{"answer":"périmé"}');
+    const r = await runner().run(c.opts);
+    expect(r.stopReason).toBe('error');
+    expect(r.output).toBeNull();
+  });
+
   it('une ligne coupée entre deux écritures est recollée', async () => {
     const whole = turnCompleted();
     const cut = Math.floor(whole.length / 2);
@@ -228,7 +260,9 @@ describe('CodexAgentRunner : arrêts', () => {
     const started = Date.now();
     const r = await runner().run<{ answer: string }>(c.opts);
     expect(Date.now() - started).toBeLessThan(4000);
-    expect(r.output).toEqual({ answer: 'ok' }); // le résultat est arrivé : seul le traînard a été tué
+    // Le run a été tué : stopReason honnête, mais le résultat déjà écrit reste exploitable.
+    expect(r.stopReason).toBe('timeout');
+    expect(r.output).toEqual({ answer: 'ok' });
     await expectGroupKilled(c.childPidFile);
   });
 

@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { zeroUsage, type AgentUsage } from '../../store/types.js';
 import type { AgentResult, AgentRunOptions, AgentRunner, AgentStopReason } from '../runner.js';
@@ -53,6 +53,15 @@ function eventErrorText(e: Record<string, unknown>): string | null {
   return null;
 }
 
+/**
+ * `codex exec` n'a pas de drapeau de system prompt : l'appendice de Sisyphe (règles absolues, chemins
+ * protégés, instructions du repo, CLAUDE.md) est donc concaténé au prompt, séparé par une ligne vide.
+ * Sans lui, les consignes que `implementPrompt` croit « dans tes instructions système » n'existent pas.
+ */
+export function buildCodexStdin(o: AgentRunOptions): string {
+  return [o.systemPromptAppend, o.prompt].filter((part) => part !== '').join('\n\n');
+}
+
 export class CodexAgentRunner implements AgentRunner {
   private readonly bin: string;
 
@@ -77,10 +86,13 @@ export class CodexAgentRunner implements AgentRunner {
       await writeFile(schemaPath, `${JSON.stringify(o.outputSchema, null, 2)}\n`);
     }
     const resultPath = join(dir, `result-${slug}.json`);
+    // Un fichier résiduel d'un run échoué sur le même chemin serait relu comme un succès : on part propre.
+    await rm(resultPath, { force: true });
 
     let sessionId: string | null = null;
     let numTurns = 0;
     let turnFailed: string | null = null;
+    const streamErrors: string[] = [];
     const usage: AgentUsage = zeroUsage();
 
     const outcome = await runCliProcess({
@@ -90,7 +102,7 @@ export class CodexAgentRunner implements AgentRunner {
       // o.env est déjà l'environnement épuré de l'agent (HOME et PATH compris : `codex` en a besoin
       // pour lire ~/.codex). On n'étend pas process.env.
       env: { ...o.env },
-      stdin: o.prompt,
+      stdin: buildCodexStdin(o),
       transcriptPath: o.transcriptPath,
       timeoutMs: o.timeoutMs,
       signal: o.signal,
@@ -103,8 +115,12 @@ export class CodexAgentRunner implements AgentRunner {
           usage.cacheReadTokens += e.usage?.cached_input_tokens ?? 0;
           usage.outputTokens += e.usage?.output_tokens ?? 0;
         }
-        if ((e.type === 'turn.failed' || e.type === 'error') && turnFailed === null) {
-          turnFailed = eventErrorText(parsed as Record<string, unknown>) ?? `codex ${e.type}`;
+        // Seul `turn.failed` est terminal : `error` peut être non terminal, on en garde le texte sans échouer.
+        if (e.type === 'turn.failed' && turnFailed === null) {
+          turnFailed = eventErrorText(parsed as Record<string, unknown>) ?? 'codex turn.failed';
+        } else if (e.type === 'error') {
+          const text = eventErrorText(parsed as Record<string, unknown>);
+          if (text) streamErrors.push(text);
         }
       },
     });
@@ -124,15 +140,18 @@ export class CodexAgentRunner implements AgentRunner {
       }
     }
 
+    // `completed` exige une sortie propre (code 0) ET un résultat effectivement relu. Un timeout prime
+    // sur un résultat déjà écrit : le run a été tué, même si la sortie structurée est exploitable.
     let stopReason: AgentStopReason;
-    if (readOk && turnFailed === null) stopReason = 'completed';
-    else if (aborted) stopReason = 'aborted';
+    if (aborted) stopReason = 'aborted';
     else if (outcome.timedOut) stopReason = 'timeout';
+    else if (readOk && turnFailed === null && outcome.exitCode === 0) stopReason = 'completed';
     else stopReason = 'error';
 
     const parts: string[] = [];
     if (turnFailed) parts.push(turnFailed);
     if (stopReason !== 'completed') {
+      parts.push(...streamErrors);
       if (readError) parts.push(readError);
       if (outcome.failure) parts.push(outcome.failure);
       if (outcome.stderrTail) parts.push(outcome.stderrTail);
@@ -141,7 +160,7 @@ export class CodexAgentRunner implements AgentRunner {
     }
 
     return {
-      output: stopReason === 'completed' ? output : null,
+      output: readOk && turnFailed === null ? output : null,
       sessionId,
       costUsd: 0,
       usage,
