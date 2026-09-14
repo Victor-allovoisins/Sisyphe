@@ -38,7 +38,7 @@ Conséquence assumée : les blocs Diagnostic et Dépôts interrogent GitHub. La 
 
 ## 5. API
 
-- `GET /api/settings` → `{ config, dataDir, hotReloadable: string[], restartRequired: string[], readOnly }`. `config` est la configuration telle qu'écrite sur disque, sans aucun secret.
+- `GET /api/settings` → `{ config, dataDir, hotReloadable: string[], restartRequired: string[], readOnly }`. `config` est la configuration **telle qu'écrite sur disque**, obtenue en validant le YAML par le schéma sans passer par `loadMachineConfig`, qui développe les chemins : sinon la page renverrait des chemins absolus et le premier enregistrement effacerait tout raccourci `~/…` du fichier. Aucun secret n'y figure. Le corps envoyé en retour doit inclure `dataDir` : omis, la valeur par défaut du schéma s'appliquerait et un dossier de données personnalisé serait refusé comme une modification.
 - `POST /api/actions/settings` avec la configuration complète → validation, écriture, puis `reload` si la socket répond → `200 { ok: true, result: { applied, needsRestart } }` ; `400` sur un corps invalide, avec le détail par champ ; `409` si l'écriture échoue ; `403` en lecture seule.
 - `POST /api/actions/purge-cache` → vide `cache/` → `{ freedBytes }`. Refusé pendant qu'un job tourne, pour ne pas casser un build en cours.
 - `GET /api/diagnostics` → `{ checks, versions, paths }`, calculé à la demande, mémorisé 30 s.
