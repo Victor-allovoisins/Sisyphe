@@ -222,18 +222,16 @@ export class Daemon {
     if (this.stopping) return null;
     if (this.paused) return null;
     if (this.purging) return null;
-    const dailyBudgetUsd = effectiveDailyBudget(this.d.machine);
     const check = canStartJob({
       activeCount: this.running.size,
       maxConcurrent: this.d.machine.maxConcurrentJobs,
       spentTodayUsd: this.d.phases.costSince(startOfLocalDay()),
-      dailyBudgetUsd,
+      dailyBudgetUsd: effectiveDailyBudget(this.d.machine),
     });
     if (!check.ok) {
-      // `reason: 'budget'` implique un plafond défini ; le test le redit pour le typage plutôt que de l'affirmer.
-      if (check.reason === 'budget' && dailyBudgetUsd !== undefined) {
+      if (check.reason === 'budget') {
         // Suivi dans inflight pour que runOnce() et stop() attendent les commentaires.
-        const p: Promise<unknown> = this.announceBudgetPause(dailyBudgetUsd).finally(() => this.inflight.delete(p));
+        const p: Promise<unknown> = this.announceBudgetPause(check.capUsd).finally(() => this.inflight.delete(p));
         this.inflight.add(p);
       }
       return null;

@@ -19,7 +19,6 @@ export interface ReconcileDeps {
 }
 
 export const MAX_REQUEUES = 1;
-export const FAILED_WORKTREE_TTL_DAYS = 7;
 /** Fenêtre pendant laquelle une PR encore ouverte fait foi pour corriger un label in-progress orphelin. */
 const PR_LOOKBACK_DAYS = 30;
 
@@ -89,17 +88,17 @@ async function requeueOrFail(job: Job, d: ReconcileDeps): Promise<void> {
   }
 }
 
-/** Supprime les worktrees qui n'appartiennent ni à un job actif ni à un job failed récent. */
+/**
+ * Supprime les worktrees qui n'appartiennent à aucun job actif. Aucun chemin ne conserve plus volontairement
+ * le clone d'un job en échec : s'il en reste un, c'est que sa suppression a échoué (verrou git, permissions)
+ * et que l'erreur a été avalée — le garder sous un TTL reviendrait à protéger précisément ce qu'il faut reprendre.
+ */
 export async function purgeOrphanWorktrees(d: ReconcileDeps): Promise<void> {
   const keep = new Set<string>();
   for (const j of d.store.listActive()) {
     // Le pipeline crée le dossier avant d'écrire worktreePath en base : couvrir aussi le chemin calculé.
     keep.add(worktreePath(d.paths, j.repo, j.issueNumber));
     if (j.worktreePath) keep.add(j.worktreePath);
-  }
-  const cutoff = Date.now() - FAILED_WORKTREE_TTL_DAYS * 86_400_000;
-  for (const j of d.store.listByStates(['failed'])) {
-    if (j.worktreePath && j.finishedAt && Date.parse(j.finishedAt) > cutoff) keep.add(j.worktreePath);
   }
   let repoDirs: string[] = [];
   try {

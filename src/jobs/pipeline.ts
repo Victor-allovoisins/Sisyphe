@@ -319,9 +319,11 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
     }
     const message = err instanceof Error ? err.message : String(err);
     log.error({ err }, 'job en échec');
-    await cleanup();
     await source.comment(issueRef, renderFailedComment(job.id, message.slice(0, 500), trigger)).catch(() => undefined);
     await source.setStatus(issueRef, 'failed').catch(() => undefined);
+    // Après le commentaire et le statut : le nettoyage lance deux sous-processus git et un rm -rf sans
+    // délai de garde, et un blocage là ne doit pas retarder ce que l'opérateur voit.
+    await cleanup();
     return finish('failed', { error: message });
   }
 }

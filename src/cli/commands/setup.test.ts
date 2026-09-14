@@ -171,6 +171,19 @@ describe('buildRawConfig', () => {
     expect(effectiveDailyBudget(parseMachineConfig(stringify(raw)))).toBeUndefined();
   });
 
+  it("un plafond explicitement vidé reste vidé", () => {
+    const existing = parseMachineConfig(
+      stringify({ github: { appId: 1, installationId: 2, privateKeyPath: '/old.pem' }, repos: ['old/repo'], dailyBudgetUsd: null }),
+    );
+    const raw = buildRawConfig(
+      { appId: 1, installationId: 2, privateKeyPath: '/k.pem', repos: ['a/b'], dataDir: '/d', agentBackend: 'sdk' },
+      existing,
+    );
+    // Un writer qui laisserait tomber les `null` rétablirait le plafond de 60 sous `sdk` : l'image inverse du bug corrigé.
+    expect(stringify(raw)).toContain('dailyBudgetUsd: null');
+    expect(effectiveDailyBudget(parseMachineConfig(stringify(raw)))).toBeUndefined();
+  });
+
   it('sans config existante, ne pose que les champs fournis (les défauts du schéma s’appliquent, dataDir vient des réponses)', () => {
     const raw = buildRawConfig({ appId: 1, installationId: 2, privateKeyPath: '/k.pem', repos: ['a/b'], dataDir: '/d', agentBackend: 'cli' });
     const merged = parseMachineConfig(stringify(raw));

@@ -3,7 +3,8 @@ import { canStartJob, startOfLocalDay } from './scheduler.js';
 
 describe('canStartJob', () => {
   it('bloque sur le budget avant la concurrence', () => {
-    expect(canStartJob({ activeCount: 0, maxConcurrent: 1, spentTodayUsd: 60, dailyBudgetUsd: 60 })).toEqual({ ok: false, reason: 'budget' });
+    // Le refus porte le plafond : le daemon le commente sans avoir à le relire.
+    expect(canStartJob({ activeCount: 0, maxConcurrent: 1, spentTodayUsd: 60, dailyBudgetUsd: 60 })).toEqual({ ok: false, reason: 'budget', capUsd: 60 });
     expect(canStartJob({ activeCount: 1, maxConcurrent: 1, spentTodayUsd: 0, dailyBudgetUsd: 60 })).toEqual({ ok: false, reason: 'concurrency' });
     expect(canStartJob({ activeCount: 0, maxConcurrent: 1, spentTodayUsd: 59.99, dailyBudgetUsd: 60 })).toEqual({ ok: true });
   });

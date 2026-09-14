@@ -79,7 +79,7 @@ describe('reconcile', () => {
     expect(existsSync(wt2.worktreePath)).toBe(true);
   });
 
-  it("conserve le worktree d'un job failed récent et le purge après le TTL", async () => {
+  it("purge le worktree d'un job failed resté sur le disque", async () => {
     const h = await makeHarness({ steps: [] });
     await h.deps.git.ensureMirror(REPO, h.remotePath, h.remotePath, ['main']);
     const wt = await h.deps.git.createWorktree(REPO, 7, 'feature/issue-7-t', 'main');
@@ -88,10 +88,8 @@ describe('reconcile', () => {
     h.store.transition(job.id, 'implementing', { worktreePath: wt.worktreePath, branch: 'feature/issue-7-t', baseSha: wt.baseSha });
     h.store.transition(job.id, 'failed', { worktreePath: wt.worktreePath, error: 'x' });
 
-    await purgeOrphanWorktrees(h.deps);
-    expect(existsSync(wt.worktreePath)).toBe(true);
-
-    h.store.update(job.id, { finishedAt: new Date(Date.now() - 8 * 86_400_000).toISOString() });
+    // Le job échoue désormais en supprimant son clone : un clone encore là est le reste d'une suppression
+    // ratée, pas un choix. Le purger sans délai, y compris à la réconciliation qui suit immédiatement.
     await purgeOrphanWorktrees(h.deps);
     expect(existsSync(wt.worktreePath)).toBe(false);
   });
