@@ -85,6 +85,16 @@ describe('validateMachineConfigInput', () => {
     expect(issues).toEqual([{ path: 'github.privateKeyPath', message: expect.stringContaining(absente) }]);
   });
 
+  it('refuse une clé privée qui est un dossier', async () => {
+    // `access(…, R_OK)` réussit sur un dossier : sans le test de type, un chemin de dossier passerait.
+    const dossier = join(dir, 'cles');
+    await mkdir(dossier);
+    const issues = expectIssues(
+      await validateMachineConfigInput(rawInput({ github: { appId: 12, installationId: 34, privateKeyPath: dossier } }), current),
+    );
+    expect(issues).toEqual([{ path: 'github.privateKeyPath', message: expect.stringContaining(dossier) }]);
+  });
+
   it('cumule les deux règles locales', async () => {
     const issues = expectIssues(
       await validateMachineConfigInput(
@@ -166,17 +176,35 @@ describe('writeMachineConfig', () => {
     expect((await stat(configPath)).mode & 0o777).toBe(0o600);
   });
 
-  it('ne laisse aucun fichier temporaire, ni après un succès ni après un échec', async () => {
+  it("un échec d'écriture ne fait tourner ni le fichier ni sa sauvegarde", async () => {
+    const backup = `${configPath}.bak`;
+    await writeMachineConfig(configPath, expectOk(await validateMachineConfigInput(rawInput(), current)));
+    await writeMachineConfig(configPath, expectOk(await validateMachineConfigInput(rawInput({ repos: ['a/b'] }), current)));
+
+    // Dossier en lecture seule : le temporaire ne peut plus être créé. Le `.bak`, lui, existe déjà et reste
+    // ouvrable en écriture — c'est exactement ce qui le ferait tourner pour rien si on le copiait trop tôt.
+    await chmod(dir, 0o500);
+    await expect(writeMachineConfig(configPath, expectOk(await validateMachineConfigInput(rawInput({ repos: ['c/d'] }), current)))).rejects.toThrow();
+    await chmod(dir, 0o700);
+
+    expect((await loadMachineConfig(configPath)).repos).toEqual(['a/b']);
+    expect(parse(await readFile(backup, 'utf8')).repos).toEqual(['ILokYou/ILokYou-iOS']);
+  });
+
+  it('ne laisse aucun fichier temporaire après un succès', async () => {
     const config = expectOk(await validateMachineConfigInput(rawInput(), current));
     await writeMachineConfig(configPath, config);
     await writeMachineConfig(configPath, config);
     expect((await readdir(dir)).filter((f) => f.includes('.tmp-'))).toEqual([]);
+  });
 
-    // Dossier en lecture seule : l'écriture du temporaire échoue, et le temporaire ne doit pas survivre.
-    const verrouille = join(dir, 'verrouille');
-    await mkdir(verrouille, { mode: 0o500 });
-    await expect(writeMachineConfig(join(verrouille, 'config.yml'), config)).rejects.toThrow();
-    await chmod(verrouille, 0o700);
-    expect(await readdir(verrouille)).toEqual([]);
+  it('supprime le temporaire quand le remplacement échoue', async () => {
+    const config = expectOk(await validateMachineConfigInput(rawInput(), current));
+    // Un dossier là où le fichier de config est attendu : le temporaire est bien écrit, c'est seulement
+    // ensuite que ça casse. Sans ménage, il resterait dans le dossier de données que l'interface affiche.
+    await mkdir(configPath);
+    await writeFile(join(configPath, 'occupant'), 'x');
+    await expect(writeMachineConfig(configPath, config)).rejects.toThrow();
+    expect((await readdir(dir)).filter((f) => f.includes('.tmp-'))).toEqual([]);
   });
 });
