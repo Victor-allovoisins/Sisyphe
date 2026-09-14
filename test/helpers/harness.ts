@@ -80,6 +80,8 @@ export interface HarnessOptions {
   withConfig?: boolean;
   /** Ce qu'écrit `config.yml` : un nombre, `null` pour « aucun plafond », `'absent'` pour ne pas écrire la ligne. */
   dailyBudgetUsd?: number | null | 'absent';
+  /** Backend de la config machine ; absent, le schéma retombe sur `sdk`. Ne change pas l'agent du harness, toujours scripté. */
+  agentBackend?: 'sdk' | 'cli';
   issues?: Array<{ number: number; title: string; author?: string; labeledBy?: string }>;
   /** Fichiers ajoutés au repo distant ; peuvent remplacer ceux du fixture, `sisyphe.yml` compris. */
   files?: Record<string, string>;
@@ -114,16 +116,21 @@ export async function makeHarness(o: HarnessOptions) {
   const agent = new ScriptedAgentRunner(o.steps);
   // Le fichier est écrit sur disque et non seulement analysé : `reload` relit celui-ci, jamais celui de la machine.
   // `??` serait faux ici : `null` est une valeur demandée (aucun plafond), pas une absence d'option.
-  const fields: ConfigFields = {
+  let fields: ConfigFields = {
     github: { appId: 1, installationId: 1, privateKeyPath: '/dev/null' },
     repos: [REPO],
     dataDir: paths.root,
     dailyBudgetUsd: o.dailyBudgetUsd === undefined ? 60 : o.dailyBudgetUsd,
+    ...(o.agentBackend === undefined ? {} : { agentBackend: o.agentBackend }),
   };
   const configPath = join(root, 'config.yml');
-  const writeConfig = (over: Partial<ConfigFields> = {}) => writeFile(configPath, renderConfig({ ...fields, ...over }), 'utf8');
-  await writeConfig();
   const machine = parseMachineConfig(renderConfig(fields));
+  /** Réécrit `config.yml` en cumulant les modifications : deux appels successifs ne s'annulent pas. */
+  const writeConfig = (over: Partial<ConfigFields> = {}) => {
+    fields = { ...fields, ...over };
+    return writeFile(configPath, renderConfig(fields), 'utf8');
+  };
+  await writeConfig();
   const deps: PipelineDeps = {
     store, phases, actions, source, agent, git: new Git(paths), paths, machine,
     log: pino({ level: 'silent' }), env: { PATH: process.env.PATH ?? '' }, scan: async () => [],

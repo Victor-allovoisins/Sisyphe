@@ -52,6 +52,13 @@ export function effectiveDailyBudget(machine: Pick<MachineConfig, 'dailyBudgetUs
   return machine.agentBackend === 'sdk' ? SDK_DEFAULT_DAILY_BUDGET_USD : undefined;
 }
 
+/**
+ * Combinaison que `createApp` refuse au démarrage. Le message vit ici pour que le refus du démarrage et
+ * celui de la page de réglages soient le même mot pour mot : la page doit dire ce que dirait le démarrage.
+ */
+export const SANDBOX_CLI_ERROR =
+  "`sandbox: true` n'est pas supporté par le backend agent `cli` : passer à `agentBackend: sdk` ou mettre `sandbox: false`.";
+
 export type MachineConfigErrorKind = 'missing' | 'invalid';
 
 export class MachineConfigError extends Error {

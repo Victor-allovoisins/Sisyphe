@@ -1,5 +1,6 @@
 import { writeFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
+import { effectiveDailyBudget } from '../../src/config/machine.js';
 import { Daemon } from '../../src/daemon/daemon.js';
 import { pollOnce } from '../../src/daemon/poll.js';
 import type { JobStore } from '../../src/store/jobs.js';
@@ -332,23 +333,40 @@ describe('Daemon.reload', () => {
     expect(h.deps.machine.dailyBudgetUsd).toBe(100);
 
     await daemon.requestTick();
-    expect(h.store.get(job.id)!.state).not.toBe('queued'); // le budget est relu à chaque décision : rien d'autre à faire
+    expect(h.store.get(job.id)!.state).toBe('triaging'); // le budget est relu à chaque décision : rien d'autre à faire
     await daemon.stop();
 
     expect(h.actions.listRecent(1)[0]).toMatchObject({ action: 'reload', source: 'ui', outcome: 'ok' });
   });
 
-  it('plafond vidé : `null` et champ absent sont deux valeurs distinctes, toutes deux appliquées', async () => {
-    const h = await makeHarness({ steps: [], dailyBudgetUsd: 'absent' });
+  it('plafond vidé sous `cli` : `null` et champ absent restent deux valeurs distinctes', async () => {
+    // Sous `cli` les deux formes se résolvent toutes deux en « aucun plafond » : seule une comparaison sur la
+    // valeur brute peut encore les distinguer. Sous `sdk`, l'absence vaut 60 et le test ne prouverait rien.
+    const h = await makeHarness({ steps: [], agentBackend: 'cli', dailyBudgetUsd: 'absent' });
     const daemon = new Daemon(h.deps, { ...QUIET, configPath: h.configPath });
+    expect(effectiveDailyBudget(h.deps.machine)).toBeUndefined();
 
     await h.writeConfig({ dailyBudgetUsd: null });
     expect(await daemon.reload('ui')).toEqual({ ok: true, result: { applied: ['dailyBudgetUsd'], needsRestart: [] } });
     expect(h.deps.machine.dailyBudgetUsd).toBeNull();
+    expect(effectiveDailyBudget(h.deps.machine)).toBeUndefined(); // même résolution, valeur brute différente
 
     await h.writeConfig({ dailyBudgetUsd: 'absent' });
     expect(await daemon.reload('ui')).toEqual({ ok: true, result: { applied: ['dailyBudgetUsd'], needsRestart: [] } });
     expect(h.deps.machine.dailyBudgetUsd).toBeUndefined();
+  });
+
+  it('backend en attente de redémarrage : le budget n’est pas appliqué à chaud, la paire reste cohérente', async () => {
+    // Vivant : {sdk, 40}. Fichier : {cli, budget absent}. Recopier le budget brut seul mettrait le daemon
+    // sur le plafond que `sdk` applique à un champ absent — 60 — que ni la config vivante ni le fichier ne demandent.
+    const h = await makeHarness({ steps: [], dailyBudgetUsd: 40 });
+    const daemon = new Daemon(h.deps, { ...QUIET, configPath: h.configPath });
+    await h.writeConfig({ agentBackend: 'cli', dailyBudgetUsd: 'absent' });
+
+    expect(await daemon.reload('ui')).toEqual({ ok: true, result: { applied: [], needsRestart: ['agentBackend'] } });
+    expect(h.deps.machine.dailyBudgetUsd).toBe(40);
+    expect(h.deps.machine.agentBackend).toBe('sdk');
+    expect(effectiveDailyBudget(h.deps.machine)).toBe(40); // le plafond réellement appliqué reste celui de la paire vivante
   });
 
   it('maxConcurrentJobs relevé à chaud : deux jobs démarrent là où un seul le pouvait', async () => {

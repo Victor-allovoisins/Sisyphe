@@ -3,6 +3,7 @@
  * ce module ne tire pas le daemon pour que l'UI puisse l'importer sans lui.
  */
 import { z } from 'zod';
+import type { MachineConfig } from '../config/machine.js';
 import { ACTION_SOURCES } from '../store/actions.js';
 
 export interface DaemonStatus {
@@ -17,12 +18,29 @@ export interface DaemonStatus {
   startedAt: string;
 }
 
+/**
+ * Champs relus à chaque décision, donc applicables sans redémarrage. La page de réglages sert cette liste
+ * telle quelle : les noms sont un contrat, pas un détail d'implémentation.
+ */
+export const HOT_RELOAD_FIELDS = ['dailyBudgetUsd', 'maxConcurrentJobs', 'pollIntervalSeconds'] as const;
+export type HotReloadField = (typeof HOT_RELOAD_FIELDS)[number];
+
+/**
+ * Champs figés au démarrage dans le client GitHub, le runner d'agent et les chemins de données : les
+ * changer exige un redémarrage. Notation pointée pour les sous-champs de `github`.
+ */
+export const RESTART_REQUIRED_FIELDS = [
+  'github.appId', 'github.installationId', 'github.privateKeyPath',
+  'repos', 'triggerLabel', 'sandbox', 'agentBackend', 'dataDir',
+] as const;
+export type RestartRequiredField = (typeof RESTART_REQUIRED_FIELDS)[number];
+
 /** Ce qu'un `reload` a fait de la configuration relue : ce qui est déjà en vigueur, et ce qui attend un redémarrage. */
 export interface ReloadResult {
   /** Champs rechargeables à chaud dont la valeur a changé et qui sont désormais appliqués. */
-  applied: string[];
+  applied: HotReloadField[];
   /** Champs structurels dont la valeur a changé : le daemon tourne toujours avec l'ancienne. */
-  needsRestart: string[];
+  needsRestart: RestartRequiredField[];
 }
 
 /** Réponse d'une commande : refus métier ou panne, l'appelant ne fait pas la différence — il affiche `error`. */
@@ -75,3 +93,17 @@ export const CONTROL_COMMANDS = [
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 type Assert<T extends true> = T;
 export type ControlCommandsInSync = Assert<Same<(typeof CONTROL_COMMANDS)[number], ControlCommand>>;
+
+/** Racine d'un nom pointé : `github.appId` → `github`. */
+type RootOf<F extends string> = F extends `${infer Head}.${string}` ? Head : F;
+/** Queue d'un nom pointé sous une racine donnée : `github.appId` sous `github` → `appId`. */
+type SuffixOf<F extends string, Root extends string> = F extends `${Root}.${infer Tail}` ? Tail : never;
+
+/**
+ * Même idiome que `ControlCommandsInSync`, appliqué à la taxonomie : tout champ de `MachineConfigSchema`
+ * est classé à chaud ou structurel. Un champ ajouté au schéma sans être rangé dans l'une des deux listes
+ * ne compile plus — au lieu d'être ignoré en silence par `reload`, ce qui ne se verrait qu'à l'usage.
+ */
+export type MachineFieldsClassified = Assert<Same<keyof MachineConfig, HotReloadField | RootOf<RestartRequiredField>>>;
+/** Et de même pour les sous-champs de `github`, que la notation pointée énumère un par un. */
+export type GithubFieldsClassified = Assert<Same<keyof MachineConfig['github'], SuffixOf<RestartRequiredField, 'github'>>>;

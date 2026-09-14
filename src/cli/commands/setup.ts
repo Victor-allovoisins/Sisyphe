@@ -1,10 +1,11 @@
 import { realpathSync } from 'node:fs';
-import { chmod, readFile, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { stringify } from 'yaml';
 import { createApp, type App } from '../../app.js';
 import { MachineConfigError, parseMachineConfig, type AgentBackend, type MachineConfig } from '../../config/machine.js';
+import { writeMachineConfig } from '../../config/write.js';
 import { dataPaths, defaultDataDir, ensureDataDirs, expandHome, machineConfigPath, type DataPaths } from '../../config/paths.js';
 import { parseRepo } from '../../github/source.js';
 import { openDatabase } from '../../store/db.js';
@@ -243,8 +244,11 @@ export async function setupCommand(opts: SetupOptions = {}, deps: { createManage
     if (paths.root !== dataDir) {
       await ensureDataDirs(dataPaths(dataDir));
     }
-    await writeFile(configPath, stringify(raw), { mode: 0o600 });
-    await chmod(configPath, 0o600); // le mode de writeFile n'est appliqué qu'à la création
+    // Même écrivain que la page de réglages : rename atomique, 0600, et `.bak` de la version précédente —
+    // une relance de setup ne peut plus laisser un config.yml à moitié remplacé ni perdre l'ancien.
+    // `machine` plutôt que `raw` : c'est la forme validée, et ses chemins ont été développés avant le parse,
+    // donc rien ne se transforme ici en absolu qui ne l'était pas déjà.
+    await writeMachineConfig(configPath, machine);
     console.log(`Config écrite : ${configPath}`);
 
     // On revérifie tout (accès GitHub App, sisyphe.yml de chaque repo, outils...) avant d'installer

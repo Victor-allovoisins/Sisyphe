@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parse, stringify } from 'yaml';
-import { loadMachineConfig, parseMachineConfig, type MachineConfig } from './machine.js';
+import { SANDBOX_CLI_ERROR, loadMachineConfig, parseMachineConfig, type MachineConfig } from './machine.js';
 import { expandHome } from './paths.js';
 import { validateMachineConfigInput, writeMachineConfig, type ConfigIssue, type ValidateMachineConfigResult } from './write.js';
 
@@ -95,17 +95,29 @@ describe('validateMachineConfigInput', () => {
     expect(issues).toEqual([{ path: 'github.privateKeyPath', message: expect.stringContaining(dossier) }]);
   });
 
-  it('cumule les deux règles locales', async () => {
+  it('refuse sandbox avec le backend cli, du même refus que le démarrage', async () => {
+    // `createApp` refuse cette paire : l'accepter ici enregistrerait une config que le prochain démarrage
+    // rejette, avec un bandeau « Redémarrer » qui mène droit dans la panne.
+    const issues = expectIssues(await validateMachineConfigInput(rawInput({ sandbox: true, agentBackend: 'cli' }), current));
+    expect(issues).toEqual([{ path: 'sandbox', message: SANDBOX_CLI_ERROR }]);
+    // Les deux autres combinaisons restent acceptées.
+    expect(expectOk(await validateMachineConfigInput(rawInput({ sandbox: true, agentBackend: 'sdk' }), current)).sandbox).toBe(true);
+    expect(expectOk(await validateMachineConfigInput(rawInput({ sandbox: false, agentBackend: 'cli' }), current)).sandbox).toBe(false);
+  });
+
+  it('cumule les règles locales', async () => {
     const issues = expectIssues(
       await validateMachineConfigInput(
         rawInput({
           dataDir: join(dir, 'ailleurs'),
           github: { appId: 12, installationId: 34, privateKeyPath: join(dir, 'absente.pem') },
+          sandbox: true,
+          agentBackend: 'cli',
         }),
         current,
       ),
     );
-    expect(issues.map((i) => i.path)).toEqual(['dataDir', 'github.privateKeyPath']);
+    expect(issues.map((i) => i.path)).toEqual(['dataDir', 'github.privateKeyPath', 'sandbox']);
   });
 
   it('ne joue pas les règles locales quand le schéma échoue', async () => {
@@ -195,7 +207,9 @@ describe('writeMachineConfig', () => {
     const config = expectOk(await validateMachineConfigInput(rawInput(), current));
     await writeMachineConfig(configPath, config);
     await writeMachineConfig(configPath, config);
-    expect((await readdir(dir)).filter((f) => f.includes('.tmp-'))).toEqual([]);
+    // Le dossier entier, pas un filtre sur le nom des temporaires : renommer le préfixe ne doit pas
+    // transformer cette assertion en tautologie qui passe pour la mauvaise raison.
+    expect((await readdir(dir)).sort()).toEqual(['app.pem', 'config.yml', 'config.yml.bak']);
   });
 
   it('supprime le temporaire quand le remplacement échoue', async () => {
@@ -205,6 +219,6 @@ describe('writeMachineConfig', () => {
     await mkdir(configPath);
     await writeFile(join(configPath, 'occupant'), 'x');
     await expect(writeMachineConfig(configPath, config)).rejects.toThrow();
-    expect((await readdir(dir)).filter((f) => f.includes('.tmp-'))).toEqual([]);
+    expect((await readdir(dir)).sort()).toEqual(['app.pem', 'config.yml']);
   });
 });

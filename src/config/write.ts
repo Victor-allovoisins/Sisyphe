@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { access, chmod, constants, copyFile, rename, rm, stat } from 'node:fs/promises';
 import { stringify } from 'yaml';
 import { write0600 } from '../service/files.js';
-import { MachineConfigSchema, type MachineConfig } from './machine.js';
+import { MachineConfigSchema, SANDBOX_CLI_ERROR, type MachineConfig } from './machine.js';
 import { expandHome } from './paths.js';
 
 /** Un champ refusé : `path` en notation pointée (`github.appId`, `repos.1`), `message` tel que zod l'a produit. */
@@ -16,18 +16,22 @@ export type ValidateMachineConfigResult = { ok: true; config: MachineConfig } | 
 /**
  * Valide une configuration reçue de la page de réglages, avant toute écriture.
  *
- * Trois couches, dans cet ordre : `MachineConfigSchema`, puis deux règles que le schéma ne peut pas porter —
- * `dataDir` immuable (le modifier déplacerait la base que l'interface est en train de lire) et clé privée
- * lisible. Les règles locales ne sont jouées que sur une entrée déjà valide au schéma : sinon elles
- * porteraient sur des champs dont on ne sait pas encore s'ils sont des chaînes. Les deux sont jouées
- * ensemble, pour que la page affiche les deux erreurs d'un coup plutôt qu'une par aller-retour.
+ * Deux couches, dans cet ordre : `MachineConfigSchema`, puis trois règles que le schéma ne peut pas porter —
+ * `dataDir` immuable (le modifier déplacerait la base que l'interface est en train de lire), clé privée
+ * lisible, et `sandbox` incompatible avec le backend `cli`. Les règles locales ne sont jouées que sur une
+ * entrée déjà valide au schéma : sinon elles porteraient sur des champs dont on ne sait pas encore s'ils sont
+ * des chaînes. Elles sont jouées ensemble, pour que la page affiche toutes les erreurs d'un coup plutôt
+ * qu'une par aller-retour.
  *
  * Asynchrone à cause du seul `access` de la clé privée.
  *
  * La configuration renvoyée n'a **pas** traversé `expandHome`, contrairement à celle de `parseMachineConfig` :
  * elle porte les chemins exactement comme la page les a soumis, et c'est elle qu'attend `writeMachineConfig`.
  */
-export async function validateMachineConfigInput(raw: unknown, current: MachineConfig): Promise<ValidateMachineConfigResult> {
+export async function validateMachineConfigInput(
+  raw: unknown,
+  current: Pick<MachineConfig, 'dataDir'>,
+): Promise<ValidateMachineConfigResult> {
   // `raw` tel quel, sans `?? {}` : un corps nul est un corps invalide, et « objet attendu » sur la racine est
   // plus parlant pour la page qu'une liste de champs manquants.
   const result = MachineConfigSchema.safeParse(raw);
@@ -54,6 +58,11 @@ export async function validateMachineConfigInput(raw: unknown, current: MachineC
   }
   if (!readableFile) {
     issues.push({ path: 'github.privateKeyPath', message: `fichier introuvable ou illisible : ${config.github.privateKeyPath}` });
+  }
+  // Combinaison que `createApp` refuse : sans cette règle, la page enregistrerait une configuration que le
+  // prochain démarrage rejetterait, et le bandeau « Redémarrer » conduirait l'opérateur droit dans la panne.
+  if (config.sandbox && config.agentBackend === 'cli') {
+    issues.push({ path: 'sandbox', message: SANDBOX_CLI_ERROR });
   }
   return issues.length > 0 ? { ok: false, issues } : { ok: true, config };
 }
@@ -84,6 +93,10 @@ async function backupExisting(path: string): Promise<void> {
  * dont les chemins n'ont pas traversé `expandHome`. Passer ici le résultat d'un `parseMachineConfig` graverait
  * des chemins absolus à la place des `~/…` saisis, à la première sauvegarde et pour toujours. Le type
  * `MachineConfig` ne sait pas distinguer les deux : c'est à l'appelant de fournir les valeurs à écrire.
+ *
+ * Le fichier est resérialisé depuis l'objet : les commentaires et la mise en forme d'un `config.yml` édité
+ * à la main sont perdus à la première sauvegarde par la page. C'est assumé — le `.bak` garde la version
+ * précédente, commentaires compris.
  */
 export async function writeMachineConfig(path: string, config: MachineConfig): Promise<void> {
   // Suffixe aléatoire en plus du pid : deux enregistrements simultanés viennent du même processus, l'interface.

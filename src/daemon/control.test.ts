@@ -125,7 +125,7 @@ describe('socket de contrôle : cycle de vie', () => {
   it('close() est idempotent et supprime le fichier ; une connexion muette est fermée après le délai d’inactivité', async () => {
     const h = await makeHarness({ steps: [], issues: [] });
     const path = join(h.root, 'ctl.sock');
-    const daemon = new Daemon(h.deps, { ...QUIET, control: false });
+    const daemon = new Daemon(h.deps, { ...QUIET, control: false, configPath: h.configPath });
     const server = await startControlServer({ path, daemon, actions: h.actions, log: h.deps.log, idleTimeoutMs: 100 });
     cleanups.push(() => server.close());
 
@@ -145,7 +145,7 @@ describe('socket de contrôle : cycle de vie', () => {
   it('le délai d’inactivité ne coupe pas une commande qui attend derrière la porte du daemon', async () => {
     const h = await makeHarness({ steps: [], issues: [] });
     const path = join(h.root, 'ctl.sock');
-    const daemon = new Daemon(h.deps, { ...QUIET, control: false });
+    const daemon = new Daemon(h.deps, { ...QUIET, control: false, configPath: h.configPath });
     const server = await startControlServer({ path, daemon: slowCancelTarget(daemon, 300), actions: h.actions, log: h.deps.log, idleTimeoutMs: 100 });
     cleanups.push(() => server.close());
 
@@ -155,7 +155,7 @@ describe('socket de contrôle : cycle de vie', () => {
   it('un client qui ferme son côté émission sitôt sa ligne envoyée reçoit quand même la réponse d’une commande lente', async () => {
     const h = await makeHarness({ steps: [], issues: [] });
     const path = join(h.root, 'ctl.sock');
-    const daemon = new Daemon(h.deps, { ...QUIET, control: false });
+    const daemon = new Daemon(h.deps, { ...QUIET, control: false, configPath: h.configPath });
     const server = await startControlServer({ path, daemon: slowCancelTarget(daemon, 300), actions: h.actions, log: h.deps.log });
     cleanups.push(() => server.close());
 
@@ -171,7 +171,7 @@ describe('socket de contrôle : cycle de vie', () => {
     });
     // Le prologue interroge GitHub repo par repo : ici il ne rend jamais la main avant qu'on le libère.
     h.source.ensureLabels = () => blocked;
-    const daemon = new Daemon(h.deps, QUIET);
+    const daemon = new Daemon(h.deps, { ...QUIET, configPath: h.configPath });
     const started = daemon.start();
     cleanups.push(async () => {
       release(); // sans quoi start() reste bloqué dans le prologue et n'observerait jamais l'arrêt
@@ -192,7 +192,7 @@ describe('socket de contrôle : cycle de vie', () => {
       release = resolve;
     });
     h.source.ensureLabels = () => blocked;
-    const daemon = new Daemon(h.deps, QUIET);
+    const daemon = new Daemon(h.deps, { ...QUIET, configPath: h.configPath });
     const started = daemon.start();
     const client = new ControlClient(h.paths.controlSocketPath);
     await waitFor(() => client.isReachable());
@@ -209,7 +209,7 @@ describe('socket de contrôle : cycle de vie', () => {
 
   it('`control: false` : start() n’ouvre rien', async () => {
     const h = await makeHarness({ steps: [], issues: [] });
-    const daemon = new Daemon(h.deps, { ...QUIET, control: false });
+    const daemon = new Daemon(h.deps, { ...QUIET, control: false, configPath: h.configPath });
     const started = daemon.start();
     cleanups.push(async () => {
       await daemon.stop();

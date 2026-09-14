@@ -11,7 +11,16 @@ import type { ActionInput, ActionName, ActionSource } from '../store/actions.js'
 import { isTerminal, type Job, type JobState } from '../store/types.js';
 import { startCaffeinate } from './caffeinate.js';
 import { startControlServer, type ControlServer } from './control.js';
-import type { CommandResult, DaemonStatus, EnqueueIssueInput, ReloadResult } from './control-types.js';
+import {
+  HOT_RELOAD_FIELDS,
+  RESTART_REQUIRED_FIELDS,
+  type CommandResult,
+  type DaemonStatus,
+  type EnqueueIssueInput,
+  type HotReloadField,
+  type ReloadResult,
+  type RestartRequiredField,
+} from './control-types.js';
 import { pollOnce } from './poll.js';
 
 /** Délai maximal laissé aux jobs en vol pour se terminer avant que stop() abandonne (ex. sleep de rate limit d'une heure). */
@@ -21,21 +30,47 @@ const STOPPING_ERROR = "daemon en cours d'arrêt";
 const RETRYABLE_STATES: ReadonlySet<JobState> = new Set<JobState>(['failed', 'blocked', 'cancelled']);
 
 /**
- * Champs structurels : figés au démarrage dans le client GitHub, le runner d'agent et les chemins de
- * données. `reload` ne peut que signaler leur changement — l'ordre de cette liste est celui de `needsRestart`.
+ * Un comparateur par champ structurel. `Record` et non tableau : il en exige un pour chaque nom de
+ * `RESTART_REQUIRED_FIELDS`, donc un champ nouvellement classé structurel ne compile pas tant qu'on n'a
+ * pas dit comment le comparer. L'ordre de `needsRestart` vient de la liste, pas d'ici.
  */
-const RESTART_REQUIRED: ReadonlyArray<{ name: string; same: (a: MachineConfig, b: MachineConfig) => boolean }> = [
-  { name: 'github.appId', same: (a, b) => a.github.appId === b.github.appId },
-  { name: 'github.installationId', same: (a, b) => a.github.installationId === b.github.installationId },
-  { name: 'github.privateKeyPath', same: (a, b) => a.github.privateKeyPath === b.github.privateKeyPath },
+const STRUCTURAL_UNCHANGED: Record<RestartRequiredField, (a: MachineConfig, b: MachineConfig) => boolean> = {
+  'github.appId': (a, b) => a.github.appId === b.github.appId,
+  'github.installationId': (a, b) => a.github.installationId === b.github.installationId,
+  'github.privateKeyPath': (a, b) => a.github.privateKeyPath === b.github.privateKeyPath,
   // Égalité ordonnée : signaler à tort un simple réordonnancement coûte un bandeau de trop, rater un
   // changement laisserait un dépôt surveillé pour rien ou pas surveillé du tout.
-  { name: 'repos', same: (a, b) => a.repos.length === b.repos.length && a.repos.every((r, i) => r === b.repos[i]) },
-  { name: 'triggerLabel', same: (a, b) => a.triggerLabel === b.triggerLabel },
-  { name: 'sandbox', same: (a, b) => a.sandbox === b.sandbox },
-  { name: 'agentBackend', same: (a, b) => a.agentBackend === b.agentBackend },
-  { name: 'dataDir', same: (a, b) => a.dataDir === b.dataDir },
-];
+  repos: (a, b) => a.repos.length === b.repos.length && a.repos.every((r, i) => r === b.repos[i]),
+  triggerLabel: (a, b) => a.triggerLabel === b.triggerLabel,
+  sandbox: (a, b) => a.sandbox === b.sandbox,
+  agentBackend: (a, b) => a.agentBackend === b.agentBackend,
+  dataDir: (a, b) => a.dataDir === b.dataDir,
+};
+
+/**
+ * Un applicateur par champ à chaud, qui recopie la valeur sur la configuration vivante et dit si elle a
+ * changé. Même raison qu'au-dessus pour le `Record` : un champ classé à chaud sans applicateur ne compile pas.
+ *
+ * Comparaison sur les valeurs **brutes** : pour `dailyBudgetUsd`, `null` (aucun plafond, explicitement) et
+ * l'absence du champ se résolvent pareil sous `cli` sans dire la même chose, et seul le brut les distingue.
+ */
+const APPLY_HOT: Record<HotReloadField, (current: MachineConfig, next: MachineConfig) => boolean> = {
+  dailyBudgetUsd: (c, n) => {
+    if (n.dailyBudgetUsd === c.dailyBudgetUsd) return false;
+    c.dailyBudgetUsd = n.dailyBudgetUsd;
+    return true;
+  },
+  maxConcurrentJobs: (c, n) => {
+    if (n.maxConcurrentJobs === c.maxConcurrentJobs) return false;
+    c.maxConcurrentJobs = n.maxConcurrentJobs;
+    return true;
+  },
+  pollIntervalSeconds: (c, n) => {
+    if (n.pollIntervalSeconds === c.pollIntervalSeconds) return false;
+    c.pollIntervalSeconds = n.pollIntervalSeconds;
+    return true;
+  },
+};
 
 /** Ce qu'une commande sait du job visé au moment d'être journalisée ; rempli au fil de son exécution. */
 type ActionRef = Pick<ActionInput, 'jobId' | 'repo' | 'issueNumber'>;
@@ -155,6 +190,8 @@ export class Daemon {
   private async doStop(): Promise<void> {
     this.stopping = true;
     for (const t of this.timers) clearInterval(t);
+    // Le champ ne doit pas survivre au minuteur qu'il nomme.
+    this.pollTimer = null;
     // La socket d'abord : plus aucune commande n'entre pendant l'arrêt.
     await this.closeControl();
     for (const c of this.running.values()) c.abort(SHUTDOWN);
@@ -369,24 +406,18 @@ export class Daemon {
       // Rien n'est touché avant que la lecture ait abouti : la configuration précédente est conservée par
       // construction, pas par discipline.
       const current = this.d.machine;
-      const needsRestart = RESTART_REQUIRED.filter((f) => !f.same(current, next)).map((f) => f.name);
-      const applied: string[] = [];
-      // Valeurs brutes comparées telles quelles : `null` (aucun plafond, explicitement) et l'absence du champ
-      // se résolvent pareil sous `cli` sans dire la même chose. `agentBackend` exigeant un redémarrage, la
-      // table de résolution d'`effectiveDailyBudget` ne peut pas se désynchroniser d'un budget rechargé à chaud.
-      if (next.dailyBudgetUsd !== current.dailyBudgetUsd) {
-        current.dailyBudgetUsd = next.dailyBudgetUsd;
-        applied.push('dailyBudgetUsd');
+      const needsRestart = RESTART_REQUIRED_FIELDS.filter((f) => !STRUCTURAL_UNCHANGED[f](current, next));
+      const applied: HotReloadField[] = [];
+      for (const field of HOT_RELOAD_FIELDS) {
+        // Le budget ne voyage pas sans son backend : `effectiveDailyBudget` résout la **paire** (valeur brute,
+        // backend), et `agentBackend` n'est pas rechargeable. Recopier le budget seul poserait le daemon sur un
+        // plafond résolu à partir d'un backend que le fichier ne demande plus — ni celui d'avant, ni celui
+        // d'après : un `{sdk, 40}` vivant face à un fichier `{cli, budget absent}` donnerait 60, que personne
+        // n'a écrit. `agentBackend` est dans `needsRestart` : il porte les deux jusqu'au redémarrage.
+        if (field === 'dailyBudgetUsd' && !STRUCTURAL_UNCHANGED.agentBackend(current, next)) continue;
+        if (APPLY_HOT[field](current, next)) applied.push(field);
       }
-      if (next.maxConcurrentJobs !== current.maxConcurrentJobs) {
-        current.maxConcurrentJobs = next.maxConcurrentJobs;
-        applied.push('maxConcurrentJobs');
-      }
-      if (next.pollIntervalSeconds !== current.pollIntervalSeconds) {
-        current.pollIntervalSeconds = next.pollIntervalSeconds;
-        applied.push('pollIntervalSeconds');
-        this.reschedulePoll();
-      }
+      if (applied.includes('pollIntervalSeconds')) this.reschedulePoll();
       this.log.info({ source, path, applied, needsRestart }, 'configuration relue');
       return { ok: true, result: { applied, needsRestart } };
     });
