@@ -52,6 +52,31 @@ describe('runRepoCommand', () => {
     }
   });
 
+  it('agentEnv adapte les clés fournisseur au backend', () => {
+    const extra = { cacheDir: '/c', issueNumber: 1, branch: 'b' };
+    const keys = { ...base, ANTHROPIC_API_KEY: 'sk-a', OPENAI_API_KEY: 'sk-o' };
+
+    // sdk : la clé API est la seule authentification, elle est réajoutée.
+    const sdk = agentEnv(keys, extra, 'sdk');
+    expect(sdk.ANTHROPIC_API_KEY).toBe('sk-a');
+    expect(sdk.OPENAI_API_KEY).toBe('sk-o');
+
+    // claude-code : la clé API basculerait l'abonnement claude.ai sur une facturation API en silence.
+    const claudeCode = agentEnv(keys, extra, 'claude-code');
+    expect(claudeCode).not.toHaveProperty('ANTHROPIC_API_KEY');
+    expect(claudeCode.OPENAI_API_KEY).toBe('sk-o');
+
+    // codex : même règle symétrique, pour forcer le login ChatGPT.
+    const codex = agentEnv(keys, extra, 'codex');
+    expect(codex).not.toHaveProperty('ANTHROPIC_API_KEY');
+    expect(codex).not.toHaveProperty('OPENAI_API_KEY');
+
+    // opencode : multi-fournisseur, l'auth attendue est `opencode auth login` ; rien de spécifique retiré.
+    const opencode = agentEnv(keys, extra, 'opencode');
+    expect(opencode).not.toHaveProperty('ANTHROPIC_API_KEY');
+    expect(opencode.OPENAI_API_KEY).toBe('sk-o');
+  });
+
   it('repoEnv et agentEnv neutralisent credential helper et prompts git', () => {
     const expected = {
       GIT_CONFIG_COUNT: '1',

@@ -119,7 +119,9 @@ describe('defaultServiceContext', () => {
   it('env : ANTHROPIC_API_KEY transmise seulement au backend sdk, et seulement si elle est définie', () => {
     vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
     expect(defaultServiceContext({ paths, client, machine: { agentBackend: 'sdk' } }).env.ANTHROPIC_API_KEY).toBe('sk-test');
-    expect(defaultServiceContext({ paths, client, machine: { agentBackend: 'claude-code' } }).env).not.toHaveProperty('ANTHROPIC_API_KEY');
+    for (const agentBackend of ['claude-code', 'codex', 'opencode'] as const) {
+      expect(defaultServiceContext({ paths, client, machine: { agentBackend } }).env, agentBackend).not.toHaveProperty('ANTHROPIC_API_KEY');
+    }
     vi.stubEnv('ANTHROPIC_API_KEY', '');
     expect(defaultServiceContext({ paths, client, machine: { agentBackend: 'sdk' } }).env).not.toHaveProperty('ANTHROPIC_API_KEY');
   });
