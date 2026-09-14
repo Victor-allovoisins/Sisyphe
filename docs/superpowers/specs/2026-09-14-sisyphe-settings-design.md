@@ -21,7 +21,11 @@ Tous les champs de `config.yml` sauf `dataDir` : `github.appId`, `github.install
 
 Le contenu de la clé privée n'est ni lu, ni affiché, ni transmis : seul son chemin circule.
 
-**Budget facultatif.** `dailyBudgetUsd` devient optionnel dans le schéma. Absent ou vide, aucun plafond n'est appliqué ; le coût reste calculé, journalisé et affiché, y compris dans le rapport et les KPIs. Pour ne rien désactiver en silence sur une configuration existante, l'absence du champ est résolue à la lecture : `sdk` retombe sur 60, `cli` sur aucune limite. Autrement dit, seule une valeur explicitement vidée depuis la page supprime le plafond d'une config `sdk`. `canStartJob` ne vérifie le budget que lorsqu'un plafond existe, et le bandeau de pause budgétaire n'est jamais émis sans plafond.
+**Budget facultatif.** Le schéma accepte désormais trois formes pour `dailyBudgetUsd` : un nombre, `null`, ou l'absence du champ. **La valeur brute est conservée telle quelle dans `MachineConfig`** ; la résolution se fait au moment de l'usage, par un unique `effectiveDailyBudget(machine): number | undefined` : un nombre vaut plafond, `null` vaut « aucun plafond, explicitement », l'absence vaut 60 en mode `sdk` et aucun plafond en mode `cli`.
+
+Ce choix, garder le brut et résoudre à l'usage, n'est pas cosmétique. Résoudre dès la lecture avait deux conséquences fâcheuses : `sisyphe setup`, qui recopie la configuration existante, aurait gravé dans le fichier un plafond de 60 que l'utilisateur n'avait jamais saisi dès qu'il passait une config `sdk` sans plafond en mode `cli` ; et « aucun plafond » devenait inexprimable pour une config `sdk`, puisque l'absence du champ y vaut 60. Avec la valeur brute, toute écriture — `setup` comme la page de réglages — préserve exactement ce que l'utilisateur a choisi, et vider le champ depuis la page écrit `null`, qui traverse le YAML sans ambiguïté.
+
+Le coût reste calculé, journalisé et affiché dans tous les cas, y compris sans plafond. `canStartJob` ne vérifie le budget que lorsque `effectiveDailyBudget` renvoie un nombre, et le bandeau de pause budgétaire n'est jamais émis sans plafond. L'interface affiche la dépense du jour suivie de « aucune limite », sans jauge de remplissage.
 
 ## 4. Blocs d'information
 
@@ -48,7 +52,7 @@ Quatrième onglet « Réglages ». Formulaire groupé en Exécution, Agent et Gi
 
 ## 7. Worktree supprimé en cas d'échec
 
-Aujourd'hui le clone de travail est supprimé quand le job aboutit, est bloqué au triage, ne produit aucun changement ou est annulé, mais conservé en cas d'échec et purgé seulement au démarrage suivant du daemon. Il sera désormais supprimé aussi en cas d'échec, immédiatement, sur les trois chemins concernés : vérification en échec après ouverture de PR, secrets détectés, et exception non rattrapée. Le dossier de job (`jobs/<id>/`), qui porte les transcripts, les logs de vérification et le diff, n'est pas touché : c'est lui qui sert au post-mortem, pas le clone.
+Aujourd'hui le clone de travail est supprimé quand le job aboutit, est bloqué au triage, ne produit aucun changement ou est annulé, mais conservé en cas d'échec et purgé seulement au démarrage suivant du daemon. Il sera désormais supprimé aussi en cas d'échec, immédiatement, sur les trois chemins concernés : vérification en échec après ouverture de PR, secrets détectés, et exception non rattrapée. Le chemin jumeau de la réconciliation, qui fait passer un job `delivering` à `failed` après un redémarrage, est traité de la même façon, sinon il resterait le seul producteur de worktrees abandonnés. Le dossier de job (`jobs/<id>/`), qui porte les transcripts, les logs de vérification et le diff, n'est pas touché : c'est lui qui sert au post-mortem, pas le clone.
 
 ## 8. Sécurité et limites
 
