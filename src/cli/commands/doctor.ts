@@ -39,6 +39,11 @@ export interface BuildChecksInput {
   platform?: NodeJS.Platform;
   /** Plist de l'agent launchd inspecté par le check « service » ; injectable pour ne jamais lire le vrai. */
   plistPath?: string;
+  /**
+   * Faux : ni présence ni validité de la clé API. La page de réglages lit l'environnement de l'interface, pas
+   * celui du service, et contredirait le daemon qui tourne ; `doctor` et `setup` gardent ces contrôles.
+   */
+  apiKeyChecks?: boolean;
 }
 
 async function checkApiKeyLive(key: string): Promise<string | { warn: true; message: string }> {
@@ -165,7 +170,7 @@ export function buildChecks(input: BuildChecksInput): Check[] {
   if (input.machine?.agentBackend === 'cli') {
     checks.push({ name: 'claude (CLI)', run: () => checkClaudeCli(platform) });
     checks.push({ name: 'claude auth status', run: checkClaudeAuth });
-  } else {
+  } else if (input.apiKeyChecks !== false) {
     checks.push({
       name: 'ANTHROPIC_API_KEY',
       run: async () => {

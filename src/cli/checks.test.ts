@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { firstWord, installHint, runChecks, which, whichOrHint } from './checks.js';
+import { checkResults, firstWord, installHint, runChecks, which, whichOrHint } from './checks.js';
 
 describe('checks', () => {
   it('firstWord', () => {
@@ -11,6 +11,20 @@ describe('checks', () => {
     expect(firstWord('FOO=bar BAZ=qux cmd')).toBe('cmd');
     expect(firstWord('"my tool" --x')).toBe('my tool');
     expect(firstWord('')).toBe('');
+  });
+  it('checkResults traduit les quatre issues d’un contrôle en statut', async () => {
+    const results = await checkResults([
+      { name: 'node', run: async () => '24.9.0' },
+      { name: 'clé API', run: async () => ({ warn: true as const, message: 'réseau indisponible' }) },
+      { name: 'caffeinate', warn: true, run: async () => { throw new Error('introuvable'); } },
+      { name: 'git', run: async () => { throw new Error('introuvable sur le PATH'); } },
+    ]);
+    expect(results).toEqual([
+      { name: 'node', status: 'ok', detail: '24.9.0' },
+      { name: 'clé API', status: 'warn', detail: 'réseau indisponible' },
+      { name: 'caffeinate', status: 'warn', detail: 'introuvable' },
+      { name: 'git', status: 'fail', detail: 'introuvable sur le PATH' },
+    ]);
   });
   it('runChecks agrège succès et échecs', async () => {
     const r = await runChecks([

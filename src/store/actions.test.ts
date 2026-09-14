@@ -61,8 +61,8 @@ describe('ActionStore', () => {
 
   it('enregistre les actions de la page de réglages, sans migration : la colonne action n’a pas de CHECK', () => {
     const { actions } = setup();
-    for (const action of ['settings', 'reload', 'purge'] as const) actions.record({ action, source: 'ui', outcome: 'ok' });
-    expect(actions.listRecent(10).map((r) => r.action)).toEqual(['purge', 'reload', 'settings']);
+    for (const action of ['reload', 'purge'] as const) actions.record({ action, source: 'ui', outcome: 'ok' });
+    expect(actions.listRecent(10).map((r) => r.action)).toEqual(['purge', 'reload']);
   });
 
   it('le CHECK SQL refuse une source ou un outcome hors énumération', () => {

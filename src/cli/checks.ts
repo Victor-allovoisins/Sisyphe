@@ -14,28 +14,43 @@ export interface Check {
   warn?: boolean;
 }
 
-export async function runChecks(checks: Check[]): Promise<{ ok: boolean; lines: string[] }> {
-  const lines: string[] = [];
-  let ok = true;
+export type CheckStatus = 'ok' | 'warn' | 'fail';
+
+export interface CheckView {
+  name: string;
+  status: CheckStatus;
+  detail: string;
+}
+
+/**
+ * Exécute des contrôles et rend chaque issue en données : succès, succès dégradé `{ warn }`, échec d'un check
+ * `warn: true` (avertissement), échec ordinaire. Séquentiel : certains contrôles appellent GitHub, rien ne
+ * gagne à les lancer tous de front. C'est la forme de la page de réglages ; `runChecks` en tire celle du terminal.
+ */
+export async function checkResults(checks: Check[]): Promise<CheckView[]> {
+  const results: CheckView[] = [];
   for (const c of checks) {
     try {
       const result = await c.run();
-      if (typeof result === 'string') {
-        lines.push(`✅ ${c.name} : ${result}`);
-      } else {
-        lines.push(`⚠️ ${c.name} : ${result.message}`);
-      }
+      if (typeof result === 'string') results.push({ name: c.name, status: 'ok', detail: result });
+      else results.push({ name: c.name, status: 'warn', detail: result.message });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (c.warn) {
-        lines.push(`⚠️ ${c.name} : ${message}`);
-      } else {
-        ok = false;
-        lines.push(`❌ ${c.name} : ${message}`);
-      }
+      const detail = err instanceof Error ? err.message : String(err);
+      results.push({ name: c.name, status: c.warn ? 'warn' : 'fail', detail });
     }
   }
-  return { ok, lines };
+  return results;
+}
+
+const STATUS_ICON: Record<CheckStatus, string> = { ok: '✅', warn: '⚠️', fail: '❌' };
+
+/** Forme terminal de `checkResults` (doctor, setup) : une ligne à émoji par contrôle ; `ok` tant qu'aucun n'échoue. */
+export async function runChecks(checks: Check[]): Promise<{ ok: boolean; lines: string[] }> {
+  const results = await checkResults(checks);
+  return {
+    ok: !results.some((r) => r.status === 'fail'),
+    lines: results.map((r) => `${STATUS_ICON[r.status]} ${r.name} : ${r.detail}`),
+  };
 }
 
 /** Ignore les préfixes `VAR=valeur` (`FOO=bar cmd` → `cmd`) et une première quote englobante (`"my tool" --x` → `my tool`). */

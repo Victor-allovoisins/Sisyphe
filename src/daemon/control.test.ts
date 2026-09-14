@@ -55,6 +55,7 @@ function slowCancelTarget(daemon: Daemon, delayMs: number): ControlTarget {
     pause: (s) => daemon.pause(s),
     resume: (s) => daemon.resume(s),
     reload: (s) => daemon.reload(s),
+    purgeBuildCache: (s) => daemon.purgeBuildCache(s),
     retryJob: (id, s) => daemon.retryJob(id, s),
     enqueueIssue: (i, s) => daemon.enqueueIssue(i, s),
     stop: () => daemon.stop(),
@@ -307,6 +308,14 @@ describe('socket de contrôle : commandes', () => {
     expect(h.deps.machine.dailyBudgetUsd).toBe(12);
     expect(h.deps.machine.repos).toEqual([REPO]);
     expect(h.actions.listRecent(1)[0]).toMatchObject({ action: 'reload', source: 'ui', outcome: 'ok' });
+  });
+
+  it('purge : routée vers le daemon, place libérée rendue, et journalisée', async () => {
+    const h = await makeHarness({ steps: [], issues: [] });
+    const { client } = await startDaemon(h);
+
+    expect(await client.send('purge', {}, 'ui')).toEqual({ ok: true, result: { freedBytes: 0 } });
+    expect(h.actions.listRecent(1)[0]).toMatchObject({ action: 'purge', source: 'ui', outcome: 'ok' });
   });
 
   it('enqueue : job créé et label posé ; repo hors configuration refusé', async () => {

@@ -88,7 +88,7 @@ export function uiChecks(input: UiChecksInput): () => Check[] {
       machine = parseMachineConfig(readFileSync(input.configPath, 'utf8'));
     } catch {
       // Le contrôle « config machine » relit le fichier et dit lui-même ce qui ne va pas.
-      return buildChecks({ paths, service, env });
+      return buildChecks({ paths, service, env, apiKeyChecks: false });
     }
     let client: DoctorGitHub | undefined;
     let initError: unknown = null;
@@ -97,7 +97,8 @@ export function uiChecks(input: UiChecksInput): () => Check[] {
     } catch (err) {
       initError = err;
     }
-    const checks = buildChecks({ machine, github: client, paths, service, env });
+    // Sans contrôle de clé API : l'environnement lu ici est celui de l'interface, pas celui du service.
+    const checks = buildChecks({ machine, github: client, paths, service, env, apiKeyChecks: false });
     // Clé illisible : un contrôle en échec plutôt que des contrôles GitHub qui disparaîtraient en silence.
     if (initError !== null) checks.push({ name: 'client GitHub', run: async () => { throw initError; } });
     return checks;

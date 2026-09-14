@@ -1,4 +1,5 @@
-import { writeFile } from 'node:fs/promises';
+import { mkdir, readdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { effectiveDailyBudget } from '../../src/config/machine.js';
 import { Daemon } from '../../src/daemon/daemon.js';
@@ -311,6 +312,44 @@ describe('Daemon.enqueueIssue', () => {
  * c'est la seule façon de vérifier qu'un minuteur a bien été remplacé sans attendre qu'il se déclenche.
  */
 const periodMs = (t: NodeJS.Timeout): number => (t as unknown as { _idleTimeout: number })._idleTimeout;
+
+describe('Daemon.purgeBuildCache', () => {
+  /** 10 octets sous le cache du dossier temporaire du harness : jamais ailleurs. */
+  async function seedCache(cacheDir: string): Promise<void> {
+    await mkdir(join(cacheDir, 'acme__demo'), { recursive: true });
+    await writeFile(join(cacheDir, 'acme__demo', 'a.o'), 'x'.repeat(10));
+  }
+
+  it('refusée tant qu’un job tourne, cache intact, refus journalisé', async () => {
+    const h = await makeHarness({ steps: [], issues: [{ number: 7, title: 'Un' }] });
+    const daemon = new Daemon(h.deps, { ...QUIET, configPath: h.configPath });
+    // Un agent qui ne rend la main qu'à l'abort : le job reste en cours le temps du test.
+    h.deps.agent = {
+      async run(opts: { signal: AbortSignal }) {
+        await new Promise<never>((_resolve, reject) => opts.signal.addEventListener('abort', () => reject(opts.signal.reason as Error)));
+      },
+    } as never;
+    await seedCache(h.paths.cacheDir);
+    await pollOnce(h.deps);
+    await daemon.requestTick();
+    expect(daemon.status().running).toBe(1);
+
+    expect(await daemon.purgeBuildCache('ui')).toEqual({ ok: false, error: 'purge refusée : 1 job(s) en cours' });
+    expect(await readdir(h.paths.cacheDir)).toEqual(['acme__demo']);
+    expect(h.actions.listRecent(1)[0]).toMatchObject({ action: 'purge', source: 'ui', outcome: 'error' });
+    await daemon.stop();
+  });
+
+  it('sans job en cours : vide le cache, rend la place libérée, et journalise', async () => {
+    const h = await makeHarness({ steps: [] });
+    const daemon = new Daemon(h.deps, { ...QUIET, configPath: h.configPath });
+    await seedCache(h.paths.cacheDir);
+
+    expect(await daemon.purgeBuildCache('cli')).toEqual({ ok: true, result: { freedBytes: 10 } });
+    expect(await readdir(h.paths.cacheDir)).toEqual([]);
+    expect(h.actions.listRecent(1)[0]).toMatchObject({ action: 'purge', source: 'cli', outcome: 'ok' });
+  });
+});
 
 describe('Daemon.reload', () => {
   it('budget relevé à chaud : un job bloqué par le budget démarre au tick suivant', async () => {

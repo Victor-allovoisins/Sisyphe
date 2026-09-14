@@ -42,7 +42,8 @@ export type ActionRunner = (name: string, body: unknown) => Promise<ActionRespon
  */
 export interface UiSettings {
   settingsView(): Promise<SettingsView>;
-  diagnostics(): Promise<Diagnostics>;
+  /** `fresh` : bouton « Relancer », qui passe outre la mémorisation sans doubler un calcul en cours. */
+  diagnostics(opts?: { fresh?: boolean }): Promise<Diagnostics>;
   diskUsage(): Promise<DiskUsage>;
 }
 
@@ -162,7 +163,9 @@ export async function startUiServer(o: UiServerOptions): Promise<UiServer> {
     // `readOnly` suit le branchement du contrôleur, seule source de vérité du mode côté serveur.
     if (url.pathname === '/api/settings') return sendJson(res, 200, { ...(await o.settings.settingsView()), readOnly: !o.actions });
     // Diagnostic et disque sont calculés à la demande et mémorisés 30 s par la couche de données.
-    if (url.pathname === '/api/diagnostics') return sendJson(res, 200, await o.settings.diagnostics());
+    if (url.pathname === '/api/diagnostics') {
+      return sendJson(res, 200, await o.settings.diagnostics({ fresh: url.searchParams.get('fresh') === '1' }));
+    }
     if (url.pathname === '/api/disk') return sendJson(res, 200, await o.settings.diskUsage());
     if (url.pathname === '/api/events') return openStream(req, res);
     // Le navigateur demande toujours /favicon.ico : un 204 vaut mieux qu'un 404 JSON dans la console.

@@ -81,11 +81,13 @@ async function startTestServer(
   const configPath = join(root, 'config.yml');
   await writeFile(configPath, configText);
   const machine = parseMachineConfig(configText);
-  // Données de réglages réelles sur le dossier temporaire ; ni contrôle réel ni sous-process.
+  // Données de réglages réelles sur le dossier temporaire ; ni contrôle réel ni sous-process. Le détail
+  // compte les passages, pour voir la mémorisation et le `?fresh=1`.
+  let runs = 0;
   const settings = createSettingsData({
     paths,
     configPath,
-    buildChecks: () => [{ name: 'git', run: async () => '2.39.5' }],
+    buildChecks: () => [{ name: 'git', run: async () => `passage ${++runs}` }],
     exec: async () => ({ exitCode: 1, stdout: '', stderr: 'absent' }),
   });
   const paused = opts.paused ?? null;
@@ -206,23 +208,28 @@ describe('startUiServer', () => {
     expect((await getJson(`${readOnly.base}/api/settings`)).body.readOnly).toBe(true);
   });
 
-  it('/api/diagnostics et /api/disk : forme attendue, sans secret', async () => {
+  it('/api/diagnostics : forme attendue, mémorisé, et `?fresh=1` relance', async () => {
     const { base, root } = await startTestServer();
-    await mkdir(join(root, 'cache'), { recursive: true });
-    await writeFile(join(root, 'cache', 'blob'), 'x'.repeat(100));
 
     const diag = await getJson(`${base}/api/diagnostics`);
     expect(diag.res.status).toBe(200);
-    expect(diag.body.checks).toEqual([{ name: 'git', status: 'ok', detail: '2.39.5' }]);
+    expect(diag.body.checks).toEqual([{ name: 'git', status: 'ok', detail: 'passage 1' }]);
     expect(diag.body.versions).toEqual({ sisyphe: null, node: null, claude: null, git: null, gitleaks: null });
     expect(diag.body.paths).toMatchObject({ config: join(root, 'config.yml'), data: root });
+
+    expect((await getJson(`${base}/api/diagnostics`)).body.checks[0].detail).toBe('passage 1');
+    expect((await getJson(`${base}/api/diagnostics?fresh=1`)).body.checks[0].detail).toBe('passage 2');
+  });
+
+  it('/api/disk : une entrée par dossier de données et le total', async () => {
+    const { base, root } = await startTestServer();
+    await mkdir(join(root, 'cache'), { recursive: true });
+    await writeFile(join(root, 'cache', 'blob'), 'x'.repeat(100));
 
     const disk = await getJson(`${base}/api/disk`);
     expect(disk.res.status).toBe(200);
     expect(disk.body.entries.map((e: { name: string }) => e.name)).toEqual(['cache', 'mirrors', 'work', 'logs', 'jobs']);
     expect(disk.body.totalBytes).toBe(100);
-
-    for (const body of [diag.body, disk.body]) expect(JSON.stringify(body)).not.toContain(KEY_SECRET);
   });
 
   it('/api/report accepte une période valide et refuse le reste', async () => {

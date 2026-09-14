@@ -19,7 +19,6 @@ export type ActionName =
   | 'resume'
   | 'stop'
   | 'start'
-  | 'settings'
   | 'reload'
   | 'purge';
 

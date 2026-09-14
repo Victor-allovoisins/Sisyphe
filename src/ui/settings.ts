@@ -3,11 +3,10 @@
  * et la purge du cache de build. Les routes HTTP qui servent tout cela vivent ailleurs ; ce module ne
  * connaît ni requête ni réponse, et n'a d'autre état que ses deux mémorisations.
  */
-import { lstat, readFile, readdir, rm } from 'node:fs/promises';
-import { join } from 'node:path';
-import type { Check } from '../cli/checks.js';
+import { readFile } from 'node:fs/promises';
+import { checkResults, type Check, type CheckView } from '../cli/checks.js';
 import { MachineConfigError, parseMachineConfigAsWritten, type MachineConfig } from '../config/machine.js';
-import { dataPaths, type DataPaths } from '../config/paths.js';
+import type { DataPaths } from '../config/paths.js';
 import {
   HOT_RELOAD_FIELDS,
   RESTART_REQUIRED_FIELDS,
@@ -15,11 +14,10 @@ import {
   type RestartRequiredField,
 } from '../daemon/control-types.js';
 import { realExec, type Exec } from '../service/exec.js';
+import { purgeCache, treeBytes, type PurgeResult } from '../util/cache.js';
 
 /** Diagnostic et occupation disque sont coûteux et jamais urgents : deux appels rapprochés partagent le même calcul. */
 const MEMO_TTL_MS = 30_000;
-/** Dossiers parcourus de front. Le parcours n'ouvre aucun descripteur : la borne sert à ne pas faire exploser la file. */
-const WALK_DIR_CONCURRENCY = 16;
 /** Premier numéro de version trouvé dans la sortie : `git version 2.39.5 (Apple Git-154)` → `2.39.5`. */
 const SEMVER_RE = /\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?/;
 
@@ -34,14 +32,6 @@ export interface SettingsView {
   dataDir: string;
   hotReloadable: HotReloadField[];
   restartRequired: RestartRequiredField[];
-}
-
-export type CheckStatus = 'ok' | 'warn' | 'fail';
-
-export interface CheckView {
-  name: string;
-  status: CheckStatus;
-  detail: string;
 }
 
 /** `null` : outil absent, en échec, ou sortie sans numéro de version — jamais une exception. */
@@ -77,10 +67,6 @@ export interface DiskUsage {
   totalBytes: number;
 }
 
-export interface PurgeResult {
-  freedBytes: number;
-}
-
 export interface SettingsDataDeps {
   paths: DataPaths;
   /** Chemin du `config.yml`, affiché dans les chemins et relu à chaque appel : il change hors du process. */
@@ -98,9 +84,15 @@ export interface SettingsDataDeps {
 
 export interface SettingsData {
   settingsView(): Promise<SettingsView>;
-  diagnostics(): Promise<Diagnostics>;
+  /** `fresh` : ignore l'âge du résultat mémorisé (bouton Relancer), mais rejoint un calcul déjà en cours. */
+  diagnostics(opts?: { fresh?: boolean }): Promise<Diagnostics>;
   diskUsage(): Promise<DiskUsage>;
+  /** Purge locale, quand le daemon est arrêté ; périme d'elle-même la mesure disque. */
   purgeCache(): Promise<PurgeResult>;
+  /** Après un enregistrement : le prochain diagnostic porte sur la configuration écrite. */
+  invalidateDiagnostics(): void;
+  /** Après une purge faite par le daemon : la mesure disque mémorisée ne vaut plus rien. */
+  invalidateDisk(): void;
 }
 
 /** Indexé par `VersionsView` : une version ajoutée à la vue sans outil pour la produire ne compile pas. */
@@ -150,29 +142,6 @@ export async function settingsView(configPath: string, paths: DataPaths): Promis
   };
 }
 
-/**
- * Exécute des contrôles de `doctor` et rend le résultat en données plutôt qu'en lignes à émoji.
- *
- * Même sémantique que `runChecks` (`cli/checks.ts`), qui reste la forme terminal : succès, succès dégradé
- * `{ warn }`, échec d'un check `warn: true` (⚠️), échec ordinaire (❌). La liste des contrôles, elle, n'est
- * pas dupliquée — c'est `buildChecks` qui la produit, ici comme dans `doctor`. Séquentiel comme `runChecks` :
- * certains contrôles appellent GitHub, rien ne gagne à les lancer tous de front.
- */
-export async function checkResults(checks: Check[]): Promise<CheckView[]> {
-  const results: CheckView[] = [];
-  for (const c of checks) {
-    try {
-      const result = await c.run();
-      if (typeof result === 'string') results.push({ name: c.name, status: 'ok', detail: result });
-      else results.push({ name: c.name, status: 'warn', detail: result.message });
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      results.push({ name: c.name, status: c.warn ? 'warn' : 'fail', detail });
-    }
-  }
-  return results;
-}
-
 /** Version d'un outil, ou `null` : un outil absent ou une sortie inattendue n'est pas une panne du diagnostic. */
 async function toolVersion(exec: Exec, bin: string, args: string[]): Promise<string | null> {
   const r = await exec(bin, args).catch(() => null);
@@ -189,42 +158,7 @@ async function versions(exec: Exec): Promise<VersionsView> {
   return { sisyphe, node, claude, git, gitleaks };
 }
 
-/**
- * Octets d'une arborescence, liens symboliques non suivis et comptés pour zéro : le cache de build en est
- * plein, et un lien sortant ferait parcourir tout le disque — ou boucler. Somme des tailles apparentes
- * (`size`), pas des blocs occupés. Un dossier illisible ou disparu en cours de route vaut 0 : cette mesure
- * est une information d'appoint, elle ne doit jamais faire tomber la page.
- */
-async function treeBytes(root: string): Promise<number> {
-  let total = 0;
-  const stack = [root];
-  while (stack.length > 0) {
-    const batch = stack.splice(0, WALK_DIR_CONCURRENCY);
-    for (const r of await Promise.all(batch.map(dirBytes))) {
-      total += r.bytes;
-      stack.push(...r.dirs);
-    }
-  }
-  return total;
-}
-
-async function dirBytes(dir: string): Promise<{ bytes: number; dirs: string[] }> {
-  const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
-  const dirs: string[] = [];
-  const files: string[] = [];
-  for (const e of entries) {
-    if (e.isSymbolicLink()) continue;
-    const path = join(dir, e.name);
-    if (e.isDirectory()) dirs.push(path);
-    else if (e.isFile()) files.push(path);
-  }
-  // `lstat` et non `stat` : le dirent dit déjà que c'est un fichier, et un lien apparu entre-temps ne
-  // doit pas être suivi pour autant.
-  const sizes = await Promise.all(files.map((f) => lstat(f).then((s) => s.size, () => 0)));
-  return { bytes: sizes.reduce((a, b) => a + b, 0), dirs };
-}
-
-/** Taille des cinq dossiers de données et leur total. Un dossier absent vaut 0 octet, jamais une exception. */
+/** Taille des cinq dossiers de données et leur total. Un dossier absent ou un lien symbolique vaut 0 octet, jamais une exception. */
 export async function diskUsage(paths: DataPaths): Promise<DiskUsage> {
   const entries = await Promise.all(
     DISK_TARGETS.map(async ({ name, dir }) => {
@@ -235,48 +169,41 @@ export async function diskUsage(paths: DataPaths): Promise<DiskUsage> {
   return { entries, totalBytes: entries.reduce((sum, e) => sum + e.bytes, 0) };
 }
 
-/**
- * Vide le contenu de `cache/` sans supprimer le dossier, et rend la place libérée, mesurée avant.
- *
- * Le garde-fou n'est pas décoratif : cette fonction supprime récursivement, et `DataPaths` est un objet
- * ordinaire qu'un appelant peut avoir fabriqué à la main. Le chemin purgé doit être exactement celui que
- * `dataPaths` dérive de la racine reçue — un `cacheDir` bricolé (la racine elle-même, le home, un `..`)
- * est refusé avant toute suppression. Le dossier lui-même survit : c'est `ensureDataDirs` qui le crée,
- * et le daemon peut tourner pendant ce temps.
- */
-export async function purgeCache(paths: DataPaths): Promise<PurgeResult> {
-  const expected = dataPaths(paths.root).cacheDir;
-  if (paths.cacheDir !== expected) {
-    throw new Error(`purge refusée : ${paths.cacheDir} n'est pas le dossier cache de ${paths.root} (${expected})`);
-  }
-  const names = await readdir(paths.cacheDir).catch((err: NodeJS.ErrnoException) => {
-    if (err.code === 'ENOENT') return null;
-    throw err;
-  });
-  // Cache absent : rien à libérer, et rien à créer non plus.
-  if (names === null) return { freedBytes: 0 };
-  const freedBytes = await treeBytes(paths.cacheDir);
-  await Promise.all(names.map((name) => rm(join(paths.cacheDir, name), { recursive: true, force: true })));
-  return { freedBytes };
-}
-
 /** Lecture mémorisée ; `reset` la périme avant l'heure, pour ce qui sait l'avoir rendue fausse. */
 interface Memo<T> {
-  (): Promise<T>;
+  (opts?: { fresh?: boolean }): Promise<T>;
   reset(): void;
+}
+
+interface MemoEntry<T> {
+  at: number;
+  value: Promise<T>;
+  settled: boolean;
 }
 
 /**
  * Mémorise le résultat 30 s. C'est la promesse qui est gardée, pas seulement sa valeur : deux appels
  * concurrents partagent le même calcul au lieu d'en lancer deux. Un échec n'est pas mis en cache — le
  * suivant réessaie, sinon une panne passagère resterait affichée une demi-minute.
+ *
+ * `fresh` passe outre l'âge d'un résultat déjà obtenu, jamais un calcul en cours : dix clics sur « Relancer »
+ * rejoignent le même diagnostic au lieu de lancer dix salves d'appels GitHub en parallèle.
  */
 function memoize<T>(fn: () => Promise<T>, now: () => number): Memo<T> {
-  let cached: { at: number; value: Promise<T> } | null = null;
-  const get = async (): Promise<T> => {
+  let cached: MemoEntry<T> | null = null;
+  const get = async (opts: { fresh?: boolean } = {}): Promise<T> => {
     const at = now();
-    if (!cached || at - cached.at > MEMO_TTL_MS) cached = { at, value: fn() };
-    const pending = cached;
+    let entry = cached;
+    if (!entry || at - entry.at > MEMO_TTL_MS || (opts.fresh === true && entry.settled)) {
+      const started: MemoEntry<T> = { at, value: fn(), settled: false };
+      const settle = () => {
+        started.settled = true;
+      };
+      started.value.then(settle, settle);
+      entry = started;
+      cached = started;
+    }
+    const pending = entry;
     try {
       return await pending.value;
     } catch (err) {
@@ -288,9 +215,12 @@ function memoize<T>(fn: () => Promise<T>, now: () => number): Memo<T> {
 }
 
 /**
- * Les quatre lectures de la page de réglages, câblées sur une installation. Seuls le diagnostic et
- * l'occupation disque sont mémorisés : la configuration est relue à chaque fois, parce que la page vient
- * peut-être de l'écrire, et la purge est une écriture — la mémoriser en rendrait la seconde gratuite et fausse.
+ * Les lectures de la page de réglages, câblées sur une installation. Seuls le diagnostic et l'occupation
+ * disque sont mémorisés : la configuration est relue à chaque fois, parce que la page vient peut-être de
+ * l'écrire, et la purge est une écriture — la mémoriser en rendrait la seconde gratuite et fausse.
+ *
+ * Un seul exemplaire par interface, partagé par les routes GET et les actions : un enregistrement ou une
+ * purge doit périmer les mémorisations que la page relit, pas celles d'un exemplaire voisin.
  */
 export function createSettingsData(deps: SettingsDataDeps): SettingsData {
   const { paths, configPath } = deps;
@@ -310,14 +240,17 @@ export function createSettingsData(deps: SettingsDataDeps): SettingsData {
 
   return {
     settingsView: () => settingsView(configPath, paths),
-    diagnostics,
-    diskUsage: disk,
+    diagnostics: (opts) => diagnostics(opts),
+    diskUsage: () => disk(),
     purgeCache: async () => {
-      const result = await purgeCache(paths);
-      // La mesure d'avant la purge est fausse dès le premier fichier supprimé : sans cela, la page
-      // annoncerait la place libérée tout en affichant pendant une demi-minute le cache toujours plein.
-      disk.reset();
-      return result;
+      try {
+        return await purgeCache(paths);
+      } finally {
+        // La mesure d'avant est fausse dès le premier fichier supprimé, que la purge aille au bout ou non.
+        disk.reset();
+      }
     },
+    invalidateDiagnostics: () => diagnostics.reset(),
+    invalidateDisk: () => disk.reset(),
   };
 }

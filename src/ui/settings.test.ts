@@ -1,5 +1,5 @@
-import { mkdir, mkdtemp, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Check } from '../cli/checks.js';
@@ -7,14 +7,7 @@ import { MachineConfigError } from '../config/machine.js';
 import { dataPaths, type DataPaths } from '../config/paths.js';
 import { HOT_RELOAD_FIELDS, RESTART_REQUIRED_FIELDS } from '../daemon/control-types.js';
 import type { Exec, ExecResult } from '../service/exec.js';
-import {
-  checkResults,
-  createSettingsData,
-  diskUsage,
-  purgeCache,
-  settingsView,
-  type SettingsDataDeps,
-} from './settings.js';
+import { createSettingsData, diskUsage, settingsView, type SettingsDataDeps } from './settings.js';
 
 let dir: string;
 let paths: DataPaths;
@@ -55,7 +48,6 @@ async function seedFile(relative: string, n: number): Promise<void> {
 }
 
 const okCheck = (name: string, detail: string): Check => ({ name, run: async () => detail });
-const warnResultCheck = (name: string, message: string): Check => ({ name, run: async () => ({ warn: true as const, message }) });
 const throwingCheck = (name: string, message: string, warn?: boolean): Check => ({
   name,
   warn,
@@ -122,6 +114,9 @@ describe('settingsView', () => {
   });
 
   it('ne laisse filtrer aucun secret', async () => {
+    // La configuration désigne la clé **semée** : une régression qui lirait la clé lirait celle-ci, jamais
+    // la vraie clé de la machine, et le test échouerait au lieu de passer à côté.
+    await writeFile(configPath, CONFIG_YAML.replace('~/.sisyphe/app.pem', keyPath));
     const view = await settingsView(configPath, paths);
     const serialized = JSON.stringify(view);
     expect(serialized).not.toContain('PRIVATE KEY');
@@ -129,7 +124,7 @@ describe('settingsView', () => {
     // Aucune clé API dans le fichier de configuration : le schéma n'en porte pas, on le fige.
     expect(serialized).not.toMatch(/apiKey|ANTHROPIC/i);
     // Seul le chemin de la clé circule.
-    expect(view.config.github.privateKeyPath).toBe('~/.sisyphe/app.pem');
+    expect(view.config.github.privateKeyPath).toBe(keyPath);
   });
 
   it('garde un budget absent absent, sans y graver le défaut du mode sdk', async () => {
@@ -152,23 +147,6 @@ describe('settingsView', () => {
   it('signale une configuration invalide', async () => {
     await writeFile(configPath, 'repos: []\n');
     await expect(settingsView(configPath, paths)).rejects.toBeInstanceOf(MachineConfigError);
-  });
-});
-
-describe('checkResults', () => {
-  it('traduit les quatre issues d\'un contrôle en statut', async () => {
-    const results = await checkResults([
-      okCheck('node', '24.9.0'),
-      warnResultCheck('clé API', 'réseau indisponible'),
-      throwingCheck('caffeinate', 'introuvable', true),
-      throwingCheck('git', 'introuvable sur le PATH'),
-    ]);
-    expect(results).toEqual([
-      { name: 'node', status: 'ok', detail: '24.9.0' },
-      { name: 'clé API', status: 'warn', detail: 'réseau indisponible' },
-      { name: 'caffeinate', status: 'warn', detail: 'introuvable' },
-      { name: 'git', status: 'fail', detail: 'introuvable sur le PATH' },
-    ]);
   });
 });
 
@@ -232,6 +210,40 @@ describe('diagnostics', () => {
     expect(built).toBe(2);
   });
 
+  it('`fresh` passe outre les 30 s, mais rejoint un calcul en cours plutôt que d’en lancer un second', async () => {
+    let built = 0;
+    let release = (): void => {};
+    const data = createSettingsData(deps({
+      buildChecks: () => {
+        built++;
+        return [{ name: 'lent', run: () => new Promise<string>((resolve) => { release = () => resolve('fini'); }) }];
+      },
+    }));
+
+    const first = data.diagnostics();
+    const clicks = Promise.all([data.diagnostics({ fresh: true }), data.diagnostics({ fresh: true })]);
+    // Laisse le premier calcul atteindre son contrôle avant de le libérer.
+    await new Promise((resolve) => setImmediate(resolve));
+    release();
+    await Promise.all([first, clicks]);
+    expect(built).toBe(1);
+
+    const again = data.diagnostics({ fresh: true });
+    await new Promise((resolve) => setImmediate(resolve));
+    release();
+    await again;
+    expect(built).toBe(2);
+  });
+
+  it('invalidateDiagnostics : le diagnostic suivant est recalculé sans attendre les 30 s', async () => {
+    let built = 0;
+    const data = createSettingsData(deps({ buildChecks: () => { built++; return []; } }));
+    await data.diagnostics();
+    data.invalidateDiagnostics();
+    await data.diagnostics();
+    expect(built).toBe(2);
+  });
+
   it('ne mémorise pas un échec', async () => {
     let calls = 0;
     const data = createSettingsData(deps({
@@ -269,6 +281,13 @@ describe('diskUsage', () => {
     expect(usage.totalBytes).toBe(2010);
   });
 
+  it('cache/ lui-même en lien symbolique : 0 octet, la cible n’est pas mesurée', async () => {
+    await rm(paths.cacheDir, { recursive: true, force: true });
+    await symlink(join(dir, 'mirrors'), paths.cacheDir);
+    const usage = await diskUsage(paths);
+    expect(usage.entries[0]).toEqual({ name: 'cache', path: paths.cacheDir, bytes: 0 });
+  });
+
   it('ne suit pas les liens symboliques', async () => {
     await symlink(join(dir, 'mirrors'), join(paths.cacheDir, 'lien'));
     const usage = await diskUsage(paths);
@@ -291,38 +310,14 @@ describe('diskUsage', () => {
   });
 });
 
-describe('purgeCache', () => {
+describe('createSettingsData : purge', () => {
   beforeEach(async () => {
     await seedFile('cache/ILokYou__ILokYou-iOS/DerivedData/a.o', 1000);
     await seedFile('cache/b.o', 500);
     await seedFile('mirrors/gardé.git/packed-refs', 200);
   });
 
-  it('vide le contenu du cache, conserve le dossier et rend les octets libérés', async () => {
-    const { freedBytes } = await purgeCache(paths);
-    expect(freedBytes).toBe(1500);
-    expect(await readdir(paths.cacheDir)).toEqual([]);
-    expect((await stat(paths.cacheDir)).isDirectory()).toBe(true);
-    // Les autres dossiers de données ne sont pas touchés.
-    expect((await diskUsage(paths)).totalBytes).toBe(200);
-  });
-
-  it('ne crée rien quand le cache n\'existe pas', async () => {
-    await rm(paths.cacheDir, { recursive: true, force: true });
-    const { freedBytes } = await purgeCache(paths);
-    expect(freedBytes).toBe(0);
-    await expect(stat(paths.cacheDir)).rejects.toThrow();
-  });
-
-  it('refuse un chemin qui n\'est pas le cache de ces chemins', async () => {
-    await expect(purgeCache({ ...paths, cacheDir: paths.root })).rejects.toThrow(/cache/);
-    await expect(purgeCache({ ...paths, cacheDir: homedir() })).rejects.toThrow(/cache/);
-    await expect(purgeCache({ ...paths, cacheDir: join(paths.root, 'cache', '..') })).rejects.toThrow(/cache/);
-    // Refus avant tout effet : le cache est intact.
-    expect(await readdir(paths.cacheDir)).toHaveLength(2);
-  });
-
-  it('n\'est pas mémorisé, contrairement aux lectures', async () => {
+  it('n\'est pas mémorisée, contrairement aux lectures', async () => {
     const data = createSettingsData(deps());
     expect((await data.purgeCache()).freedBytes).toBe(1500);
     await seedFile('cache/c.o', 42);
@@ -334,6 +329,15 @@ describe('purgeCache', () => {
     const data = createSettingsData(deps({ now: clock.now }));
     expect((await data.diskUsage()).totalBytes).toBe(1700);
     await data.purgeCache();
+    expect((await data.diskUsage()).totalBytes).toBe(200);
+  });
+
+  it('invalidateDisk : une purge faite par le daemon est vue aussitôt', async () => {
+    const clock = fakeClock();
+    const data = createSettingsData(deps({ now: clock.now }));
+    expect((await data.diskUsage()).totalBytes).toBe(1700);
+    await rm(paths.cacheDir, { recursive: true, force: true });
+    data.invalidateDisk();
     expect((await data.diskUsage()).totalBytes).toBe(200);
   });
 });

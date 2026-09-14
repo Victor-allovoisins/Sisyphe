@@ -79,6 +79,7 @@ export const ControlRequestSchema = z.discriminatedUnion('cmd', [
   z.strictObject({ cmd: z.literal('resume'), source }),
   z.strictObject({ cmd: z.literal('stop'), source }),
   z.strictObject({ cmd: z.literal('reload'), source }),
+  z.strictObject({ cmd: z.literal('purge'), source }),
   z.strictObject({ cmd: z.literal('cancel'), jobId, source }),
   z.strictObject({ cmd: z.literal('retry'), jobId, source }),
   z.strictObject({ cmd: z.literal('enqueue'), repo: z.string().min(1), issueNumber: z.number().int().positive(), source }),
@@ -93,7 +94,7 @@ export type ControlCommand = ControlRequest['cmd'];
  * `ControlCommandsInSync` refuse une commande du schéma absente d'ici : les deux ne peuvent pas diverger.
  */
 export const CONTROL_COMMANDS = [
-  'ping', 'poll', 'pause', 'resume', 'stop', 'reload', 'cancel', 'retry', 'enqueue',
+  'ping', 'poll', 'pause', 'resume', 'stop', 'reload', 'purge', 'cancel', 'retry', 'enqueue',
 ] as const satisfies readonly ControlCommand[];
 
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;

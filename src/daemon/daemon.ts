@@ -1,4 +1,5 @@
 import type { Logger } from 'pino';
+import { diffMachineConfig } from '../config/diff.js';
 import { effectiveDailyBudget, loadMachineConfig, type MachineConfig } from '../config/machine.js';
 import { machineConfigPath } from '../config/paths.js';
 import { renderBudgetPauseComment } from '../deliver/comments.js';
@@ -9,10 +10,10 @@ import { canStartJob, startOfLocalDay } from '../jobs/scheduler.js';
 import { purgeOldFiles } from '../log/logger.js';
 import type { ActionInput, ActionName, ActionSource } from '../store/actions.js';
 import { isTerminal, type Job, type JobState } from '../store/types.js';
+import { purgeCache, type PurgeResult } from '../util/cache.js';
 import { startCaffeinate } from './caffeinate.js';
 import { startControlServer, type ControlServer } from './control.js';
 import {
-  HOT_RELOAD_FIELDS,
   RESTART_REQUIRED_FIELDS,
   type CommandResult,
   type DaemonStatus,
@@ -30,45 +31,19 @@ const STOPPING_ERROR = "daemon en cours d'arrêt";
 const RETRYABLE_STATES: ReadonlySet<JobState> = new Set<JobState>(['failed', 'blocked', 'cancelled']);
 
 /**
- * Un comparateur par champ structurel. `Record` et non tableau : il en exige un pour chaque nom de
- * `RESTART_REQUIRED_FIELDS`, donc un champ nouvellement classé structurel ne compile pas tant qu'on n'a
- * pas dit comment le comparer. L'ordre de `needsRestart` vient de la liste, pas d'ici.
+ * Un recopieur par champ à chaud, qui pose la valeur du fichier sur la configuration vivante. `Record` : un
+ * champ classé à chaud sans recopieur ne compile pas. Savoir *si* un champ a changé revient à
+ * `diffMachineConfig`, partagé avec la page de réglages.
  */
-const STRUCTURAL_UNCHANGED: Record<RestartRequiredField, (a: MachineConfig, b: MachineConfig) => boolean> = {
-  'github.appId': (a, b) => a.github.appId === b.github.appId,
-  'github.installationId': (a, b) => a.github.installationId === b.github.installationId,
-  'github.privateKeyPath': (a, b) => a.github.privateKeyPath === b.github.privateKeyPath,
-  // Égalité ordonnée : signaler à tort un simple réordonnancement coûte un bandeau de trop, rater un
-  // changement laisserait un dépôt surveillé pour rien ou pas surveillé du tout.
-  repos: (a, b) => a.repos.length === b.repos.length && a.repos.every((r, i) => r === b.repos[i]),
-  triggerLabel: (a, b) => a.triggerLabel === b.triggerLabel,
-  sandbox: (a, b) => a.sandbox === b.sandbox,
-  agentBackend: (a, b) => a.agentBackend === b.agentBackend,
-  dataDir: (a, b) => a.dataDir === b.dataDir,
-};
-
-/**
- * Un applicateur par champ à chaud, qui recopie la valeur sur la configuration vivante et dit si elle a
- * changé. Même raison qu'au-dessus pour le `Record` : un champ classé à chaud sans applicateur ne compile pas.
- *
- * Comparaison sur les valeurs **brutes** : pour `dailyBudgetUsd`, `null` (aucun plafond, explicitement) et
- * l'absence du champ se résolvent pareil sous `cli` sans dire la même chose, et seul le brut les distingue.
- */
-const APPLY_HOT: Record<HotReloadField, (current: MachineConfig, next: MachineConfig) => boolean> = {
+const COPY_HOT: Record<HotReloadField, (current: MachineConfig, next: MachineConfig) => void> = {
   dailyBudgetUsd: (c, n) => {
-    if (n.dailyBudgetUsd === c.dailyBudgetUsd) return false;
     c.dailyBudgetUsd = n.dailyBudgetUsd;
-    return true;
   },
   maxConcurrentJobs: (c, n) => {
-    if (n.maxConcurrentJobs === c.maxConcurrentJobs) return false;
     c.maxConcurrentJobs = n.maxConcurrentJobs;
-    return true;
   },
   pollIntervalSeconds: (c, n) => {
-    if (n.pollIntervalSeconds === c.pollIntervalSeconds) return false;
     c.pollIntervalSeconds = n.pollIntervalSeconds;
-    return true;
   },
 };
 
@@ -110,7 +85,8 @@ export class Daemon {
   private tickQueued: Promise<void> | null = null;
   private tickRunning = false;
   private paused = false;
-  private purging = false;
+  /** Purges en cours (périodique, commande) : tant qu'il y en a une, rien ne démarre. Compteur, pour que la fin de l'une ne rouvre pas la porte à l'autre. */
+  private purging = 0;
   private readonly startedAt = new Date().toISOString();
   private stopped: Promise<void> | null = null;
   private resolveStopped: (() => void) | null = null;
@@ -285,7 +261,7 @@ export class Daemon {
   private startNext(): Promise<unknown> | null {
     if (this.stopping) return null;
     if (this.paused) return null;
-    if (this.purging) return null;
+    if (this.purging > 0) return null;
     const check = canStartJob({
       activeCount: this.running.size,
       maxConcurrent: this.d.machine.maxConcurrentJobs,
@@ -408,7 +384,7 @@ export class Daemon {
       // Rien n'est touché avant que la lecture ait abouti : la configuration précédente est conservée par
       // construction, pas par discipline.
       const current = this.d.machine;
-      const needsRestart = RESTART_REQUIRED_FIELDS.filter((f) => !STRUCTURAL_UNCHANGED[f](current, next));
+      const { hot, restart: needsRestart } = diffMachineConfig(current, next);
       // Le rappel persistant suit ce que le daemon exécute, pas ce que le dernier `reload` a vu : un champ
       // ramené à sa valeur vivante en sort, un champ changé par un enregistrement antérieur y reste.
       for (const field of RESTART_REQUIRED_FIELDS) {
@@ -416,18 +392,39 @@ export class Daemon {
         else this.pendingRestart.delete(field);
       }
       const applied: HotReloadField[] = [];
-      for (const field of HOT_RELOAD_FIELDS) {
+      for (const field of hot) {
         // Le budget ne voyage pas sans son backend : `effectiveDailyBudget` résout la **paire** (valeur brute,
         // backend), et `agentBackend` n'est pas rechargeable. Recopier le budget seul poserait le daemon sur un
         // plafond résolu à partir d'un backend que le fichier ne demande plus — ni celui d'avant, ni celui
         // d'après : un `{sdk, 40}` vivant face à un fichier `{cli, budget absent}` donnerait 60, que personne
         // n'a écrit. `agentBackend` est dans `needsRestart` : il porte les deux jusqu'au redémarrage.
-        if (field === 'dailyBudgetUsd' && !STRUCTURAL_UNCHANGED.agentBackend(current, next)) continue;
-        if (APPLY_HOT[field](current, next)) applied.push(field);
+        if (field === 'dailyBudgetUsd' && needsRestart.includes('agentBackend')) continue;
+        COPY_HOT[field](current, next);
+        applied.push(field);
       }
       if (applied.includes('pollIntervalSeconds')) this.reschedulePoll();
       this.log.info({ source, path, applied, needsRestart }, 'configuration relue');
       return { ok: true, result: { applied, needsRestart } };
+    });
+  }
+
+  /**
+   * Vide le cache de build à la demande (page de réglages). Sérialisée par la porte comme toute commande,
+   * refusée tant qu'un job tourne ; le contrôle et la levée de `purging` sont faits d'un même tenant, avant
+   * tout `await` : aucun job ne peut démarrer entre les deux, ni pendant la suppression. Un job lancé en cours
+   * de route casserait son build sur un cache à moitié vidé. Les jobs en file attendent le tick suivant.
+   */
+  purgeBuildCache(source: ActionSource): Promise<CommandResult<PurgeResult>> {
+    return this.command('purge', source, async () => {
+      if (this.running.size > 0) return { ok: false, error: `purge refusée : ${this.running.size} job(s) en cours` };
+      this.purging++;
+      try {
+        const result = await purgeCache(this.d.paths);
+        this.log.info({ source, freedBytes: result.freedBytes }, 'cache de build vidé');
+        return { ok: true, result };
+      } finally {
+        this.purging--;
+      }
     });
   }
 
@@ -604,13 +601,13 @@ export class Daemon {
   private async purge(): Promise<void> {
     // Pas de purge pendant qu'un job tourne : `keep` est un instantané (voir purgeOrphanWorktrees).
     if (this.running.size === 0) {
-      this.purging = true;
+      this.purging++;
       try {
         await purgeOrphanWorktrees(this.d);
       } catch (err) {
         this.log.warn({ err }, 'purge des worktrees');
       } finally {
-        this.purging = false;
+        this.purging--;
       }
     }
     await purgeOldFiles(this.d.paths.logsDir, 14).catch(() => undefined);
