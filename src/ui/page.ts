@@ -284,9 +284,12 @@ export const PAGE_HTML = `<!doctype html>
       </div>
       <h2 class="section-title">Agent</h2>
       <div class="settings-grid">
-        <label class="field">Backend<select id="set-backend"><option value="sdk">sdk</option><option value="cli">cli</option></select></label>
+        <label class="field">Backend<select id="set-backend"><option value="sdk">sdk</option><option value="claude-code">claude-code</option><option value="codex">codex</option><option value="opencode">opencode</option></select></label>
         <label class="field">Sandbox<select id="set-sandbox"><option value="false">non</option><option value="true">oui</option></select></label>
+        <label class="field">Modèle triage (codex/opencode)<input type="text" id="set-model-triage" placeholder="défaut du backend"></label>
+        <label class="field">Modèle implémentation (codex/opencode)<input type="text" id="set-model-implement" placeholder="défaut du backend"></label>
       </div>
+      <p class="hint muted">Surcharge des modèles réservée à codex et opencode ; sdk et claude-code suivent les modèles de sisyphe.yml.</p>
       <h2 class="section-title">GitHub</h2>
       <div class="settings-grid">
         <label class="field">App ID<input type="number" id="set-app-id" min="1" step="1"></label>
@@ -1222,6 +1225,8 @@ export const PAGE_HTML = `<!doctype html>
     dailyBudgetUsd: 'set-budget',
     sandbox: 'set-sandbox',
     agentBackend: 'set-backend',
+    'agentModels.triage': 'set-model-triage',
+    'agentModels.implement': 'set-model-implement',
     dataDir: 'set-data-dir'
   };
   var CHECK_ICON = { ok: '✅', warn: '⚠️', fail: '❌' };
@@ -1239,7 +1244,9 @@ export const PAGE_HTML = `<!doctype html>
 
   /** La configuration telle que le formulaire la porte. dailyBudgetUsd vide vaut null : « aucune limite ». */
   function readSettingsConfig() {
-    return {
+    var triage = byId('set-model-triage').value.trim();
+    var implement = byId('set-model-implement').value.trim();
+    var config = {
       github: {
         appId: numberValue('set-app-id'),
         installationId: numberValue('set-installation'),
@@ -1255,6 +1262,13 @@ export const PAGE_HTML = `<!doctype html>
       // Reposté tel quel : le serveur refuse une modification, et l'omettre ferait retomber le schéma sur sa valeur par défaut.
       dataDir: byId('set-data-dir').value
     };
+    // Les deux champs vides : aucune clé agentModels envoyée, le serveur garde ses défauts. Sinon seules les surcharges saisies partent.
+    if (triage || implement) {
+      config.agentModels = {};
+      if (triage) config.agentModels.triage = triage;
+      if (implement) config.agentModels.implement = implement;
+    }
+    return config;
   }
 
   function setField(id, value) {
@@ -1295,6 +1309,9 @@ export const PAGE_HTML = `<!doctype html>
     setField('set-installation', config.github.installationId);
     setField('set-label', config.triggerLabel);
     setField('set-key-path', config.github.privateKeyPath);
+    var models = config.agentModels || {};
+    setField('set-model-triage', models.triage);
+    setField('set-model-implement', models.implement);
     setField('set-data-dir', dataDir);
     settings.repos = config.repos.slice();
     renderReposEditor();
@@ -1328,8 +1345,8 @@ export const PAGE_HTML = `<!doctype html>
   /** Désactive les champs en lecture seule ; dataDir reste verrouillé dans tous les cas (il se change par sisyphe setup). */
   function applySettingsReadOnly() {
     var disabled = ui.readOnly;
-    ['set-poll', 'set-concurrent', 'set-budget', 'set-backend', 'set-sandbox', 'set-app-id',
-      'set-installation', 'set-label', 'set-key-path'].forEach(function (id) {
+    ['set-poll', 'set-concurrent', 'set-budget', 'set-backend', 'set-sandbox', 'set-model-triage',
+      'set-model-implement', 'set-app-id', 'set-installation', 'set-label', 'set-key-path'].forEach(function (id) {
       byId(id).disabled = disabled;
     });
     byId('set-data-dir').disabled = true;
