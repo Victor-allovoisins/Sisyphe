@@ -31,29 +31,83 @@ export function formatJobLine(j: Job): string {
   return `${j.id.slice(0, 8)}  ${j.state.padEnd(12)} ${j.repo}#${j.issueNumber} · ${title} · $${j.costUsd.toFixed(2)} · ${fmtDuration(j.durationMs)} · ${j.attempt} tentative(s)${pr}`;
 }
 
-type Block = { type: string; text?: string; name?: string; input?: Record<string, unknown> };
+type Json = Record<string, unknown>;
 
-/** Résumé lisible d'un transcript JSONL : texte de l'assistant, outils appelés, résultat. */
+const asString = (v: unknown): string => (typeof v === 'string' ? v : '');
+const asObject = (v: unknown): Json | null => (v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Json) : null);
+const asArray = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+
+/** `item.completed` de codex : message assistant, commande exécutée ou fichiers modifiés. */
+function summarizeCodexItem(item: Json | null, out: string[]): void {
+  if (!item) return;
+  const type = asString(item.type);
+  if (type === 'agent_message') {
+    const text = asString(item.text);
+    if (text.trim()) out.push(`💬 ${safeText(text, 200)}`);
+  } else if (type === 'command_execution') {
+    const command = asString(item.command);
+    if (command.trim()) out.push(`🔧 ${safeText(command, 160)}`.trimEnd());
+  } else if (type === 'file_change') {
+    // codex rend `{ changes: [{ path, kind }] }` (cf. codex-rs exec_events.rs) : on n'affiche que les chemins.
+    const paths = asArray(item.changes)
+      .map((change) => asString(asObject(change)?.path))
+      .filter(Boolean);
+    if (paths.length > 0) out.push(`📝 ${safeText(paths.join(', '), 200)}`);
+  }
+}
+
+/**
+ * Parties `part` du flux opencode (`--format json`). Les noms de champs sont **provisoires** :
+ * ils seront épinglés sur une capture réelle en Task 11 (cf. §4 du design), d'où la lecture tolérante
+ * de plusieurs clés d'entrée d'outil.
+ */
+function summarizeOpenCodePart(part: Json | null, out: string[]): void {
+  if (!part) return;
+  if (part.type === 'text') {
+    const text = asString(part.text);
+    if (text.trim()) out.push(`💬 ${safeText(text, 200)}`);
+  } else if (part.type === 'tool') {
+    const name = asString(part.tool);
+    const state = asObject(part.state);
+    const input = asObject(state?.input) ?? {};
+    const target = asString(input.command ?? input.filePath ?? input.file_path ?? input.path ?? input.pattern ?? state?.title);
+    out.push(`🔧 ${[name, target].filter(Boolean).join(' ')}`.trimEnd());
+  }
+}
+
+/** Résumé lisible d'un transcript JSONL : messages Claude, événements codex, parties opencode. */
 export function summarizeTranscript(lines: string[]): string[] {
   const out: string[] = [];
   for (const line of lines) {
-    let msg: { type?: string; subtype?: string; message?: { content?: Block[] }; total_cost_usd?: number; num_turns?: number };
+    let msg: Json;
     try {
-      msg = JSON.parse(line);
+      msg = JSON.parse(line) as Json;
     } catch {
       continue;
     }
     if (msg.type === 'assistant') {
-      for (const block of msg.message?.content ?? []) {
-        if (block.type === 'text' && block.text?.trim()) out.push(`💬 ${safeText(block.text, 200)}`);
-        if (block.type === 'tool_use') {
-          const i = block.input ?? {};
+      for (const block of asArray(asObject(msg.message)?.content)) {
+        const b = asObject(block);
+        if (!b) continue;
+        if (b.type === 'text' && asString(b.text).trim()) out.push(`💬 ${safeText(asString(b.text), 200)}`);
+        if (b.type === 'tool_use') {
+          const i = asObject(b.input) ?? {};
           const target = (i.file_path ?? i.command ?? i.pattern ?? i.path ?? '') as string;
-          out.push(`🔧 ${block.name} ${safeText(String(target), 160)}`.trimEnd());
+          out.push(`🔧 ${b.name} ${safeText(String(target), 160)}`.trimEnd());
         }
       }
     } else if (msg.type === 'result') {
-      out.push(`${msg.subtype === 'success' ? '✅' : '❌'} result ${msg.subtype} · $${(msg.total_cost_usd ?? 0).toFixed(2)} · ${msg.num_turns ?? 0} tours`);
+      const subtype = asString(msg.subtype);
+      const cost = typeof msg.total_cost_usd === 'number' ? msg.total_cost_usd : 0;
+      const turns = typeof msg.num_turns === 'number' ? msg.num_turns : 0;
+      out.push(`${subtype === 'success' ? '✅' : '❌'} result ${subtype} · $${cost.toFixed(2)} · ${turns} tours`);
+    } else if (msg.type === 'item.completed') {
+      summarizeCodexItem(asObject(msg.item), out);
+    } else if (msg.type === 'turn.completed') {
+      // codex sur abonnement : le coût n'est pas communiqué (cf. §8 du design).
+      out.push('✅ result · coût non communiqué');
+    } else {
+      summarizeOpenCodePart(asObject(msg.part), out);
     }
   }
   return out;
