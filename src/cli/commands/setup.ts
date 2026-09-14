@@ -5,7 +5,7 @@ import { createInterface } from 'node:readline/promises';
 import { stringify } from 'yaml';
 import { createApp, type App } from '../../app.js';
 import {
-  MachineConfigError, parseMachineConfig, parseMachineConfigAsWritten, type AgentBackend, type MachineConfig,
+  AGENT_BACKENDS, MachineConfigError, parseMachineConfig, parseMachineConfigAsWritten, type AgentBackend, type MachineConfig,
 } from '../../config/machine.js';
 import { writeMachineConfig } from '../../config/write.js';
 import { dataPaths, defaultDataDir, ensureDataDirs, expandHome, machineConfigPath, type DataPaths } from '../../config/paths.js';
@@ -62,8 +62,11 @@ export function validateApiKey(s: string): string | null {
   return s.trim() ? null : 'Clé requise.';
 }
 
+/** Backends acceptés à la question : les canoniques, plus l'alias historique `cli` (normalisé au parse). */
+const ACCEPTED_BACKENDS = new Set<string>([...AGENT_BACKENDS, 'cli']);
+
 export function validateBackend(s: string): string | null {
-  return s === 'cli' || s === 'sdk' ? null : 'Répondre cli ou sdk.';
+  return ACCEPTED_BACKENDS.has(s) ? null : `Répondre ${AGENT_BACKENDS.join(', ')} ou cli.`;
 }
 
 export async function validatePrivateKeyPath(p: string): Promise<string | null> {
@@ -226,7 +229,7 @@ export async function setupCommand(opts: SetupOptions = {}, deps: { createManage
     const agentBackend = (await askValidated(
       'Backend agent (cli = abonnement Claude Code, sdk = clé API)',
       validateBackend,
-      existing?.agentBackend ?? 'cli',
+      existing?.agentBackend ?? 'claude-code',
     )) as AgentBackend;
 
     let apiKey = '';

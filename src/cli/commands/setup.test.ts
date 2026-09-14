@@ -68,9 +68,10 @@ describe('validateApiKey', () => {
 });
 
 describe('validateBackend', () => {
-  it('accepte cli et sdk, rejette le reste', () => {
-    expect(validateBackend('cli')).toBeNull();
-    expect(validateBackend('sdk')).toBeNull();
+  it("accepte les quatre backends canoniques et l'alias cli, rejette le reste", () => {
+    for (const backend of ['sdk', 'claude-code', 'codex', 'opencode', 'cli']) {
+      expect(validateBackend(backend)).toBeNull();
+    }
     expect(validateBackend('')).not.toBeNull();
     expect(validateBackend('bedrock')).not.toBeNull();
   });
