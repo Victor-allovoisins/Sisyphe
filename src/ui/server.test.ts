@@ -1,5 +1,5 @@
 import { request as httpRequest } from 'node:http';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
@@ -13,8 +13,11 @@ import { PhaseStore } from '../store/phases.js';
 import { emptyFlags, type JobState } from '../store/types.js';
 import { createUiData } from './data.js';
 import { startUiServer, type ActionRunner, type UiServer } from './server.js';
+import { createSettingsData } from './settings.js';
 
 const PAGE = '<!doctype html><title>Sisyphe test</title>';
+/** Contenu de la clé privée factice : il ne doit apparaître dans aucune réponse. */
+const KEY_SECRET = 'NE-DOIT-JAMAIS-SORTIR';
 
 let nextIssueNumber = 1;
 
@@ -65,14 +68,26 @@ interface TestServerOptions {
   readOnly?: boolean;
 }
 
-async function startTestServer(opts: TestServerOptions = {}): Promise<{ server: UiServer; db: DatabaseSync; actions: ActionStore; base: string }> {
+async function startTestServer(
+  opts: TestServerOptions = {},
+): Promise<{ server: UiServer; db: DatabaseSync; actions: ActionStore; base: string; root: string }> {
   const root = await mkdtemp(join(tmpdir(), 'sisyphe-srv-'));
   const paths = dataPaths(root);
   const db = openDatabase(':memory:');
   const actions = new ActionStore(db);
-  const machine = parseMachineConfig(
-    `github:\n  appId: 1\n  installationId: 1\n  privateKeyPath: /dev/null\nrepos:\n  - acme/demo\ndataDir: ${root}\n`,
-  );
+  const keyPath = join(root, 'app.pem');
+  await writeFile(keyPath, `-----BEGIN RSA PRIVATE KEY-----\n${KEY_SECRET}\n-----END RSA PRIVATE KEY-----\n`);
+  const configText = `github:\n  appId: 1\n  installationId: 1\n  privateKeyPath: ${keyPath}\nrepos:\n  - acme/demo\ndataDir: ${root}\n`;
+  const configPath = join(root, 'config.yml');
+  await writeFile(configPath, configText);
+  const machine = parseMachineConfig(configText);
+  // Données de réglages réelles sur le dossier temporaire ; ni contrôle réel ni sous-process.
+  const settings = createSettingsData({
+    paths,
+    configPath,
+    buildChecks: () => [{ name: 'git', run: async () => '2.39.5' }],
+    exec: async () => ({ exitCode: 1, stdout: '', stderr: 'absent' }),
+  });
   const paused = opts.paused ?? null;
   const data = createUiData({
     store: new JobStore(db),
@@ -85,9 +100,9 @@ async function startTestServer(opts: TestServerOptions = {}): Promise<{ server: 
     control: { ping: async () => (paused === null ? null : { pid: 7, paused, running: 0, queued: 0, startedAt: '2026-09-13T08:00:00.000Z', pendingRestart: [] }) },
     readOnly: opts.readOnly ?? false,
   });
-  const server = await startUiServer({ data, page: PAGE, port: opts.port ?? 0, intervalMs: 50, actions: opts.actions });
+  const server = await startUiServer({ data, settings, page: PAGE, port: opts.port ?? 0, intervalMs: 50, actions: opts.actions });
   servers.push(server);
-  return { server, db, actions, base: `http://127.0.0.1:${server.port}` };
+  return { server, db, actions, base: `http://127.0.0.1:${server.port}`, root };
 }
 
 /** POST d'action avec les en-têtes complets par défaut ; `headers` les remplace entièrement. */
@@ -170,6 +185,44 @@ describe('startUiServer', () => {
     const ambiguous = await getJson(`${base}/api/jobs/aaa`);
     expect(ambiguous.res.status).toBe(409);
     expect(ambiguous.body.error).toContain('aaa111');
+  });
+
+  it('/api/settings : la configuration telle qu’écrite, les listes de champs et le mode, sans secret', async () => {
+    const acting = await startTestServer({ actions: async () => ({ status: 200, body: { ok: true, result: null } }) });
+    const readOnly = await startTestServer();
+
+    const { res, body } = await getJson(`${acting.base}/api/settings`);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('application/json; charset=utf-8');
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(body.config.repos).toEqual(['acme/demo']);
+    expect(body.config.github.privateKeyPath).toBe(join(acting.root, 'app.pem'));
+    expect(body.dataDir).toBe(acting.root);
+    expect(body.hotReloadable).toContain('pollIntervalSeconds');
+    expect(body.restartRequired).toContain('repos');
+    expect(body.readOnly).toBe(false);
+    expect(JSON.stringify(body)).not.toContain(KEY_SECRET);
+    expect((await getJson(`${readOnly.base}/api/settings`)).body.readOnly).toBe(true);
+  });
+
+  it('/api/diagnostics et /api/disk : forme attendue, sans secret', async () => {
+    const { base, root } = await startTestServer();
+    await mkdir(join(root, 'cache'), { recursive: true });
+    await writeFile(join(root, 'cache', 'blob'), 'x'.repeat(100));
+
+    const diag = await getJson(`${base}/api/diagnostics`);
+    expect(diag.res.status).toBe(200);
+    expect(diag.body.checks).toEqual([{ name: 'git', status: 'ok', detail: '2.39.5' }]);
+    expect(diag.body.versions).toEqual({ sisyphe: null, node: null, claude: null, git: null, gitleaks: null });
+    expect(diag.body.paths).toMatchObject({ config: join(root, 'config.yml'), data: root });
+
+    const disk = await getJson(`${base}/api/disk`);
+    expect(disk.res.status).toBe(200);
+    expect(disk.body.entries.map((e: { name: string }) => e.name)).toEqual(['cache', 'mirrors', 'work', 'logs', 'jobs']);
+    expect(disk.body.totalBytes).toBe(100);
+
+    for (const body of [diag.body, disk.body]) expect(JSON.stringify(body)).not.toContain(KEY_SECRET);
   });
 
   it('/api/report accepte une période valide et refuse le reste', async () => {
@@ -394,6 +447,23 @@ describe('POST /api/actions/<nom>', () => {
     expect(avecCharset.status).toBe(200);
 
     expect(calls).toHaveLength(4);
+  });
+
+  it('settings et purge-cache : mêmes gardes anti-CSRF que les autres, et refus en lecture seule', async () => {
+    const { actions, calls } = recorder({ status: 200, body: { ok: true, result: null } });
+    const { base } = await startTestServer({ actions });
+    const readOnly = await startTestServer({ readOnly: true });
+
+    for (const name of ['settings', 'purge-cache']) {
+      expect((await postAction(base, name, { headers: { 'content-type': 'application/json' } })).status, name).toBe(403);
+      expect((await postAction(base, name, { headers: { 'x-sisyphe-action': '1' } })).status, name).toBe(403);
+      expect((await postAction(base, name, { headers: { ...ACTION_HEADERS, origin: 'http://attaquant.example' } })).status, name).toBe(403);
+
+      const refused = await postAction(readOnly.base, name);
+      expect(refused.status, name).toBe(403);
+      expect(((await refused.json()) as JsonBody).error).toContain('lecture seule');
+    }
+    expect(calls).toEqual([]);
   });
 
   it('en lecture seule, toute action est refusée en 403', async () => {

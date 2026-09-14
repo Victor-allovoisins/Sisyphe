@@ -6,17 +6,29 @@
 import { readFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
+import { parseMachineConfigAsWritten, type MachineConfig } from '../config/machine.js';
 import type { DataPaths } from '../config/paths.js';
+import { validateMachineConfigInput, writeMachineConfig, type ConfigIssue } from '../config/write.js';
 import { DaemonUnreachableError } from '../daemon/control-client.js';
-import type { CommandResult, ControlArgs, ControlCommand, DaemonStatus } from '../daemon/control-types.js';
+import {
+  RESTART_REQUIRED_FIELDS,
+  type CommandResult,
+  type ControlArgs,
+  type ControlCommand,
+  type DaemonStatus,
+  type ReloadResult,
+  type RestartRequiredField,
+} from '../daemon/control-types.js';
 import { realExec, type Exec } from '../service/exec.js';
 import { launchdErrLogPath } from '../service/launchd.js';
 import { detachedLogPath } from '../service/none.js';
 import { SYSTEMD_UNIT } from '../service/systemd.js';
 import type { ServiceKind, ServiceStatus } from '../service/types.js';
-import type { ActionName, ActionSource } from '../store/actions.js';
+import type { ActionSource } from '../store/actions.js';
+import { JOB_STATES, isTerminal, type JobState } from '../store/types.js';
 import { tail } from '../util/text.js';
 import type { UiControl } from './data.js';
+import type { PurgeResult } from './settings.js';
 
 /** `start` rend la main dès que le service est lancé ; le daemon, lui, interroge GitHub avant de répondre. */
 const START_TIMEOUT_MS = 30_000;
@@ -34,8 +46,13 @@ const PING_TTL_MS = 1_000;
  */
 const TIMEOUT_MESSAGE = "Le daemon n'a pas répondu à temps ; l'action a peut-être été appliquée, vérifier le journal.";
 
-/** Les actions offertes par l'interface : celles de la socket de contrôle, plus `start` (service seul). */
-export const UI_ACTIONS = ['cancel', 'retry', 'enqueue', 'poll', 'pause', 'resume', 'stop', 'start'] as const satisfies readonly ActionName[];
+/**
+ * Les actions offertes par l'interface : celles de la socket de contrôle, `start` (service seul), et deux
+ * actions locales — `settings` écrit `config.yml`, `purge-cache` vide le cache de build. C'est la surface
+ * POST, pas le vocabulaire du journal (`ActionName`) : le journal est écrit par le daemon seul, sous le nom
+ * de la commande qu'il reçoit, et `purge-cache` n'en est pas une.
+ */
+export const UI_ACTIONS = ['cancel', 'retry', 'enqueue', 'poll', 'pause', 'resume', 'stop', 'start', 'settings', 'purge-cache'] as const;
 export type UiActionName = (typeof UI_ACTIONS)[number];
 
 /**
@@ -54,10 +71,31 @@ export interface ActionService {
   status(): Promise<ServiceStatus>;
 }
 
+/** Sous-ensemble du `JobStore` : la purge du cache doit savoir si un job est en cours. */
+export interface ActionJobs {
+  countByState(): Record<JobState, number>;
+}
+
+/**
+ * La purge de `createSettingsData`, jamais la fonction nue de `settings.ts` : seule celle de la fabrique
+ * périme la mesure disque mémorisée, sans quoi la page afficherait 30 s un cache pourtant vidé.
+ */
+export interface ActionSettings {
+  purgeCache(): Promise<PurgeResult>;
+}
+
 export interface RunActionDeps {
   client: ActionClient;
   service: ActionService;
   paths: DataPaths;
+  /**
+   * Le `config.yml` relu puis réécrit par l'action `settings` : `machineConfigPath()` en production, jamais un
+   * chemin sous `paths.root`. Le fichier est ancré sur la racine par défaut ; écrit ailleurs, le daemon ne le
+   * lirait jamais, et l'écriture comme le rechargement se déclareraient pourtant en succès.
+   */
+  configPath: string;
+  jobs: ActionJobs;
+  settings: ActionSettings;
   /** Lecture du journal systemd ; injecté en test pour ne pas lancer `journalctl`. */
   exec?: Exec;
   /** Attente entre deux `ping` après un démarrage ; injectée en test pour ne pas dormir réellement. */
@@ -69,7 +107,8 @@ export interface RunActionDeps {
 /** Réponse prête à sérialiser : le serveur n'a plus qu'à écrire le statut et le corps. */
 export interface ActionResponse {
   status: number;
-  body: { ok: true; result: unknown } | { error: string };
+  /** `issues` : le détail par champ d'une configuration refusée, que la page affiche sous chaque champ. */
+  body: { ok: true; result: unknown } | { error: string; issues?: ConfigIssue[] };
 }
 
 const jobIdBody = z.strictObject({ jobId: z.string().min(1) });
@@ -88,10 +127,29 @@ const BODY_SCHEMAS = {
   resume: emptyBody,
   stop: emptyBody,
   start: emptyBody,
+  // Entrée présente pour que la table reste exhaustive. La configuration complète est validée par
+  // `validateMachineConfigInput`, qui rend le détail par champ que ce schéma ne saurait pas produire.
+  settings: z.unknown(),
+  'purge-cache': emptyBody,
 } as const satisfies Record<UiActionName, z.ZodType>;
 
 const ok = (result: unknown): ActionResponse => ({ status: 200, body: { ok: true, result } });
 const fail = (status: number, error: string): ActionResponse => ({ status, body: { error } });
+
+/**
+ * Lecture d'un champ structurel, indexée par `RestartRequiredField` : un champ ajouté à la liste du daemon
+ * sans lecture ici ne compile pas, et les noms ne sont jamais retapés.
+ */
+const RESTART_FIELD_VALUE = {
+  'github.appId': (c) => c.github.appId,
+  'github.installationId': (c) => c.github.installationId,
+  'github.privateKeyPath': (c) => c.github.privateKeyPath,
+  repos: (c) => c.repos,
+  triggerLabel: (c) => c.triggerLabel,
+  sandbox: (c) => c.sandbox,
+  agentBackend: (c) => c.agentBackend,
+  dataDir: (c) => c.dataDir,
+} as const satisfies Record<RestartRequiredField, (c: MachineConfig) => unknown>;
 
 const messageOf = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
@@ -168,26 +226,99 @@ async function startFailureLog(deps: RunActionDeps): Promise<string> {
   }
 }
 
+/** Champs structurels dont la valeur diffère entre deux configurations ; `repos` est comparé par valeur. */
+function changedRestartFields(before: MachineConfig, after: MachineConfig): RestartRequiredField[] {
+  return RESTART_REQUIRED_FIELDS.filter((f) => {
+    const value = RESTART_FIELD_VALUE[f];
+    return JSON.stringify(value(before)) !== JSON.stringify(value(after));
+  });
+}
+
+/**
+ * Enregistre la configuration reçue, puis la fait relire au daemon s'il répond.
+ *
+ * `current` est la configuration telle qu'écrite (`~` non développé) : c'est elle que compare
+ * `validateMachineConfigInput` pour refuser un `dataDir` modifié, et elle qui sert à calculer les champs
+ * structurels changés quand le daemon est arrêté. Rien n'est écrit sans validation.
+ *
+ * Journal : le `reload` est journalisé par le daemon (source `ui`) quand la socket répond ; daemon arrêté,
+ * l'enregistrement n'est pas journalisé — l'interface n'écrit jamais la base.
+ */
+async function saveSettings(raw: unknown, deps: RunActionDeps): Promise<ActionResponse> {
+  let current: MachineConfig;
+  try {
+    current = parseMachineConfigAsWritten(await readFile(deps.configPath, 'utf8'));
+  } catch (err) {
+    // Sans la configuration en place, `dataDir` n'est plus vérifiable : refuser plutôt qu'écrire à l'aveugle.
+    return fail(409, `Configuration actuelle illisible (${deps.configPath}) : ${messageOf(err)}`);
+  }
+  const validated = await validateMachineConfigInput(raw, current);
+  if (!validated.ok) return { status: 400, body: { error: 'Configuration refusée', issues: validated.issues } };
+  try {
+    await writeMachineConfig(deps.configPath, validated.config);
+  } catch (err) {
+    return fail(409, `Écriture de ${deps.configPath} impossible : ${messageOf(err)}`);
+  }
+  try {
+    const result = await deps.client.send('reload', {}, 'ui');
+    // Le daemon n'a pas pu relire le fichier : il garde sa configuration, et son message dit pourquoi.
+    return result.ok ? ok(result.result) : fail(409, result.error);
+  } catch (err) {
+    // Délai dépassé : le rechargement a peut-être eu lieu, c'est au 502 de `runAction` de le dire.
+    if (!(err instanceof DaemonUnreachableError) || err.timedOut) throw err;
+    // Daemon arrêté : tout prendra effet au démarrage. Faute de daemon pour comparer, les champs structurels
+    // modifiés sont calculés ici, pour que la page les nomme comme le ferait un `reload`.
+    const stopped: ReloadResult = { applied: [], needsRestart: changedRestartFields(current, validated.config) };
+    return ok(stopped);
+  }
+}
+
+/** Jobs non terminaux, `queued` compris : même définition que le compteur `active` de l'interface. */
+function activeJobs(counts: Record<JobState, number>): number {
+  return JOB_STATES.filter((s) => !isTerminal(s)).reduce((n, s) => n + counts[s], 0);
+}
+
+/**
+ * Vide le cache de build. Refusée tant qu'un job n'est pas terminal, file comprise : un job `queued` démarre
+ * au prochain tic du daemon, et un build privé de son cache en cours de route casserait sans raison visible.
+ *
+ * Non journalisée : le journal est écrit par le daemon seul, et aucune commande de contrôle ne porte la
+ * purge — elle n'apparaît donc pas dans les dernières actions, que le daemon tourne ou non.
+ */
+async function purgeBuildCache(deps: RunActionDeps): Promise<ActionResponse> {
+  const active = activeJobs(deps.jobs.countByState());
+  if (active > 0) return fail(409, `Purge refusée : ${active} job(s) en cours ou en file ; réessayer une fois la file vide.`);
+  return ok(await deps.settings.purgeCache());
+}
+
 /**
  * Exécute une action demandée par l'interface. `start` et `stop` passent par le gestionnaire de service
- * (sinon launchd ou systemd relanceraient aussitôt le daemon arrêté) ; tout le reste par la socket.
+ * (sinon launchd ou systemd relanceraient aussitôt le daemon arrêté), `settings` et `purge-cache` agissent
+ * en local ; tout le reste passe par la socket.
  */
 export async function runAction(name: string, body: unknown, deps: RunActionDeps): Promise<ActionResponse> {
   const action = (UI_ACTIONS as readonly string[]).includes(name) ? (name as UiActionName) : null;
   if (action === null) return fail(400, `Action inconnue : ${name} (attendu ${UI_ACTIONS.join(', ')})`);
-  const parsed = BODY_SCHEMAS[action].safeParse(body ?? {});
-  if (!parsed.success) return fail(400, `Arguments invalides : ${issuesOf(parsed.error)}`);
   try {
-    if (action === 'start') return await startDaemon(deps);
-    if (action === 'stop') return await stopDaemon(deps);
-    const result = await deps.client.send(action, parsed.data, 'ui');
-    // Refus métier du daemon (job terminal, repo hors config...) : c'est son message qui est relayé.
-    return result.ok ? ok(result.result) : fail(409, result.error);
+    return await dispatch(action, body ?? {}, deps);
   } catch (err) {
     if (err instanceof DaemonUnreachableError) return fail(502, err.timedOut ? TIMEOUT_MESSAGE : err.message);
     // Jamais de stack sur le réseau, même en local.
     return fail(500, messageOf(err));
   }
+}
+
+async function dispatch(action: UiActionName, body: unknown, deps: RunActionDeps): Promise<ActionResponse> {
+  // `settings` d'abord : son corps (`unknown`) élargirait sinon le type du corps validé de toutes les autres.
+  if (action === 'settings') return saveSettings(body, deps);
+  const parsed = BODY_SCHEMAS[action].safeParse(body);
+  if (!parsed.success) return fail(400, `Arguments invalides : ${issuesOf(parsed.error)}`);
+  if (action === 'purge-cache') return purgeBuildCache(deps);
+  if (action === 'start') return startDaemon(deps);
+  if (action === 'stop') return stopDaemon(deps);
+  const result = await deps.client.send(action, parsed.data, 'ui');
+  // Refus métier du daemon (job terminal, repo hors config...) : c'est son message qui est relayé.
+  return result.ok ? ok(result.result) : fail(409, result.error);
 }
 
 /**
