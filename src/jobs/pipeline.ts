@@ -13,7 +13,7 @@ import { jobDir as jobDirFor, repoCachePath, type DataPaths } from '../config/pa
 import { REPO_CONFIG_FILENAME, RepoConfigError, parseRepoConfig, type RepoConfig } from '../config/repo.js';
 import {
   renderBlockedComment, renderCancelledComment, renderConfigProblemComment, renderFailedComment,
-  renderNoChangesComment, renderSecretsComment, renderTakeoverComment,
+  renderNoChangesComment, renderProtectedPathsComment, renderSecretsComment, renderTakeoverComment,
 } from '../deliver/comments.js';
 import { deliver } from '../deliver/deliver.js';
 import type { Git } from '../git/git.js';
@@ -262,6 +262,12 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
         await source.setStatus(issueRef, 'failed');
         await cleanup();
         return finish('failed', { error: 'secrets détectés dans le diff' });
+      }
+      if (verify.flags.protectedPathsTouched.length > 0) {
+        await source.comment(issueRef, renderProtectedPathsComment(verify.flags.protectedPathsTouched, trigger));
+        await source.setStatus(issueRef, 'failed');
+        await cleanup();
+        return finish('failed', { error: 'chemins protégés modifiés dans le diff' });
       }
       if (verify.ok) break;
       log.warn({ attempt, step: verify.failedStep }, 'vérification échouée');

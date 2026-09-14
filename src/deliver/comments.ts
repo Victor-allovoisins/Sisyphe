@@ -56,13 +56,25 @@ export function renderNoChangesComment(summary: string, trigger: string): string
   return `🪨 L'agent n'a produit aucun changement.\n\n${sanitizeModelText(summary)}\n\n${relaunch(trigger, 'blocked')}`;
 }
 
+const WORKTREE_REMOVED = 'Le worktree est supprimé ; le dossier `jobs/<id>/` de la machine Sisyphe garde le matériel de post-mortem (transcripts, logs, diff).';
+
 export function renderSecretsComment(found: string[], trigger: string): string {
   return [
     "🪨 Sisyphe a détecté des secrets potentiels dans le diff et n'a rien poussé :",
     '',
     ...found.map((f) => `- ${f}`),
     '',
-    `Le worktree est conservé 7 jours sur la machine Sisyphe pour inspection. ${relaunch(trigger, 'failed')}`,
+    `${WORKTREE_REMOVED} ${relaunch(trigger, 'failed')}`,
+  ].join('\n');
+}
+
+export function renderProtectedPathsComment(found: string[], trigger: string): string {
+  return [
+    "🪨 Sisyphe a détecté des chemins protégés modifiés dans le diff et n'a rien poussé :",
+    '',
+    ...found.map((f) => `- ${f}`),
+    '',
+    `${WORKTREE_REMOVED} ${relaunch(trigger, 'failed')}`,
   ].join('\n');
 }
 

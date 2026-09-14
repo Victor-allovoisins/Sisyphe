@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { jobDir } from '../../src/config/paths.js';
 import { runJob } from '../../src/jobs/pipeline.js';
 import { REPO, SISYPHE_YML, makeHarness, readyVerdict, repoRef, report, writeFeature } from '../helpers/harness.js';
-import { remoteBranchSha, remoteCommitParents } from '../helpers/git-fixture.js';
+import { remoteBranchSha, remoteCommitParents, writeFiles } from '../helpers/git-fixture.js';
 
 const BRANCH = 'feature/issue-7-ajouter-feature-hello';
 const issue7 = { repo: repoRef, number: 7 };
@@ -151,6 +151,29 @@ describe('runJob', () => {
     expect(await remoteBranchSha(h.remotePath, BRANCH)).toBeNull();
     expect(h.source.pulls).toHaveLength(0);
     expect(h.source.commentsOf(issue7).at(-1)).toContain('aws-access-token');
+    expect(existsSync(done.worktreePath!)).toBe(false);
+    expect(existsSync(jobDir(h.paths, done.id))).toBe(true);
+  });
+
+  it('chemin protégé touché : failed, aucune PR, worktree nettoyé', async () => {
+    const h = await makeHarness({
+      steps: [
+        { output: readyVerdict },
+        { output: report('v1'), sideEffect: async (opts) => writeFiles(opts.cwd, { 'src/feature.txt': 'hello\n', 'secrets/key.txt': 's3cret\n' }) },
+      ],
+    });
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    const done = await runJob(job.id, h.deps, signal());
+    expect(done.state).toBe('failed');
+    expect(done.flags.protectedPathsTouched).toEqual(['secrets/key.txt']);
+    expect(done.error).toContain('chemins protégés');
+    expect(await remoteBranchSha(h.remotePath, BRANCH)).toBeNull();
+    expect(h.source.pulls).toHaveLength(0);
+    expect(h.source.labelsOf(issue7)).toEqual(['sisyphe', 'sisyphe:failed']);
+    const comment = h.source.commentsOf(issue7).at(-1)!;
+    expect(comment).toContain('secrets/key.txt');
+    expect(comment).toContain('chemins protégés');
+    expect(comment).toContain('worktree est supprimé');
     expect(existsSync(done.worktreePath!)).toBe(false);
     expect(existsSync(jobDir(h.paths, done.id))).toBe(true);
   });

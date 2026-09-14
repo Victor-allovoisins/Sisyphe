@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { emptyFlags, type Job, type Phase } from '../store/types.js';
 import type { VerifyResult } from '../verify/verify.js';
-import { jobMarker, renderBlockedComment, renderConfigProblemComment, renderDoneComment } from './comments.js';
+import {
+  jobMarker, renderBlockedComment, renderConfigProblemComment, renderDoneComment,
+  renderProtectedPathsComment, renderSecretsComment,
+} from './comments.js';
 import { renderPrBody } from './pr-body.js';
 import { clampForGitHub, sanitizeCodeSpan, sanitizeModelText } from './sanitize.js';
 
@@ -125,6 +128,25 @@ describe('comments', () => {
     expect(invalid).toContain('Corrigez');
     expect(invalid).toContain('commands.build');
     expect(invalid).not.toContain('Ajoutez un fichier');
+  });
+  it('renderSecretsComment promet la suppression du worktree, pas une conservation 7 jours', () => {
+    const c = renderSecretsComment(['src/feature.txt (aws-access-token)'], 'sisyphe');
+    expect(c).toContain('- src/feature.txt (aws-access-token)');
+    expect(c).toContain("n'a rien poussé");
+    expect(c).toContain('worktree est supprimé');
+    expect(c).toContain('`jobs/<id>/`');
+    expect(c).not.toContain('7 jours');
+    expect(c).toContain('`sisyphe:failed`');
+  });
+  it('renderProtectedPathsComment liste les chemins, rien poussé et consigne de relance', () => {
+    const c = renderProtectedPathsComment(['secrets/key.txt', '.github/workflows/ci.yml'], 'sisyphe');
+    expect(c).toContain('- secrets/key.txt');
+    expect(c).toContain('- .github/workflows/ci.yml');
+    expect(c).toContain("n'a rien poussé");
+    expect(c).toContain('chemins protégés');
+    expect(c).toContain('worktree est supprimé');
+    expect(c).toContain('`jobs/<id>/`');
+    expect(c).toContain('`sisyphe:failed`');
   });
   it('renderDoneComment distingue succès et draft, et porte le marqueur de job', () => {
     expect(renderDoneComment({ jobId: 'job-1', prUrl: 'u', status: 'done', costUsd: 2, durationMs: 60_000, attempts: 1 })).toContain('PR prête');
