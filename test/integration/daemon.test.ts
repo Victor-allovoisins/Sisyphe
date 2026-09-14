@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { effectiveDailyBudget } from '../../src/config/machine.js';
 import { Daemon } from '../../src/daemon/daemon.js';
 import { pollOnce } from '../../src/daemon/poll.js';
 import { SHUTDOWN } from '../../src/jobs/pipeline.js';
@@ -38,12 +39,12 @@ describe('Daemon', () => {
   });
 
   it('sans plafond, aucune pause budgétaire : le job démarre malgré une dépense élevée', async () => {
+    // Plafond vidé (`dailyBudgetUsd: null`) sur un backend `sdk` : ce que l'absence du champ ne peut pas dire.
     const h = await makeHarness({
       steps: [{ output: readyVerdict }, { output: report('a'), sideEffect: writeFeature('hello\n') }],
-      agentBackend: 'cli',
       dailyBudgetUsd: null,
     });
-    expect(h.deps.machine.dailyBudgetUsd).toBeUndefined();
+    expect(effectiveDailyBudget(h.deps.machine)).toBeUndefined();
 
     // Dépense du jour très supérieure à n'importe quel plafond plausible, portée par un job déjà terminé.
     const spent = h.store.create({ repo: REPO, issueNumber: 99, issueTitle: 'dépense du jour' });

@@ -1,4 +1,5 @@
 import type { Logger } from 'pino';
+import { effectiveDailyBudget } from '../config/machine.js';
 import { renderBudgetPauseComment } from '../deliver/comments.js';
 import { issueRefOf, parseRepo, type Issue } from '../github/source.js';
 import { CANCELLED, SHUTDOWN, runJob, type PipelineDeps } from '../jobs/pipeline.js';
@@ -221,7 +222,7 @@ export class Daemon {
     if (this.stopping) return null;
     if (this.paused) return null;
     if (this.purging) return null;
-    const dailyBudgetUsd = this.d.machine.dailyBudgetUsd;
+    const dailyBudgetUsd = effectiveDailyBudget(this.d.machine);
     const check = canStartJob({
       activeCount: this.running.size,
       maxConcurrent: this.d.machine.maxConcurrentJobs,

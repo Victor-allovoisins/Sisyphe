@@ -134,7 +134,7 @@ describe('reconcile', () => {
     expect(j.error).toBeNull();
   });
 
-  it('marque failed et conserve le worktree quand la vérification avait échoué mais la PR existe', async () => {
+  it('marque failed et supprime le worktree quand la vérification avait échoué mais la PR existe', async () => {
     const h = await makeHarness({ steps: [] });
     await h.deps.git.ensureMirror(REPO, h.remotePath, h.remotePath, ['main']);
     const wt = await h.deps.git.createWorktree(REPO, 7, 'feature/issue-7-t', 'main');
@@ -150,7 +150,8 @@ describe('reconcile', () => {
     expect(j.state).toBe('failed');
     expect(j.prNumber).toBe(100);
     expect(h.source.labelsOf({ repo: repoRef, number: 7 })).toContain('sisyphe:failed');
-    expect(existsSync(wt.worktreePath)).toBe(true);
+    // Chemin jumeau de `runJob` : le TTL des worktrees de jobs failed garderait celui-ci, la réconciliation le supprime.
+    expect(existsSync(wt.worktreePath)).toBe(false);
   });
 
   it('corrige un label in-progress resté en place quand le job est déjà done avec une PR ouverte', async () => {

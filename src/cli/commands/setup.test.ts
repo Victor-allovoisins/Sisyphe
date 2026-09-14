@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { stringify } from 'yaml';
-import { parseMachineConfig } from '../../config/machine.js';
+import { effectiveDailyBudget, parseMachineConfig } from '../../config/machine.js';
 import { dataPaths } from '../../config/paths.js';
 import type { ServiceManager, ServiceStatus } from '../../service/index.js';
 
@@ -156,6 +156,19 @@ describe('buildRawConfig', () => {
     const merged = parseMachineConfig(stringify(raw));
     expect(merged.dataDir).toBe(existing.dataDir); // déjà étendu (expandHome) par le premier parseMachineConfig
     expect(merged.dataDir).not.toBe('/Users/x/.sisyphe');
+  });
+
+  it("une config sdk sans plafond passée en cli n'y grave aucun plafond", () => {
+    const existing = parseMachineConfig(
+      stringify({ github: { appId: 1, installationId: 2, privateKeyPath: '/old.pem' }, repos: ['old/repo'] }),
+    );
+    const raw = buildRawConfig(
+      { appId: 1, installationId: 2, privateKeyPath: '/k.pem', repos: ['a/b'], dataDir: '/d', agentBackend: 'cli' },
+      existing,
+    );
+    // setup recopie la config existante : un plafond résolu à la lecture s'y graverait sans que l'utilisateur l'ait saisi.
+    expect(stringify(raw)).not.toContain('dailyBudgetUsd');
+    expect(effectiveDailyBudget(parseMachineConfig(stringify(raw)))).toBeUndefined();
   });
 
   it('sans config existante, ne pose que les champs fournis (les défauts du schéma s’appliquent, dataDir vient des réponses)', () => {

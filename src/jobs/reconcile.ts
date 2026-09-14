@@ -55,7 +55,9 @@ export async function reconcile(d: ReconcileDeps): Promise<void> {
             renderDoneComment({ jobId: job.id, prUrl: pr.url, status: final, costUsd: job.costUsd, durationMs: job.durationMs, attempts: job.attempt }),
           )
           .catch(() => undefined);
-        if (job.worktreePath && final === 'done') await d.git.removeWorktree(job.repo, job.worktreePath, job.branch ?? undefined).catch(() => undefined);
+        // Chemin jumeau de la fin de `runJob` : le clone part même en échec, sinon la réconciliation resterait
+        // le seul producteur de worktrees abandonnés. Le dossier `jobs/<id>/` du post-mortem n'est pas touché.
+        if (job.worktreePath) await d.git.removeWorktree(job.repo, job.worktreePath, job.branch ?? undefined).catch(() => undefined);
         d.log.info({ jobId: job.id, pr: pr.url }, 'réconciliation : PR retrouvée');
       } else {
         await requeueOrFail(job, d);

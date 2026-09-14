@@ -4,7 +4,7 @@ import type { Logger } from 'pino';
 import { summarizeTranscript } from '../cli/format.js';
 import type { ServiceStatus } from '../service/index.js';
 import { AmbiguousJobPrefixError, findJob } from '../cli/resolve-job.js';
-import type { AgentBackend, MachineConfig } from '../config/machine.js';
+import { effectiveDailyBudget, type AgentBackend, type MachineConfig } from '../config/machine.js';
 import { jobDir, type DataPaths } from '../config/paths.js';
 import { DaemonUnreachableError } from '../daemon/control-client.js';
 import type { DaemonStatus } from '../daemon/control-types.js';
@@ -309,6 +309,7 @@ export function createUiData(deps: UiDataDeps): UiData {
         };
       }),
     );
+    const cap = effectiveDailyBudget(machine);
     return {
       now: at.toISOString(),
       daemon: { running: lock?.alive ?? false, pid: lock?.pid ?? null, paused: status?.paused ?? null },
@@ -316,11 +317,7 @@ export function createUiData(deps: UiDataDeps): UiData {
       readOnly: deps.readOnly,
       recentActions: deps.actions.listRecent(RECENT_ACTIONS),
       service: await serviceStatus(),
-      budget: {
-        spentTodayUsd,
-        dailyBudgetUsd: machine.dailyBudgetUsd ?? null,
-        ratio: machine.dailyBudgetUsd === undefined ? 0 : spentTodayUsd / machine.dailyBudgetUsd,
-      },
+      budget: { spentTodayUsd, dailyBudgetUsd: cap ?? null, ratio: cap === undefined ? 0 : spentTodayUsd / cap },
       backend: machine.agentBackend,
       repos: machine.repos,
       counts: {

@@ -69,10 +69,10 @@ const online = (paused: boolean): UiControl => ({
 });
 
 async function makeUi(
-  /** `dailyBudgetUsd: null` : aucune ligne dans la config, donc aucun plafond sous le backend `cli`. */
+  /** `dailyBudgetUsd` : ce qu'écrit `config.yml` — un nombre, `null` pour « aucun plafond », `'absent'` pour ne rien écrire. */
   opts: {
     service?: UiService; control?: UiControl; readOnly?: boolean; now?: () => Date;
-    dailyBudgetUsd?: number | null; agentBackend?: AgentBackend;
+    dailyBudgetUsd?: number | null | 'absent'; agentBackend?: AgentBackend;
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), 'sisyphe-ui-'));
@@ -81,7 +81,8 @@ async function makeUi(
   const store = new JobStore(db);
   const phases = new PhaseStore(db);
   const actions = new ActionStore(db);
-  const budgetLine = opts.dailyBudgetUsd === null ? '' : `dailyBudgetUsd: ${opts.dailyBudgetUsd ?? 20}\n`;
+  const budget = opts.dailyBudgetUsd === undefined ? 20 : opts.dailyBudgetUsd;
+  const budgetLine = budget === 'absent' ? '' : `dailyBudgetUsd: ${budget}\n`;
   const machine = parseMachineConfig(
     `github:\n  appId: 1\n  installationId: 1\n  privateKeyPath: /dev/null\nrepos:\n  - acme/demo\n  - acme/other\ndataDir: ${root}\nagentBackend: ${opts.agentBackend ?? 'sdk'}\n${budgetLine}`,
   );
@@ -157,8 +158,8 @@ describe('overview', () => {
     expect(o.budget.ratio).toBeCloseTo(0.4);
   });
 
-  it('sans plafond configuré, budget.dailyBudgetUsd est null et le ratio reste à zéro', async () => {
-    const ui = await makeUi({ agentBackend: 'cli', dailyBudgetUsd: null });
+  it('plafond vidé : budget.dailyBudgetUsd est null et le ratio reste à zéro', async () => {
+    const ui = await makeUi({ dailyBudgetUsd: null });
     insertJob(ui.db, { id: 'a1' });
     insertPhase(ui.db, { jobId: 'a1', costUsd: 3, finishedAt: new Date().toISOString() });
 
@@ -168,6 +169,14 @@ describe('overview', () => {
     expect(o.budget.spentTodayUsd).toBeCloseTo(3);
     expect(o.budget.dailyBudgetUsd).toBeNull();
     expect(o.budget.ratio).toBe(0);
+  });
+
+  it('champ absent : l’interface montre le plafond effectif, pas la valeur brute', async () => {
+    // `sdk` sans ligne `dailyBudgetUsd` : la page affiche les 60 $ réellement appliqués.
+    expect((await (await makeUi({ dailyBudgetUsd: 'absent' })).data.overview()).budget.dailyBudgetUsd).toBe(60);
+    // `cli` sans ligne : aucun plafond appliqué, donc rien à afficher.
+    const cli = await makeUi({ dailyBudgetUsd: 'absent', agentBackend: 'cli' });
+    expect((await cli.data.overview()).budget.dailyBudgetUsd).toBeNull();
   });
 
   it('counts compte les jobs par état, backend et repos viennent de la config machine', async () => {
