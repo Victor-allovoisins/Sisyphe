@@ -13,16 +13,37 @@ import type { AgentRunOptions } from '../runner.js';
 
 const FAKE_OPENCODE = fileURLToPath(new URL('../../../test/fakes/fake-opencode.sh', import.meta.url));
 
+// Formes réelles (opencode 1.18.30, `--format json`) : l'identifiant de message vit dans `part.messageID`,
+// les tokens dans `part.tokens` avec le cache imbriqué (`cache: { read, write }`), le coût dans `part.cost`.
 const textLine = (text: string, sessionID = 'ses-1', messageID?: string) =>
-  JSON.stringify({ type: 'text', sessionID, ...(messageID ? { messageID } : {}), part: { type: 'text', text } });
+  JSON.stringify({ type: 'text', sessionID, part: { type: 'text', text, ...(messageID ? { messageID } : {}) } });
 const usageLine = (over: Record<string, unknown> = {}) =>
   JSON.stringify({
     type: 'step_finish',
     sessionID: 'ses-1',
-    part: { type: 'step-finish', tokens: { input: 100, output: 20, cache_read: 5, cache_write: 2 }, cost: 0.03, ...over },
+    part: {
+      type: 'step-finish',
+      tokens: { total: 107, input: 100, output: 20, reasoning: 0, cache: { write: 2, read: 5 } },
+      cost: 0.03,
+      ...over,
+    },
   });
 const errorLine = (message = 'le modèle a explosé') =>
   JSON.stringify({ type: 'error', sessionID: 'ses-1', error: { message } });
+
+/** Capture réelle d'un run trivial (`opencode-go/deepseek-v4.1-flash`), copiée telle quelle. */
+const REAL_SAMPLE = [
+  '{"type":"step_start","timestamp":1789395579681,"sessionID":"ses_f5fb654f4ffehHkQ111O67CqgY","part":{"id":"prt_0a049b31e0017fC7bhWNmkY5ou","messageID":"msg_0a049abee001Xkif7xza1JyO7s","sessionID":"ses_f5fb654f4ffehHkQ111O67CqgY","type":"step-start"}}',
+  '{"type":"tool_use","timestamp":1789395581203,"sessionID":"ses_f5fb654f4ffehHkQ111O67CqgY","part":{"type":"tool","tool":"bash","callID":"call_00_XupvH2F61oSQOPnqhIGw7035","state":{"status":"completed","input":{"command":"ls -1"},"output":"a\\nb\\n","metadata":{"exit":0},"title":"ls -1","time":{"start":1789395581131,"end":1789395581191}},"id":"prt_0a049b8c3001JnI2h2wa35yIXD","sessionID":"ses_f5fb654f4ffehHkQ111O67CqgY","messageID":"msg_0a049abee001Xkif7xza1JyO7s"}}',
+  '{"type":"step_finish","timestamp":1789395581203,"sessionID":"ses_f5fb654f4ffehHkQ111O67CqgY","part":{"id":"prt_0a049b90a001mKCRnH5qFAton0","reason":"tool-calls","messageID":"msg_0a049abee001Xkif7xza1JyO7s","sessionID":"ses_f5fb654f4ffehHkQ111O67CqgY","type":"step-finish","tokens":{"total":11314,"input":11226,"output":39,"reasoning":49,"cache":{"write":0,"read":0}},"cost":0.0017367}}',
+  '{"type":"step_start","timestamp":1789395582056,"sessionID":"ses_f5fb654f4ffehHkQ111O67CqgY","part":{"id":"prt_0a049bc66001LdyQ7TsyoUNzVy","messageID":"msg_0a049b910001SpywnzH6bmk910","sessionID":"ses_f5fb654f4ffehHkQ111O67CqgY","type":"step-start"}}',
+  '{"type":"text","timestamp":1789395583110,"sessionID":"ses_f5fb654f4ffehHkQ111O67CqgY","part":{"id":"prt_0a049bfa7001YxKASWfOQCEGq4","messageID":"msg_0a049b910001SpywnzH6bmk910","sessionID":"ses_f5fb654f4ffehHkQ111O67CqgY","type":"text","text":"a\\nb\\n\\n{\\"ok\\":true}","time":{"start":1789395582887,"end":1789395583102}}}',
+  '{"type":"step_finish","timestamp":1789395583110,"sessionID":"ses_f5fb654f4ffehHkQ111O67CqgY","part":{"id":"prt_0a049c080001q6qWLwLqWXjHBD","reason":"stop","messageID":"msg_0a049b910001SpywnzH6bmk910","sessionID":"ses_f5fb654f4ffehHkQ111O67CqgY","type":"step-finish","tokens":{"total":11416,"input":232,"output":48,"reasoning":0,"cache":{"write":0,"read":11136}},"cost":0.000097008}}',
+];
+
+/** Capture réelle d'un échec d'authentification (opencode zen, solde insuffisant). */
+const REAL_ERROR =
+  '{"type":"error","timestamp":1789395552701,"sessionID":"ses_f5fb6bc6fffediCqltJppwYZht","error":{"name":"APIError","data":{"message":"Insufficient balance. Manage your billing here","statusCode":401,"isRetryable":false}}}';
 
 interface Ctx {
   dir: string;
@@ -332,6 +353,33 @@ describe('OpenCodeAgentRunner : résultat', () => {
     const r = await runner().run<{ answer: string }>(c.opts);
     expect(r.stopReason).toBe('completed');
     expect(r.output).toEqual({ answer: 'ok' });
+  });
+});
+
+describe('OpenCodeAgentRunner : captures réelles (formes épinglées)', () => {
+  it('mappe un run réel : objet JSON final, session, usage (cache imbriqué) et coût cumulé', async () => {
+    const c = await ctx({ lines: REAL_SAMPLE });
+    const r = await runner().run<{ ok: boolean }>(c.opts);
+    expect(r.stopReason).toBe('completed');
+    expect(r.output).toEqual({ ok: true });
+    expect(r.sessionId).toBe('ses_f5fb654f4ffehHkQ111O67CqgY');
+    expect(r.usage).toEqual({ inputTokens: 11458, outputTokens: 87, cacheReadTokens: 11136, cacheCreationTokens: 0 });
+    // Le coût réel est par étape (0.0017367 puis 0.000097008), pas un total cumulé : il faut sommer.
+    expect(r.costUsd).toBeCloseTo(0.001833708, 9);
+  });
+
+  it('erreur réelle : le message vient de error.data.message', async () => {
+    const c = await ctx({ lines: [REAL_ERROR] });
+    const r = await runner().run(c.opts);
+    expect(r.stopReason).toBe('error');
+    expect(r.sessionId).toBe('ses_f5fb6bc6fffediCqltJppwYZht');
+    expect(r.errorMessage).toContain('Insufficient balance');
+  });
+
+  it('le coût est cumulé entre étapes (les totaux par étape ne sont pas cumulés)', async () => {
+    const c = await ctx({ lines: [textLine('{"answer":"ok"}'), usageLine({ cost: 0.0017367 }), usageLine({ cost: 0.000097008 })] });
+    const r = await runner().run(c.opts);
+    expect(r.costUsd).toBeCloseTo(0.001833708, 9);
   });
 });
 

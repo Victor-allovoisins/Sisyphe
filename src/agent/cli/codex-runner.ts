@@ -23,11 +23,14 @@ export interface CodexRunnerConfig {
 }
 
 /**
- * Clés de configuration de la coupure réseau, passées en `-c key=value`. Elles sont provisoires :
- * elles seront épinglées sur une capture réelle de la CLI en Task 11. `mcp_servers={}` désactive les
- * serveurs MCP ; `--ignore-user-config` ne couvre que le `config.toml` utilisateur.
+ * Clés de configuration de la coupure réseau, passées en `-c key=value` (épinglées sur codex 0.154).
+ * `web_search="disabled"` est la clé canonique actuelle (mode `disabled`/`cached`/`live`) ;
+ * `tools.web_search=false` est le toggle historique mais toujours reconnu (`[tools]` dans le schéma),
+ * conservé en défense en profondeur contre un `config.toml` de projet qui le rallumerait.
+ * `mcp_servers={}` désactive tous les serveurs MCP (« present but empty → all disabled »).
+ * `--ignore-user-config` ne couvre que le config utilisateur : ces `-c` neutralisent le config projet.
  */
-export const CODEX_CUTOFF_CONFIG = ['tools.web_search=false', 'mcp_servers={}'] as const;
+export const CODEX_CUTOFF_CONFIG = ['web_search="disabled"', 'tools.web_search=false', 'mcp_servers={}'] as const;
 
 export function buildCodexArgs(o: AgentRunOptions, files: { resultPath: string; schemaPath?: string }): string[] {
   const args = ['exec'];
@@ -108,6 +111,9 @@ export class CodexAgentRunner implements AgentRunner {
       signal: o.signal,
       onLine: (parsed) => {
         const e = parsed as { type?: string; thread_id?: string; usage?: Record<string, number> };
+        // `thread.started`/`turn.started`, `error` (message racine) et `turn.failed` (error.message) sont
+        // épinglés sur une capture réelle. `turn.completed.usage` et `item.completed` restent issus du
+        // schéma codex-rs : un run réussi n'a pas pu être capturé (quota ChatGPT épuisé sur la machine).
         if (e.type === 'thread.started' && typeof e.thread_id === 'string') sessionId = e.thread_id;
         if (e.type === 'turn.completed') {
           numTurns += 1;

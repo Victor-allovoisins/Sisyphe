@@ -26,10 +26,10 @@ export interface OpenCodeRunnerConfig {
 }
 
 /**
- * Types d'événements considérés comme un échec terminal. Les noms exacts de champs et de types du
- * flux `--format json` d'opencode sont **provisoires** : ils seront épinglés sur une capture réelle
- * en Task 11 (cf. §4 du design). On reste donc volontairement tolérant : tout type contenant
- * `error`/`failed` (ou `session.error`, `run.failed`) est traité comme terminal.
+ * Types d'événements considérés comme un échec terminal. Le seul échec terminal réellement observé est
+ * `type: "error"` (avec `error.name` et `error.data.message`). On reste tolérant pour ne pas rater un
+ * échec si opencode ajoute des variantes : tout type contenant `error`/`failed` (ou `session.error`,
+ * `run.failed`) est traité comme terminal.
  */
 function isTerminalError(type: string): boolean {
   return type === 'error' || type === 'session.error' || type === 'run.failed' || type.includes('error') || type.endsWith('failed');
@@ -131,9 +131,9 @@ function eventSessionId(e: Record<string, unknown>): string | null {
 }
 
 /**
- * Clé de frontière de message assistant, provisoire comme le reste du schéma d'événements
- * (épinglé en Task 11). L'identifiant de **message** prime : il regroupe les multiples parties
- * (texte, appels d'outils, streaming) d'un même message. Faute d'identifiant de message, on retombe
+ * Clé de frontière de message assistant. L'identifiant de **message** prime : il regroupe les multiples
+ * parties (texte, appels d'outils, streaming) d'un même message. C'est `part.messageID` dans la sortie
+ * réelle d'opencode 1.18 (la clé racine reste tolérée). Faute d'identifiant de message, on retombe
  * sur l'identifiant de **partie**, mais seulement pour un événement porteur de texte — un événement
  * technique (`step_finish`…) sans identifiant de message ne doit pas couper le message en cours.
  * `null` = aucun identifiant exploitable : le flux entier est alors traité comme un seul segment.
@@ -143,10 +143,16 @@ function messageBoundaryKey(e: Record<string, unknown>, hasText: boolean): strin
     const v = e[key];
     if (typeof v === 'string') return `msg:${v}`;
   }
+  // Forme réelle d'opencode 1.18 : l'identifiant de message vit dans `part.messageID`, pas à la racine.
+  const part = e.part && typeof e.part === 'object' ? (e.part as Record<string, unknown>) : null;
+  if (part) {
+    for (const key of ['messageID', 'message_id', 'messageId']) {
+      const v = part[key];
+      if (typeof v === 'string') return `msg:${v}`;
+    }
+  }
   if (!hasText) return null;
-  const part = e.part;
-  const partId = part && typeof part === 'object' ? (part as Record<string, unknown>).id : undefined;
-  const id = partId ?? e.partID ?? e.part_id;
+  const id = part?.id ?? e.partID ?? e.part_id;
   return typeof id === 'string' ? `part:${id}` : null;
 }
 
@@ -173,13 +179,20 @@ function applyUsage(target: AgentUsage, e: Record<string, unknown>): void {
     | Record<string, unknown>
     | null;
   if (!raw) return;
+  // Forme réelle : `part.tokens = { total, input, output, reasoning, cache: { read, write } }`.
+  // Les clés plates (`cache_read`, `cache_write`) restent tolérées pour ne pas casser d'anciens flux.
+  const cache = raw.cache && typeof raw.cache === 'object' ? (raw.cache as Record<string, unknown>) : null;
   target.inputTokens += asNumber(raw.input_tokens ?? raw.input);
   target.outputTokens += asNumber(raw.output_tokens ?? raw.output);
-  target.cacheReadTokens += asNumber(raw.cache_read_input_tokens ?? raw.cached_input_tokens ?? raw.cache_read);
-  target.cacheCreationTokens += asNumber(raw.cache_creation_input_tokens ?? raw.cache_write);
+  target.cacheReadTokens += asNumber(raw.cache_read_input_tokens ?? raw.cached_input_tokens ?? raw.cache_read ?? cache?.read);
+  target.cacheCreationTokens += asNumber(raw.cache_creation_input_tokens ?? raw.cache_write ?? cache?.write);
 }
 
-/** Coût d'un événement, best-effort (les champs sont typiquement des totaux cumulés). */
+/**
+ * Coût d'un événement, best-effort. La forme réelle est `part.cost` sur `step_finish` : c'est le coût
+ * **de l'étape**, pas un total cumulé (relevé réel : 0.0017367 puis 0.000097008). L'appelant doit donc
+ * sommer les étapes, pas écraser.
+ */
 function eventCost(e: Record<string, unknown>): number | null {
   const part = e.part as Record<string, unknown> | undefined;
   for (const v of [e.cost, e.cost_usd, e.total_cost_usd, part?.cost]) {
@@ -192,8 +205,12 @@ function eventCost(e: Record<string, unknown>): number | null {
 function eventErrorText(e: Record<string, unknown>): string | null {
   const err = e.error;
   if (typeof err === 'string') return err;
-  if (err && typeof err === 'object' && typeof (err as { message?: unknown }).message === 'string') {
-    return (err as { message: string }).message;
+  if (err && typeof err === 'object') {
+    const o = err as { message?: unknown; data?: unknown };
+    if (typeof o.message === 'string') return o.message;
+    // Forme réelle d'opencode 1.18 : `error = { name, data: { message, statusCode, … } }`.
+    const data = o.data && typeof o.data === 'object' ? (o.data as { message?: unknown }) : null;
+    if (data && typeof data.message === 'string') return data.message;
   }
   if (typeof e.message === 'string') return e.message;
   return null;
@@ -250,7 +267,7 @@ export class OpenCodeAgentRunner implements AgentRunner {
         if (text) finalAssistantText += text;
         applyUsage(usage, parsed);
         const cost = eventCost(parsed);
-        if (cost !== null) costUsd = cost;
+        if (cost !== null) costUsd += cost;
         const type = typeof parsed.type === 'string' ? parsed.type : '';
         if (terminalFailure === null && isTerminalError(type)) {
           terminalFailure = eventErrorText(parsed) ?? `opencode ${type}`;

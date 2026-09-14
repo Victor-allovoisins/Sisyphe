@@ -88,7 +88,9 @@ describe('CodexAgentRunner : arguments', () => {
     expect(valueOf(args, '-m')).toBe('gpt-5-codex');
     expect(valueOf(args, '--sandbox')).toBe('read-only');
     expect(args).toContain('--ignore-user-config');
+    expect(args).toContain('web_search="disabled"');
     expect(args).toContain('tools.web_search=false');
+    expect(args).toContain('mcp_servers={}');
     const schemaPath = valueOf(args, '--output-schema')!;
     expect(JSON.parse(await readFile(schemaPath, 'utf8'))).toEqual(schema);
     expect(basename(valueOf(args, '-o')!)).toBe('result-transcript.json');
@@ -194,6 +196,22 @@ describe('CodexAgentRunner : résultat', () => {
     expect(r.stopReason).toBe('completed');
     expect(r.output).toEqual({ answer: 'ok' });
     expect(r.errorMessage).toBeUndefined();
+  });
+
+  it('capture réelle (quota) : thread.started, error.message, turn.failed.error.message', async () => {
+    // Sortie réelle de `codex exec --json` quand le quota ChatGPT est épuisé : aucune exécution d'outil.
+    const c = await ctx({
+      lines: [
+        '{"type":"thread.started","thread_id":"01a0a049-15da-7350-b983-350706623521"}',
+        '{"type":"turn.started"}',
+        '{"type":"error","message":"You\'ve hit your usage limit."}',
+        '{"type":"turn.failed","error":{"message":"You\'ve hit your usage limit."}}',
+      ],
+    });
+    const r = await runner().run(c.opts);
+    expect(r.stopReason).toBe('error');
+    expect(r.sessionId).toBe('01a0a049-15da-7350-b983-350706623521');
+    expect(r.errorMessage).toContain('usage limit');
   });
 
   it('sortie non nulle avec résultat écrit : error, le code de sortie prime', async () => {

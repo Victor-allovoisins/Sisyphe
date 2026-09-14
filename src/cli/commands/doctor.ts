@@ -100,11 +100,28 @@ async function checkCodexCli(platform: NodeJS.Platform): Promise<string> {
   return r.stdout.trim();
 }
 
-/** PROVISIONNEL : la commande exacte de statut de login sera épinglée sur la machine réelle (Task 11). Sortie propre = connecté. */
+/** `codex login status` (épinglé) : un code de sortie 0 = connecté ; la ligne « Logged in using … » suffit. */
 async function checkCodexAuth(): Promise<string> {
   const r = await execa('codex', ['login', 'status'], { reject: false });
   if (r.exitCode !== 0) throw new Error('`codex login status` a échoué : lancer `codex login`');
   return r.stdout.trim() || 'connecté';
+}
+
+/**
+ * Lecture de `opencode auth list` (épinglé). La sortie réelle est un encadré colorisé qui ne se prête pas
+ * à l'affichage doctor : on retire l'ANSI et on résume le nombre de fournisseurs (« 8 credentials »).
+ * Aucun identifiant → échec nommant la commande de login ; forme inattendue non vide → « connecté ».
+ */
+export function parseOpenCodeAuthStatus(stdout: string): string {
+  const clean = stdout.replace(/\u001b\[[0-9;]*m/g, '').trim();
+  const count = /(\d+)\s+credentials?/i.exec(clean);
+  if (count) {
+    const n = Number(count[1]);
+    if (n === 0) throw new Error('aucun identifiant : lancer `opencode auth login`');
+    return `${n} fournisseur(s) connecté(s)`;
+  }
+  if (clean === '') throw new Error('`opencode auth list` n’a rien renvoyé : lancer `opencode auth login`');
+  return 'connecté';
 }
 
 async function checkOpencodeCli(platform: NodeJS.Platform): Promise<string> {
@@ -114,11 +131,10 @@ async function checkOpencodeCli(platform: NodeJS.Platform): Promise<string> {
   return r.stdout.trim();
 }
 
-/** PROVISIONNEL : la commande exacte sera épinglée sur la machine réelle (Task 11). Sortie propre = identifiants présents. */
 async function checkOpencodeAuth(): Promise<string> {
   const r = await execa('opencode', ['auth', 'list'], { reject: false });
   if (r.exitCode !== 0) throw new Error('`opencode auth list` a échoué : lancer `opencode auth login`');
-  return r.stdout.trim() || 'connecté';
+  return parseOpenCodeAuthStatus(r.stdout);
 }
 
 async function checkDiskSpace(root: string): Promise<string> {

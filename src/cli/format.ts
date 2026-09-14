@@ -40,6 +40,8 @@ const asArray = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 /** `item.completed` de codex : message assistant, commande exécutée ou fichiers modifiés. */
 function summarizeCodexItem(item: Json | null, out: string[]): void {
   if (!item) return;
+  // Les formes `item.completed` viennent du schéma codex-rs, pas d'une capture : un run réussi n'a pas
+  // pu être obtenu sur la machine (quota ChatGPT). La lecture reste tolérante en attendant un échantillon.
   const type = asString(item.type);
   if (type === 'agent_message') {
     const text = asString(item.text);
@@ -57,9 +59,9 @@ function summarizeCodexItem(item: Json | null, out: string[]): void {
 }
 
 /**
- * Parties `part` du flux opencode (`--format json`). Les noms de champs sont **provisoires** :
- * ils seront épinglés sur une capture réelle en Task 11 (cf. §4 du design), d'où la lecture tolérante
- * de plusieurs clés d'entrée d'outil.
+ * Parties `part` du flux opencode (`--format json`, épinglé sur 1.18) : `part.type` vaut `text` ou
+ * `tool`, l'outil porte `part.tool` et son entrée dans `part.state.input` (clé variable selon l'outil :
+ * `command`, `filePath`, `pattern`…), d'où la lecture tolérante de plusieurs clés.
  */
 function summarizeOpenCodePart(part: Json | null, out: string[]): void {
   if (!part) return;

@@ -9,7 +9,7 @@ import { REPO_CONFIG_FILENAME } from '../../config/repo.js';
 import { MAX_SOCKET_PATH_BYTES } from '../../daemon/control.js';
 import { renderPlist } from '../../service/launchd.js';
 import type { ServiceStatus } from '../../service/index.js';
-import { buildChecks, parseAuthStatus, type DoctorGitHub, type DoctorService } from './doctor.js';
+import { buildChecks, parseAuthStatus, parseOpenCodeAuthStatus, type DoctorGitHub, type DoctorService } from './doctor.js';
 
 /** Répertoires de fixtures (plists), effacés à la fin. */
 const tempDirs: string[] = [];
@@ -324,6 +324,23 @@ describe('parseAuthStatus', () => {
     expect(() => parseAuthStatus(JSON.stringify({ loggedIn: false }))).toThrow(/claude login/);
     expect(() => parseAuthStatus('pas du json')).toThrow(/illisible/);
     expect(() => parseAuthStatus('null')).toThrow();
+  });
+});
+
+describe('parseOpenCodeAuthStatus', () => {
+  // Capture réelle de `opencode auth list` (1.18.30) : sortie encadrée et colorisée, jamais affichée telle quelle.
+  const REAL = '\u001b[0m\n┌  Credentials \u001b[90m~/.local/share/opencode/auth.json\n│\n●  Anthropic \u001b[90moauth\n│\n●  DeepSeek \u001b[90mapi\n│\n└  8 credentials\n';
+
+  it('nettoie l’ANSI et résume le nombre de fournisseurs connectés', () => {
+    expect(parseOpenCodeAuthStatus(REAL)).toBe('8 fournisseur(s) connecté(s)');
+  });
+
+  it('aucun identifiant : échec nommant la commande de login', () => {
+    expect(() => parseOpenCodeAuthStatus('└  0 credentials')).toThrow(/opencode auth login/);
+  });
+
+  it('sortie vide : échec nommant la commande de login', () => {
+    expect(() => parseOpenCodeAuthStatus('   \n')).toThrow(/opencode auth login/);
   });
 });
 

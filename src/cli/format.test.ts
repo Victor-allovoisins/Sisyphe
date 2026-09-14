@@ -102,13 +102,13 @@ describe('summarizeTranscript', () => {
     ]);
   });
 
-  it('résume un échantillon opencode (parties texte et outil)', () => {
+  it('résume un échantillon opencode (parties texte et outil, formes réelles)', () => {
     const lines = [
-      JSON.stringify({ type: 'step_start', sessionID: 'ses-1', part: { type: 'step-start' } }),
-      JSON.stringify({ type: 'text', sessionID: 'ses-1', messageID: 'msg-1', part: { type: 'text', text: 'Je regarde.' } }),
-      JSON.stringify({ type: 'tool', sessionID: 'ses-1', part: { type: 'tool', tool: 'bash', callID: 'call-1', state: { status: 'completed', input: { command: 'ls -la' }, title: 'Liste' } } }),
-      JSON.stringify({ type: 'tool', sessionID: 'ses-1', part: { type: 'tool', tool: 'edit', callID: 'call-2', state: { status: 'completed', input: { filePath: 'src/a.ts' } } } }),
-      JSON.stringify({ type: 'step_finish', sessionID: 'ses-1', part: { type: 'step-finish', tokens: { input: 100, output: 20 }, cost: 0.03 } }),
+      JSON.stringify({ type: 'step_start', sessionID: 'ses-1', part: { type: 'step-start', messageID: 'msg-1' } }),
+      JSON.stringify({ type: 'text', sessionID: 'ses-1', part: { type: 'text', text: 'Je regarde.', messageID: 'msg-1' } }),
+      JSON.stringify({ type: 'tool_use', sessionID: 'ses-1', part: { type: 'tool', tool: 'bash', callID: 'call-1', state: { status: 'completed', input: { command: 'ls -la' }, title: 'Liste' }, messageID: 'msg-1' } }),
+      JSON.stringify({ type: 'tool_use', sessionID: 'ses-1', part: { type: 'tool', tool: 'edit', callID: 'call-2', state: { status: 'completed', input: { filePath: 'src/a.ts' } }, messageID: 'msg-1' } }),
+      JSON.stringify({ type: 'step_finish', sessionID: 'ses-1', part: { type: 'step-finish', tokens: { input: 100, output: 20, cache: { read: 0, write: 0 } }, cost: 0.03, messageID: 'msg-1' } }),
     ];
     expect(summarizeTranscript(lines)).toEqual(['💬 Je regarde.', '🔧 bash ls -la', '🔧 edit src/a.ts']);
   });
