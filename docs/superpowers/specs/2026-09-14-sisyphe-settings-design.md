@@ -31,7 +31,7 @@ Le coût reste calculé, journalisé et affiché dans tous les cas, y compris sa
 ## 4. Blocs d'information
 
 - **Diagnostic** : les contrôles de `doctor` rendus dans la page (nom, état ✅ ⚠️ ❌, détail), relancés par un bouton, jamais au chargement automatique.
-- **Espace disque** : taille de `cache`, `mirrors`, `work`, `logs`, `jobs` et total, calculées à la demande ; bouton « Vider le cache de build » qui supprime le contenu de `cache/` et renvoie la place libérée. Ce cache est reconstruit au prochain build : c'est du temps, pas des données.
+- **Espace disque** : taille de `cache`, `mirrors`, `work`, `logs`, `jobs` et total, calculées à la demande ; bouton « Vider le cache de build » qui supprime le contenu de `cache/` et renvoie la place libérée. Ce cache est reconstruit au prochain build : c'est du temps, pas des données. La purge refuse un `cache/` qui serait un lien symbolique : elle en viderait la cible, hors du dossier de données. Pour placer le cache sur un autre disque, déplacer tout `dataDir`. Le parcours de l'occupation disque ne suit aucun lien, pour qu'un lien égaré dans des DerivedData ne fasse pas parcourir tout le disque.
 - **Environnement** : versions de Sisyphe, node, la CLI Claude, git, gitleaks ; chemins du fichier de config, du dossier de données, de la socket et des logs.
 - **Dépôts** : pour chaque dépôt surveillé, l'accès de l'App GitHub et la validité de son `sisyphe.yml` sur la branche par défaut.
 
