@@ -1,5 +1,5 @@
 import { execa } from 'execa';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pino from 'pino';
@@ -41,6 +41,40 @@ export const report = (summary: string) => ({
 export const writeFeature = (content: string): NonNullable<ScriptedStep['sideEffect']> => async (opts) =>
   writeFiles(opts.cwd, { 'src/feature.txt': content });
 
+/** Champs de `config.yml` que les tests font varier ; le reste du fichier est figé. */
+export interface ConfigFields {
+  github: { appId: number; installationId: number; privateKeyPath: string };
+  repos: string[];
+  dataDir: string;
+  /** Un nombre, `null` pour « aucun plafond », `'absent'` pour ne pas écrire la ligne. */
+  dailyBudgetUsd: number | null | 'absent';
+  pollIntervalSeconds?: number;
+  maxConcurrentJobs?: number;
+  triggerLabel?: string;
+  sandbox?: boolean;
+  agentBackend?: 'sdk' | 'cli';
+}
+
+/** `config.yml` complet : les champs omis par un test gardent leur valeur, sinon le schéma remettrait ses défauts. */
+function renderConfig(f: ConfigFields): string {
+  const lines = [
+    'github:',
+    `  appId: ${f.github.appId}`,
+    `  installationId: ${f.github.installationId}`,
+    `  privateKeyPath: ${f.github.privateKeyPath}`,
+    'repos:',
+    ...f.repos.map((r) => `  - ${r}`),
+    `dataDir: ${f.dataDir}`,
+  ];
+  if (f.dailyBudgetUsd !== 'absent') lines.push(`dailyBudgetUsd: ${f.dailyBudgetUsd}`);
+  if (f.pollIntervalSeconds !== undefined) lines.push(`pollIntervalSeconds: ${f.pollIntervalSeconds}`);
+  if (f.maxConcurrentJobs !== undefined) lines.push(`maxConcurrentJobs: ${f.maxConcurrentJobs}`);
+  if (f.triggerLabel !== undefined) lines.push(`triggerLabel: ${f.triggerLabel}`);
+  if (f.sandbox !== undefined) lines.push(`sandbox: ${f.sandbox}`);
+  if (f.agentBackend !== undefined) lines.push(`agentBackend: ${f.agentBackend}`);
+  return `${lines.join('\n')}\n`;
+}
+
 export interface HarnessOptions {
   steps: ScriptedStep[];
   withConfig?: boolean;
@@ -78,14 +112,21 @@ export async function makeHarness(o: HarnessOptions) {
     source.addIssue(repoRef, { ...issue, body: 'On veut hello.', author: issue.author ?? 'alice' });
   }
   const agent = new ScriptedAgentRunner(o.steps);
-  const budget = o.dailyBudgetUsd === undefined ? 60 : o.dailyBudgetUsd;
-  const budgetLine = budget === 'absent' ? '' : `dailyBudgetUsd: ${budget}\n`;
-  const machine = parseMachineConfig(
-    `github:\n  appId: 1\n  installationId: 1\n  privateKeyPath: /dev/null\nrepos:\n  - ${REPO}\ndataDir: ${paths.root}\n${budgetLine}`,
-  );
+  // Le fichier est écrit sur disque et non seulement analysé : `reload` relit celui-ci, jamais celui de la machine.
+  // `??` serait faux ici : `null` est une valeur demandée (aucun plafond), pas une absence d'option.
+  const fields: ConfigFields = {
+    github: { appId: 1, installationId: 1, privateKeyPath: '/dev/null' },
+    repos: [REPO],
+    dataDir: paths.root,
+    dailyBudgetUsd: o.dailyBudgetUsd === undefined ? 60 : o.dailyBudgetUsd,
+  };
+  const configPath = join(root, 'config.yml');
+  const writeConfig = (over: Partial<ConfigFields> = {}) => writeFile(configPath, renderConfig({ ...fields, ...over }), 'utf8');
+  await writeConfig();
+  const machine = parseMachineConfig(renderConfig(fields));
   const deps: PipelineDeps = {
     store, phases, actions, source, agent, git: new Git(paths), paths, machine,
     log: pino({ level: 'silent' }), env: { PATH: process.env.PATH ?? '' }, scan: async () => [],
   };
-  return { root, paths, remotePath, headSha, store, phases, actions, source, agent, deps };
+  return { root, paths, configPath, writeConfig, remotePath, headSha, store, phases, actions, source, agent, deps };
 }

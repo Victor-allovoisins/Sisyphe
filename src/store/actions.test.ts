@@ -59,6 +59,12 @@ describe('ActionStore', () => {
     expect(actions.listForJob('job-1').map((r) => r.id)).toEqual([a.id, b.id]);
   });
 
+  it('enregistre les actions de la page de réglages, sans migration : la colonne action n’a pas de CHECK', () => {
+    const { actions } = setup();
+    for (const action of ['settings', 'reload', 'purge'] as const) actions.record({ action, source: 'ui', outcome: 'ok' });
+    expect(actions.listRecent(10).map((r) => r.action)).toEqual(['purge', 'reload', 'settings']);
+  });
+
   it('le CHECK SQL refuse une source ou un outcome hors énumération', () => {
     const { db } = setup();
     expect(() =>

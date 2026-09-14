@@ -10,7 +10,18 @@ export const ACTION_OUTCOMES = ['ok', 'error'] as const;
 export type ActionOutcome = (typeof ACTION_OUTCOMES)[number];
 
 /** Pas de CHECK SQL sur cette colonne : la liste peut s'étendre sans nouvelle migration. */
-export type ActionName = 'cancel' | 'retry' | 'enqueue' | 'poll' | 'pause' | 'resume' | 'stop' | 'start';
+export type ActionName =
+  | 'cancel'
+  | 'retry'
+  | 'enqueue'
+  | 'poll'
+  | 'pause'
+  | 'resume'
+  | 'stop'
+  | 'start'
+  | 'settings'
+  | 'reload'
+  | 'purge';
 
 export interface ActionRow {
   id: number;

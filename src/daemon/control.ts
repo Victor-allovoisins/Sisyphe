@@ -12,7 +12,7 @@ const IDLE_TIMEOUT_MS = 5_000;
 const STOP_CLOSE_CAP_MS = 1_000;
 
 /** Ce que le serveur demande au daemon : le sous-ensemble public utilisé par les commandes. */
-export type ControlTarget = Pick<Daemon, 'status' | 'requestTick' | 'pause' | 'resume' | 'cancelJob' | 'retryJob' | 'enqueueIssue' | 'stop'>;
+export type ControlTarget = Pick<Daemon, 'status' | 'requestTick' | 'pause' | 'resume' | 'reload' | 'cancelJob' | 'retryJob' | 'enqueueIssue' | 'stop'>;
 
 export interface ControlServerOptions {
   path: string;
@@ -224,6 +224,9 @@ async function execute(req: ControlRequest, opts: ControlServerOptions, log: Log
         return { ok: true, result: daemon.pause(req.source) };
       case 'resume':
         return { ok: true, result: daemon.resume(req.source) };
+      case 'reload':
+        // Journalisée par le daemon lui-même, comme les autres commandes qui passent par sa porte.
+        return await daemon.reload(req.source);
       case 'cancel':
         return await daemon.cancelJob(req.jobId, req.source);
       case 'retry':

@@ -1,5 +1,6 @@
 import type { Logger } from 'pino';
-import { effectiveDailyBudget } from '../config/machine.js';
+import { effectiveDailyBudget, loadMachineConfig, type MachineConfig } from '../config/machine.js';
+import { machineConfigPath } from '../config/paths.js';
 import { renderBudgetPauseComment } from '../deliver/comments.js';
 import { issueRefOf, parseRepo, type Issue } from '../github/source.js';
 import { CANCELLED, SHUTDOWN, runJob, type PipelineDeps } from '../jobs/pipeline.js';
@@ -10,7 +11,7 @@ import type { ActionInput, ActionName, ActionSource } from '../store/actions.js'
 import { isTerminal, type Job, type JobState } from '../store/types.js';
 import { startCaffeinate } from './caffeinate.js';
 import { startControlServer, type ControlServer } from './control.js';
-import type { CommandResult, DaemonStatus, EnqueueIssueInput } from './control-types.js';
+import type { CommandResult, DaemonStatus, EnqueueIssueInput, ReloadResult } from './control-types.js';
 import { pollOnce } from './poll.js';
 
 /** Délai maximal laissé aux jobs en vol pour se terminer avant que stop() abandonne (ex. sleep de rate limit d'une heure). */
@@ -18,6 +19,23 @@ const STOP_GRACE_MS = 30_000;
 
 const STOPPING_ERROR = "daemon en cours d'arrêt";
 const RETRYABLE_STATES: ReadonlySet<JobState> = new Set<JobState>(['failed', 'blocked', 'cancelled']);
+
+/**
+ * Champs structurels : figés au démarrage dans le client GitHub, le runner d'agent et les chemins de
+ * données. `reload` ne peut que signaler leur changement — l'ordre de cette liste est celui de `needsRestart`.
+ */
+const RESTART_REQUIRED: ReadonlyArray<{ name: string; same: (a: MachineConfig, b: MachineConfig) => boolean }> = [
+  { name: 'github.appId', same: (a, b) => a.github.appId === b.github.appId },
+  { name: 'github.installationId', same: (a, b) => a.github.installationId === b.github.installationId },
+  { name: 'github.privateKeyPath', same: (a, b) => a.github.privateKeyPath === b.github.privateKeyPath },
+  // Égalité ordonnée : signaler à tort un simple réordonnancement coûte un bandeau de trop, rater un
+  // changement laisserait un dépôt surveillé pour rien ou pas surveillé du tout.
+  { name: 'repos', same: (a, b) => a.repos.length === b.repos.length && a.repos.every((r, i) => r === b.repos[i]) },
+  { name: 'triggerLabel', same: (a, b) => a.triggerLabel === b.triggerLabel },
+  { name: 'sandbox', same: (a, b) => a.sandbox === b.sandbox },
+  { name: 'agentBackend', same: (a, b) => a.agentBackend === b.agentBackend },
+  { name: 'dataDir', same: (a, b) => a.dataDir === b.dataDir },
+];
 
 /** Ce qu'une commande sait du job visé au moment d'être journalisée ; rempli au fil de son exécution. */
 type ActionRef = Pick<ActionInput, 'jobId' | 'repo' | 'issueNumber'>;
@@ -31,12 +49,19 @@ export interface DaemonOptions {
   stopGraceMs?: number;
   /** `start()` ouvre la socket de contrôle (`paths.controlSocketPath`) ; false pour les tests qui n'en veulent pas. */
   control?: boolean;
+  /**
+   * Fichier relu par `reload` ; par défaut `machineConfigPath()`, résolu à l'appel et non à la construction,
+   * pour qu'un test qui ne recharge jamais rien n'aille pas chercher la configuration réelle de la machine.
+   */
+  configPath?: string;
 }
 
 export class Daemon {
   private readonly running = new Map<string, AbortController>();
   private readonly inflight = new Set<Promise<unknown>>();
   private readonly timers: NodeJS.Timeout[] = [];
+  /** Minuteur de poll, retenu à part pour que `reload` reprogramme celui-là et lui seul. */
+  private pollTimer: NodeJS.Timeout | null = null;
   private readonly budgetAnnounced = new Set<string>();
   private budgetDay = '';
   private stopCaffeinate: (() => void) | null = null;
@@ -99,7 +124,7 @@ export class Daemon {
     }
     const iv = this.opts.intervals ?? {};
     const pollMs = iv.pollMs ?? this.d.machine.pollIntervalSeconds * 1000;
-    this.timers.push(setInterval(() => void this.tick(), pollMs));
+    this.schedulePoll(pollMs);
     this.timers.push(setInterval(() => void this.watchCancellations(), iv.cancelMs ?? 60_000));
     this.timers.push(setInterval(() => void this.trackPullRequests(), iv.prTrackMs ?? 3_600_000));
     this.timers.push(setInterval(() => void this.purge(), iv.purgeMs ?? 3_600_000));
@@ -324,6 +349,70 @@ export class Daemon {
     this.journal({ action: 'resume', source, outcome: 'ok' });
     void this.requestTick();
     return this.status();
+  }
+
+  /**
+   * Relit `config.yml` et applique à chaud les seuls champs relus à chaque décision : le budget quotidien
+   * et la concurrence maximale valent dès le prochain `startNext`, l'intervalle de poll reprogramme son
+   * minuteur. Les champs structurels sont seulement nommés dans `needsRestart`. Une configuration devenue
+   * invalide ne change rien : le daemon continue avec celle qu'il avait, et le refus porte l'erreur.
+   */
+  reload(source: ActionSource): Promise<CommandResult<ReloadResult>> {
+    return this.command('reload', source, async () => {
+      const path = this.opts.configPath ?? machineConfigPath();
+      let next: MachineConfig;
+      try {
+        next = await loadMachineConfig(path);
+      } catch (err) {
+        return { ok: false, error: messageOf(err) };
+      }
+      // Rien n'est touché avant que la lecture ait abouti : la configuration précédente est conservée par
+      // construction, pas par discipline.
+      const current = this.d.machine;
+      const needsRestart = RESTART_REQUIRED.filter((f) => !f.same(current, next)).map((f) => f.name);
+      const applied: string[] = [];
+      // Valeurs brutes comparées telles quelles : `null` (aucun plafond, explicitement) et l'absence du champ
+      // se résolvent pareil sous `cli` sans dire la même chose. `agentBackend` exigeant un redémarrage, la
+      // table de résolution d'`effectiveDailyBudget` ne peut pas se désynchroniser d'un budget rechargé à chaud.
+      if (next.dailyBudgetUsd !== current.dailyBudgetUsd) {
+        current.dailyBudgetUsd = next.dailyBudgetUsd;
+        applied.push('dailyBudgetUsd');
+      }
+      if (next.maxConcurrentJobs !== current.maxConcurrentJobs) {
+        current.maxConcurrentJobs = next.maxConcurrentJobs;
+        applied.push('maxConcurrentJobs');
+      }
+      if (next.pollIntervalSeconds !== current.pollIntervalSeconds) {
+        current.pollIntervalSeconds = next.pollIntervalSeconds;
+        applied.push('pollIntervalSeconds');
+        this.reschedulePoll();
+      }
+      this.log.info({ source, path, applied, needsRestart }, 'configuration relue');
+      return { ok: true, result: { applied, needsRestart } };
+    });
+  }
+
+  /** Reprogramme le minuteur de poll sur l'intervalle de la configuration courante, si c'est bien lui qui le fixe. */
+  private reschedulePoll(): void {
+    // Intervalle imposé par les options : il prime sur le fichier, au rechargement comme au démarrage.
+    if (this.opts.intervals?.pollMs !== undefined) return;
+    // Aucun minuteur posé : `start()` n'a pas été appelé, et en créer un ici ferait tourner un daemon
+    // que personne n'a démarré.
+    if (this.pollTimer === null) return;
+    this.schedulePoll(this.d.machine.pollIntervalSeconds * 1000);
+  }
+
+  /**
+   * Pose le minuteur de poll, ou remplace le précédent à sa place dans `this.timers` : `stop()` annule les
+   * minuteurs par cette liste, un minuteur laissé hors liste survivrait à l'arrêt du daemon.
+   */
+  private schedulePoll(pollMs: number): void {
+    const at = this.pollTimer === null ? -1 : this.timers.indexOf(this.pollTimer);
+    if (this.pollTimer !== null) clearInterval(this.pollTimer);
+    const timer = setInterval(() => void this.tick(), pollMs);
+    if (at === -1) this.timers.push(timer);
+    else this.timers[at] = timer;
+    this.pollTimer = timer;
   }
 
   status(): DaemonStatus {
