@@ -1,4 +1,4 @@
-import { CliAgentRunner } from './agent/cli-runner.js';
+import { ClaudeCodeAgentRunner } from './agent/cli/claude-code-runner.js';
 import { SdkAgentRunner } from './agent/sdk-runner.js';
 import { SANDBOX_BACKEND_ERROR, loadMachineConfig, type MachineConfig } from './config/machine.js';
 import { dataPaths, ensureDataDirs, machineConfigPath, type DataPaths } from './config/paths.js';
@@ -46,7 +46,7 @@ export async function createApp(opts: { logToFile?: boolean; needsAgent?: boolea
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(`Impossible d'initialiser le client GitHub : ${message}. Vérifier github.privateKeyPath dans ${configPath}.`);
   }
-  const agent = machine.agentBackend === 'claude-code' ? new CliAgentRunner({}) : new SdkAgentRunner({ sandbox: machine.sandbox });
+  const agent = machine.agentBackend === 'claude-code' ? new ClaudeCodeAgentRunner({}) : new SdkAgentRunner({ sandbox: machine.sandbox });
   const deps: PipelineDeps = {
     store: new JobStore(db), phases: new PhaseStore(db), actions: new ActionStore(db), source: github, agent, git: new Git(paths), paths, machine, log, env: process.env,
   };

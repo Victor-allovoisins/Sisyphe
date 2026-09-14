@@ -2,7 +2,7 @@ import { execa } from 'execa';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { buildCliSettings } from './cli-runner.js';
+import { buildCliSettings } from './cli/claude-code-runner.js';
 import { guardFromHookInput } from './path-guard-cli.js';
 
 const BUILT_SCRIPT = fileURLToPath(new URL('../../dist/agent/path-guard-cli.js', import.meta.url));

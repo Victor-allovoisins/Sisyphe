@@ -3,13 +3,13 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { CliAgentRunner } from './cli-runner.js';
-import type { AgentRunOptions } from './runner.js';
+import { ClaudeCodeAgentRunner } from './claude-code-runner.js';
+import type { AgentRunOptions } from '../runner.js';
 
-const FAKE_CLAUDE = fileURLToPath(new URL('../../test/fakes/fake-claude.sh', import.meta.url));
+const FAKE_CLAUDE = fileURLToPath(new URL('../../../test/fakes/fake-claude.sh', import.meta.url));
 // Le runner refuse de démarrer si le script du hook n'existe pas : on pointe sur un fichier réel
-// (la source du hook), jamais exécuté ici puisque le faux `claude` n'appelle aucun hook.
-const HOOK_SCRIPT = fileURLToPath(new URL('./path-guard-cli.ts', import.meta.url));
+// (la source du hook, restée dans `src/agent/`), jamais exécuté ici puisque le faux `claude` n'appelle aucun hook.
+const HOOK_SCRIPT = fileURLToPath(new URL('../path-guard-cli.ts', import.meta.url));
 
 const initLine = JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sess-1', cwd: '/wt' });
 const assistantLine = JSON.stringify({
@@ -64,7 +64,7 @@ async function ctx(o: { lines?: string[]; rawScript?: string; lateLines?: string
   };
 }
 
-const runner = () => new CliAgentRunner({ claudeBin: FAKE_CLAUDE, hookScript: HOOK_SCRIPT });
+const runner = () => new ClaudeCodeAgentRunner({ claudeBin: FAKE_CLAUDE, hookScript: HOOK_SCRIPT });
 
 /** Un argument vide est une ligne vide : on ne filtre que le saut de ligne final. */
 async function readArgs(file: string): Promise<string[]> {
@@ -79,7 +79,7 @@ const valuesOf = (args: string[], flag: string, n: number): string[] => args.sli
 
 const schema = { type: 'object', properties: { answer: { type: 'string' } }, required: ['answer'] };
 
-describe('CliAgentRunner : arguments', () => {
+describe('ClaudeCodeAgentRunner : arguments', () => {
   it('passe les garde-fous, la liste blanche, le schéma, le prompt sur stdin et le system prompt par fichier', async () => {
     const c = await ctx({
       lines: [initLine, resultLine()],
@@ -113,6 +113,13 @@ describe('CliAgentRunner : arguments', () => {
     expect(await readFile(c.promptFile, 'utf8')).toBe('fais le job');
   });
 
+  it('sans modèle : --model disparaît, la CLI choisit son défaut', async () => {
+    const c = await ctx({ lines: [initLine, resultLine()], opts: { model: undefined } });
+    await runner().run(c.opts);
+    const args = await readArgs(c.argsFile);
+    expect(args).not.toContain('--model');
+  });
+
   it('sans pathGuard, sans schéma et sans resume : les drapeaux correspondants disparaissent', async () => {
     const c = await ctx({ lines: [initLine, resultLine()] });
     await runner().run(c.opts);
@@ -138,7 +145,7 @@ describe('CliAgentRunner : arguments', () => {
   });
 });
 
-describe('CliAgentRunner : résultat', () => {
+describe('ClaudeCodeAgentRunner : résultat', () => {
   it('mappe un succès et écrit le transcript', async () => {
     const c = await ctx({ lines: [initLine, assistantLine, resultLine()] });
     const r = await runner().run<{ answer: string }>(c.opts);
@@ -218,7 +225,7 @@ async function expectGroupKilled(childPidFile: string): Promise<void> {
   expect(() => process.kill(pid, 0)).toThrow();
 }
 
-describe('CliAgentRunner : arrêts', () => {
+describe('ClaudeCodeAgentRunner : arrêts', () => {
   it('timeout : tue tout le groupe de processus sans attendre la fin du sleep', async () => {
     const c = await ctx({ lines: [initLine], fake: { FAKE_CLAUDE_SLEEP: '5' }, opts: { timeoutMs: 500 } });
     const started = Date.now();
@@ -259,17 +266,17 @@ describe('CliAgentRunner : arrêts', () => {
   });
 });
 
-describe('CliAgentRunner : refus de démarrer', () => {
+describe('ClaudeCodeAgentRunner : refus de démarrer', () => {
   it('hookScript absent avec pathGuard : run() rejette et ne lance rien', async () => {
     const c = await ctx({ lines: [resultLine()], opts: { pathGuard: { worktreePath: '/wt', protectedPatterns: [] } } });
-    const broken = new CliAgentRunner({ claudeBin: FAKE_CLAUDE, hookScript: '/introuvable/path-guard-cli.js' });
+    const broken = new ClaudeCodeAgentRunner({ claudeBin: FAKE_CLAUDE, hookScript: '/introuvable/path-guard-cli.js' });
     await expect(broken.run(c.opts)).rejects.toThrow(/Garde-fou introuvable/);
     await expect(readFile(c.argsFile, 'utf8')).rejects.toThrow();
   });
 
   it('binaire introuvable : erreur nommant le binaire et le code, sans recopier la ligne de commande', async () => {
     const c = await ctx({ lines: [resultLine()] });
-    const missing = new CliAgentRunner({ claudeBin: '/introuvable/claude-xyz', hookScript: HOOK_SCRIPT });
+    const missing = new ClaudeCodeAgentRunner({ claudeBin: '/introuvable/claude-xyz', hookScript: HOOK_SCRIPT });
     const r = await missing.run(c.opts);
     expect(r.stopReason).toBe('error');
     expect(r.errorMessage).toContain('claude-xyz');
@@ -278,7 +285,7 @@ describe('CliAgentRunner : refus de démarrer', () => {
   });
 });
 
-describe('CliAgentRunner : environnement', () => {
+describe('ClaudeCodeAgentRunner : environnement', () => {
   it('ne transmet que o.env plus les variables du garde-fou', async () => {
     const c = await ctx({
       lines: [resultLine()],
