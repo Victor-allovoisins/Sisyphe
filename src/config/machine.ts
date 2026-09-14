@@ -68,7 +68,14 @@ export class MachineConfigError extends Error {
   }
 }
 
-export function parseMachineConfig(yamlText: string): MachineConfig {
+/**
+ * Valide le YAML **sans développer les chemins** : la configuration telle qu'elle est écrite dans le fichier.
+ *
+ * C'est cette forme qu'il faut réécrire — celle de `parseMachineConfig` graverait `/Users/<nom>/.sisyphe`
+ * dans un fichier qui disait `~/.sisyphe`, à la première réécriture et pour toujours. Pour s'en servir,
+ * en revanche (ouvrir un fichier, calculer des chemins), c'est `parseMachineConfig` qu'il faut.
+ */
+export function parseMachineConfigAsWritten(yamlText: string): MachineConfig {
   let raw: unknown;
   try {
     raw = parse(yamlText);
@@ -80,7 +87,12 @@ export function parseMachineConfig(yamlText: string): MachineConfig {
     const issues = result.error.issues.map((i) => `- ${i.path.join('.') || '(racine)'} : ${i.message}`).join('\n');
     throw new MachineConfigError('invalid', `config.yml invalide :\n${issues}`);
   }
-  const c = result.data;
+  return result.data;
+}
+
+/** La configuration prête à l'usage : chemins développés (`~/…` → absolu). */
+export function parseMachineConfig(yamlText: string): MachineConfig {
+  const c = parseMachineConfigAsWritten(yamlText);
   return {
     ...c,
     dataDir: expandHome(c.dataDir),

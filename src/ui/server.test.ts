@@ -82,7 +82,7 @@ async function startTestServer(opts: TestServerOptions = {}): Promise<{ server: 
     service: { status: async () => ({ kind: 'launchd' as const, installed: true, running: true, pid: 42, enabledAtBoot: true, detail: 'state = running' }) },
     actions,
     // Sonde factice : aucun test n'ouvre la socket de contrôle.
-    control: { ping: async () => (paused === null ? null : { pid: 7, paused, running: 0, queued: 0, startedAt: '2026-09-13T08:00:00.000Z' }) },
+    control: { ping: async () => (paused === null ? null : { pid: 7, paused, running: 0, queued: 0, startedAt: '2026-09-13T08:00:00.000Z', pendingRestart: [] }) },
     readOnly: opts.readOnly ?? false,
   });
   const server = await startUiServer({ data, page: PAGE, port: opts.port ?? 0, intervalMs: 50, actions: opts.actions });

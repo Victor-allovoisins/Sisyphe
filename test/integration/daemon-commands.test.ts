@@ -434,6 +434,26 @@ describe('Daemon.reload', () => {
     expect(h.actions.listRecent(1)[0]).toMatchObject({ action: 'reload', source: 'cli', outcome: 'ok' });
   });
 
+  it('rappel persistant : les champs structurels s’accumulent dans status(), et en sortent s’ils reviennent', async () => {
+    const h = await makeHarness({ steps: [] });
+    const daemon = new Daemon(h.deps, { ...QUIET, configPath: h.configPath });
+    expect(daemon.status().pendingRestart).toEqual([]);
+
+    await h.writeConfig({ repos: [REPO, 'acme/other'] });
+    expect(await daemon.reload('ui')).toMatchObject({ ok: true, result: { needsRestart: ['repos'] } });
+    expect(daemon.status().pendingRestart).toEqual(['repos']);
+
+    // Deuxième enregistrement portant sur un autre champ : le premier reste dû, bandeau fermé ou non.
+    await h.writeConfig({ triggerLabel: 'autre' });
+    await daemon.reload('ui');
+    expect(daemon.status().pendingRestart).toEqual(['repos', 'triggerLabel']);
+
+    // Champ ramené à ce que le daemon exécute : il sort du rappel, l'autre y reste.
+    await h.writeConfig({ repos: [REPO] });
+    expect(await daemon.reload('ui')).toMatchObject({ ok: true, result: { needsRestart: ['triggerLabel'] } });
+    expect(daemon.status().pendingRestart).toEqual(['triggerLabel']);
+  });
+
   it('configuration inchangée : deux listes vides, et l’action est quand même journalisée', async () => {
     const h = await makeHarness({ steps: [] });
     const daemon = new Daemon(h.deps, { ...QUIET, configPath: h.configPath });

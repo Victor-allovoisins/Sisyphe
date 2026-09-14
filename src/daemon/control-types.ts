@@ -16,6 +16,12 @@ export interface DaemonStatus {
   queued: number;
   /** ISO 8601 : instant de construction du `Daemon` (le process n'en construit qu'un, juste avant `start()`). */
   startedAt: string;
+  /**
+   * Champs structurels qui diffèrent de ceux que ce daemon exécute, accumulés depuis son démarrage et
+   * remis à zéro par lui seul. `reload` ne dit que ce qu'il a vu passer ; cette liste-ci reste vraie entre
+   * deux rechargements, pour que la page rappelle qu'un redémarrage est dû même après un bandeau fermé.
+   */
+  pendingRestart: RestartRequiredField[];
 }
 
 /**

@@ -97,6 +97,8 @@ export class Daemon {
   private readonly timers: NodeJS.Timeout[] = [];
   /** Minuteur de poll, retenu à part pour que `reload` reprogramme celui-là et lui seul. */
   private pollTimer: NodeJS.Timeout | null = null;
+  /** Champs structurels vus différents du fichier depuis le démarrage : seul un redémarrage les efface. */
+  private readonly pendingRestart = new Set<RestartRequiredField>();
   private readonly budgetAnnounced = new Set<string>();
   private budgetDay = '';
   private stopCaffeinate: (() => void) | null = null;
@@ -407,6 +409,12 @@ export class Daemon {
       // construction, pas par discipline.
       const current = this.d.machine;
       const needsRestart = RESTART_REQUIRED_FIELDS.filter((f) => !STRUCTURAL_UNCHANGED[f](current, next));
+      // Le rappel persistant suit ce que le daemon exécute, pas ce que le dernier `reload` a vu : un champ
+      // ramené à sa valeur vivante en sort, un champ changé par un enregistrement antérieur y reste.
+      for (const field of RESTART_REQUIRED_FIELDS) {
+        if (needsRestart.includes(field)) this.pendingRestart.add(field);
+        else this.pendingRestart.delete(field);
+      }
       const applied: HotReloadField[] = [];
       for (const field of HOT_RELOAD_FIELDS) {
         // Le budget ne voyage pas sans son backend : `effectiveDailyBudget` résout la **paire** (valeur brute,
@@ -453,6 +461,9 @@ export class Daemon {
       running: this.running.size,
       queued: this.d.store.countByState().queued,
       startedAt: this.startedAt,
+      // Filtré depuis la liste de référence plutôt que rendu dans l'ordre d'insertion : la page affiche
+      // toujours les champs dans le même ordre, quel que soit celui des enregistrements successifs.
+      pendingRestart: RESTART_REQUIRED_FIELDS.filter((f) => this.pendingRestart.has(f)),
     };
   }
 

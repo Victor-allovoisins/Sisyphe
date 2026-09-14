@@ -65,7 +65,7 @@ const offline: UiControl = { ping: async () => null };
 
 /** Daemon qui répond, en pause ou non. */
 const online = (paused: boolean): UiControl => ({
-  ping: async () => ({ pid: 7, paused, running: 1, queued: 2, startedAt: '2026-09-13T08:00:00.000Z' }),
+  ping: async () => ({ pid: 7, paused, running: 1, queued: 2, startedAt: '2026-09-13T08:00:00.000Z', pendingRestart: [] }),
 });
 
 async function makeUi(

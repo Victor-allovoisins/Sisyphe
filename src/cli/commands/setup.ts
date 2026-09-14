@@ -4,7 +4,9 @@ import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { stringify } from 'yaml';
 import { createApp, type App } from '../../app.js';
-import { MachineConfigError, parseMachineConfig, type AgentBackend, type MachineConfig } from '../../config/machine.js';
+import {
+  MachineConfigError, parseMachineConfig, parseMachineConfigAsWritten, type AgentBackend, type MachineConfig,
+} from '../../config/machine.js';
 import { writeMachineConfig } from '../../config/write.js';
 import { dataPaths, defaultDataDir, ensureDataDirs, expandHome, machineConfigPath, type DataPaths } from '../../config/paths.js';
 import { parseRepo } from '../../github/source.js';
@@ -201,7 +203,9 @@ export async function setupCommand(opts: SetupOptions = {}, deps: { createManage
     }
     if (text !== undefined) {
       try {
-        existing = parseMachineConfig(text);
+        // Forme telle qu'écrite : c'est elle qu'on recopie dans le fichier. La forme développée y graverait
+        // `/Users/<nom>/.sisyphe` là où l'opérateur avait écrit `~/.sisyphe`.
+        existing = parseMachineConfigAsWritten(text);
       } catch (err) {
         const message = err instanceof MachineConfigError ? err.message : err instanceof Error ? err.message : String(err);
         console.log(`Config existante illisible (${message}) : elle sera remplacée par des valeurs par défaut pour les champs non redemandés ici.`);
@@ -210,9 +214,9 @@ export async function setupCommand(opts: SetupOptions = {}, deps: { createManage
 
     const appId = Number(await askValidated('GitHub App ID', validateId));
     const installationId = Number(await askValidated('Installation ID', validateId));
-    const privateKeyPath = expandHome(
-      await askValidated('Chemin de la clé privée .pem', validatePrivateKeyPath, join(dataDir, 'github-app.pem')),
-    );
+    // Pas d'`expandHome` sur la réponse : un `~/…` saisi doit rester tel quel dans le fichier. `validatePrivateKeyPath`
+    // développe de son côté pour vérifier que le fichier existe, et `parseMachineConfig` développera à l'usage.
+    const privateKeyPath = await askValidated('Chemin de la clé privée .pem', validatePrivateKeyPath, join(dataDir, 'github-app.pem'));
     const reposAnswer = await askValidated('Repos à surveiller (owner/repo, séparés par des virgules)', validateRepos);
     const repos = parseReposAnswer(reposAnswer);
 
@@ -236,7 +240,12 @@ export async function setupCommand(opts: SetupOptions = {}, deps: { createManage
     }
 
     const raw = buildRawConfig({ appId, installationId, privateKeyPath, repos, dataDir, agentBackend }, existing);
-    const machine = parseMachineConfig(stringify(raw)); // valide avant d'écrire
+    const rawYaml = stringify(raw);
+    // Deux formes de la même configuration, validées avant toute écriture : `written` garde les chemins tels
+    // que saisis et c'est elle qui part sur le disque ; `machine` les développe, pour tout ce qui s'en sert
+    // ici (dossiers, base, service, vérifications).
+    const written = parseMachineConfigAsWritten(rawYaml);
+    const machine = parseMachineConfig(rawYaml);
     const paths = dataPaths(machine.dataDir);
     await ensureDataDirs(paths);
     // config.yml vit toujours sous la racine par défaut (machineConfigPath()), même quand dataDir — conservé
@@ -246,9 +255,7 @@ export async function setupCommand(opts: SetupOptions = {}, deps: { createManage
     }
     // Même écrivain que la page de réglages : rename atomique, 0600, et `.bak` de la version précédente —
     // une relance de setup ne peut plus laisser un config.yml à moitié remplacé ni perdre l'ancien.
-    // `machine` plutôt que `raw` : c'est la forme validée, et ses chemins ont été développés avant le parse,
-    // donc rien ne se transforme ici en absolu qui ne l'était pas déjà.
-    await writeMachineConfig(configPath, machine);
+    await writeMachineConfig(configPath, written);
     console.log(`Config écrite : ${configPath}`);
 
     // On revérifie tout (accès GitHub App, sisyphe.yml de chaque repo, outils...) avant d'installer
