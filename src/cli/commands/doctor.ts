@@ -93,6 +93,34 @@ async function checkClaudeAuth(): Promise<string> {
   return parseAuthStatus(r.stdout);
 }
 
+async function checkCodexCli(platform: NodeJS.Platform): Promise<string> {
+  await whichOrHint('codex', platform);
+  const r = await execa('codex', ['--version'], { reject: false });
+  if (r.exitCode !== 0) throw new Error(`\`codex --version\` a échoué (code ${r.exitCode})`);
+  return r.stdout.trim();
+}
+
+/** PROVISIONNEL : la commande exacte de statut de login sera épinglée sur la machine réelle (Task 11). Sortie propre = connecté. */
+async function checkCodexAuth(): Promise<string> {
+  const r = await execa('codex', ['login', 'status'], { reject: false });
+  if (r.exitCode !== 0) throw new Error('`codex login status` a échoué : lancer `codex login`');
+  return r.stdout.trim() || 'connecté';
+}
+
+async function checkOpencodeCli(platform: NodeJS.Platform): Promise<string> {
+  await whichOrHint('opencode', platform);
+  const r = await execa('opencode', ['--version'], { reject: false });
+  if (r.exitCode !== 0) throw new Error(`\`opencode --version\` a échoué (code ${r.exitCode})`);
+  return r.stdout.trim();
+}
+
+/** PROVISIONNEL : la commande exacte sera épinglée sur la machine réelle (Task 11). Sortie propre = identifiants présents. */
+async function checkOpencodeAuth(): Promise<string> {
+  const r = await execa('opencode', ['auth', 'list'], { reject: false });
+  if (r.exitCode !== 0) throw new Error('`opencode auth list` a échoué : lancer `opencode auth login`');
+  return r.stdout.trim() || 'connecté';
+}
+
 async function checkDiskSpace(root: string): Promise<string> {
   const s = await statfs(root);
   const freeGb = (s.bavail * s.bsize) / BYTES_PER_GB;
@@ -165,11 +193,19 @@ export function buildChecks(input: BuildChecksInput): Check[] {
   // `caffeinate` est un outil macOS : ailleurs, le daemon n'a aucune veille à empêcher.
   if (platform === 'darwin') checks.push({ name: 'caffeinate', warn: true, run: () => which('caffeinate') });
 
-  // Backend `claude-code` (ex-`cli`) : c'est la CLI locale et sa session claude.ai qui remplacent la clé API.
-  // Config absente ou illisible (machine indéfinie) : on reste sur le défaut du schéma, `sdk`.
-  if (input.machine?.agentBackend === 'claude-code') {
+  // Checks adaptés au backend : la CLI locale et sa session remplacent la clé API pour `claude-code`,
+  // `codex` et `opencode`. Config absente ou illisible (machine indéfinie) : on reste sur le défaut du
+  // schéma, `sdk`, et les checks de clé API ne concernent que lui.
+  const backend = input.machine?.agentBackend ?? 'sdk';
+  if (backend === 'claude-code') {
     checks.push({ name: 'claude (CLI)', run: () => checkClaudeCli(platform) });
     checks.push({ name: 'claude auth status', run: checkClaudeAuth });
+  } else if (backend === 'codex') {
+    checks.push({ name: 'codex (CLI)', run: () => checkCodexCli(platform) });
+    checks.push({ name: 'codex login status', run: checkCodexAuth });
+  } else if (backend === 'opencode') {
+    checks.push({ name: 'opencode (CLI)', run: () => checkOpencodeCli(platform) });
+    checks.push({ name: 'opencode auth list', run: checkOpencodeAuth });
   } else if (input.apiKeyChecks !== false) {
     checks.push({
       name: 'ANTHROPIC_API_KEY',

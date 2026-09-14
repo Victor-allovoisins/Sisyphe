@@ -360,6 +360,40 @@ describe('installService', () => {
     // Clé recueillie par setup : elle voyage en paramètre, pas par `process.env`.
     expect(await installService({ agentBackend: 'sdk' }, manager, 'sk-repondue')).toBe(true);
   });
+
+  it('vérifie le binaire du backend choisi sur le PATH (et aucun pour sdk)', async () => {
+    const cases: { agentBackend: 'claude-code' | 'codex' | 'opencode'; bin: string }[] = [
+      { agentBackend: 'claude-code', bin: 'claude' },
+      { agentBackend: 'codex', bin: 'codex' },
+      { agentBackend: 'opencode', bin: 'opencode' },
+    ];
+    for (const { agentBackend, bin } of cases) {
+      const { manager } = fakeManager();
+      const which = vi.fn(async (b: string) => `/usr/local/bin/${b}`);
+
+      expect(await installService({ agentBackend }, manager, undefined, { which })).toBe(true);
+
+      expect(which).toHaveBeenCalledWith(bin);
+    }
+
+    const { manager } = fakeManager();
+    const which = vi.fn(async (b: string) => `/usr/local/bin/${b}`);
+    expect(await installService({ agentBackend: 'sdk' }, manager, undefined, { which })).toBe(true);
+    expect(which).not.toHaveBeenCalled();
+  });
+
+  it('binaire du backend introuvable : refuse l’installation et nomme le binaire', async () => {
+    const { manager, calls } = fakeManager();
+    const which = async (b: string): Promise<string> => {
+      if (b === 'codex') throw new Error('codex introuvable sur le PATH');
+      return `/usr/local/bin/${b}`;
+    };
+
+    await expect(installService({ agentBackend: 'codex' }, manager, undefined, { which })).rejects.toThrow(
+      'codex introuvable sur le PATH : installer Codex CLI puis relancer setup.',
+    );
+    expect(calls).toEqual([]);
+  });
 });
 
 describe('setupCommand --reinstall-service', () => {

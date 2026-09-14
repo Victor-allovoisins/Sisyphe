@@ -86,13 +86,45 @@ describe('buildChecks — composition de la liste', () => {
     expect(buildChecks({ env: { ANTHROPIC_API_KEY: 'sk-x' } }).map((c) => c.name)).toContain('clé API (appel minimal)');
   });
 
-  it('backend cli : les checks de clé API cèdent la place aux checks de la CLI claude', () => {
-    const machine = machineWith(['acme/one'], { agentBackend: 'cli' });
+  it('backend claude-code (et son alias cli) : les checks de clé API cèdent la place aux checks de la CLI claude', () => {
+    for (const agentBackend of ['cli', 'claude-code']) {
+      const machine = machineWith(['acme/one'], { agentBackend });
+      const names = buildChecks({ env: { ANTHROPIC_API_KEY: 'sk-x' }, machine, github: fakeGithub(async () => null) }).map((c) => c.name);
+      expect(names).toContain('claude (CLI)');
+      expect(names).toContain('claude auth status');
+      expect(names).not.toContain('ANTHROPIC_API_KEY');
+      expect(names).not.toContain('clé API (appel minimal)');
+    }
+  });
+
+  it('backend codex : checks codex, ni claude ni clé API', () => {
+    const machine = machineWith(['acme/one'], { agentBackend: 'codex' });
     const names = buildChecks({ env: { ANTHROPIC_API_KEY: 'sk-x' }, machine, github: fakeGithub(async () => null) }).map((c) => c.name);
-    expect(names).toContain('claude (CLI)');
-    expect(names).toContain('claude auth status');
+    expect(names).toEqual(expect.arrayContaining(['codex (CLI)', 'codex login status']));
+    expect(names).not.toContain('claude (CLI)');
+    expect(names).not.toContain('claude auth status');
     expect(names).not.toContain('ANTHROPIC_API_KEY');
     expect(names).not.toContain('clé API (appel minimal)');
+  });
+
+  it('backend opencode : checks opencode, ni claude ni clé API', () => {
+    const machine = machineWith(['acme/one'], { agentBackend: 'opencode' });
+    const names = buildChecks({ env: { ANTHROPIC_API_KEY: 'sk-x' }, machine, github: fakeGithub(async () => null) }).map((c) => c.name);
+    expect(names).toEqual(expect.arrayContaining(['opencode (CLI)', 'opencode auth list']));
+    expect(names).not.toContain('claude (CLI)');
+    expect(names).not.toContain('codex (CLI)');
+    expect(names).not.toContain('ANTHROPIC_API_KEY');
+    expect(names).not.toContain('clé API (appel minimal)');
+  });
+
+  it('backend sdk : clé API, aucun check de CLI', () => {
+    const machine = machineWith(['acme/one'], { agentBackend: 'sdk' });
+    const names = buildChecks({ env: { ANTHROPIC_API_KEY: 'sk-x' }, machine, github: fakeGithub(async () => null) }).map((c) => c.name);
+    expect(names).toContain('ANTHROPIC_API_KEY');
+    expect(names).toContain('clé API (appel minimal)');
+    expect(names).not.toContain('claude (CLI)');
+    expect(names).not.toContain('codex (CLI)');
+    expect(names).not.toContain('opencode (CLI)');
   });
 
   it('backend sdk (défaut) : pas de check de la CLI claude', () => {
