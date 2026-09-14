@@ -629,10 +629,17 @@ export const PAGE_HTML = `<!doctype html>
   function renderBudget(o) {
     var box = byId('budget');
     clear(box);
+    var cap = o.budget.dailyBudgetUsd;
     var head = el('div', 'budget-head');
     head.appendChild(el('div', 'label', 'Budget du jour'));
-    head.appendChild(el('div', 'budget-figure', fmtUsd(o.budget.spentTodayUsd) + ' / ' + fmtUsd(o.budget.dailyBudgetUsd)));
+    // Sans plafond, c'est la limite qui disparaît, pas la dépense : le coût du jour reste affiché.
+    var figure = cap === null ? fmtUsd(o.budget.spentTodayUsd) : fmtUsd(o.budget.spentTodayUsd) + ' / ' + fmtUsd(cap);
+    head.appendChild(el('div', 'budget-figure', figure));
     box.appendChild(head);
+    if (cap === null) {
+      box.appendChild(el('div', 'muted', 'aucune limite'));
+      return;
+    }
     var bar = el('div', 'bar');
     var fill = el('div', 'bar-fill');
     var ratio = Math.max(0, Math.min(1, Number(o.budget.ratio) || 0));

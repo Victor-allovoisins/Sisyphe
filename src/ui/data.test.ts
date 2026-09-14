@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
-import { parseMachineConfig } from '../config/machine.js';
+import { parseMachineConfig, type AgentBackend } from '../config/machine.js';
 import { dataPaths, jobDir } from '../config/paths.js';
 import { openDatabase } from '../store/db.js';
 import { JobStore } from '../store/jobs.js';
@@ -69,7 +69,11 @@ const online = (paused: boolean): UiControl => ({
 });
 
 async function makeUi(
-  opts: { service?: UiService; control?: UiControl; readOnly?: boolean; now?: () => Date; dailyBudgetUsd?: number } = {},
+  /** `dailyBudgetUsd: null` : aucune ligne dans la config, donc aucun plafond sous le backend `cli`. */
+  opts: {
+    service?: UiService; control?: UiControl; readOnly?: boolean; now?: () => Date;
+    dailyBudgetUsd?: number | null; agentBackend?: AgentBackend;
+  } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), 'sisyphe-ui-'));
   const paths = dataPaths(root);
@@ -77,8 +81,9 @@ async function makeUi(
   const store = new JobStore(db);
   const phases = new PhaseStore(db);
   const actions = new ActionStore(db);
+  const budgetLine = opts.dailyBudgetUsd === null ? '' : `dailyBudgetUsd: ${opts.dailyBudgetUsd ?? 20}\n`;
   const machine = parseMachineConfig(
-    `github:\n  appId: 1\n  installationId: 1\n  privateKeyPath: /dev/null\nrepos:\n  - acme/demo\n  - acme/other\ndataDir: ${root}\ndailyBudgetUsd: ${opts.dailyBudgetUsd ?? 20}\n`,
+    `github:\n  appId: 1\n  installationId: 1\n  privateKeyPath: /dev/null\nrepos:\n  - acme/demo\n  - acme/other\ndataDir: ${root}\nagentBackend: ${opts.agentBackend ?? 'sdk'}\n${budgetLine}`,
   );
   const data = createUiData({
     store,
@@ -150,6 +155,19 @@ describe('overview', () => {
     expect(o.budget.spentTodayUsd).toBeCloseTo(4);
     expect(o.budget.dailyBudgetUsd).toBe(10);
     expect(o.budget.ratio).toBeCloseTo(0.4);
+  });
+
+  it('sans plafond configuré, budget.dailyBudgetUsd est null et le ratio reste à zéro', async () => {
+    const ui = await makeUi({ agentBackend: 'cli', dailyBudgetUsd: null });
+    insertJob(ui.db, { id: 'a1' });
+    insertPhase(ui.db, { jobId: 'a1', costUsd: 3, finishedAt: new Date().toISOString() });
+
+    const o = await ui.data.overview();
+
+    // La dépense reste calculée et affichée : c'est le plafond qui disparaît, pas le coût.
+    expect(o.budget.spentTodayUsd).toBeCloseTo(3);
+    expect(o.budget.dailyBudgetUsd).toBeNull();
+    expect(o.budget.ratio).toBe(0);
   });
 
   it('counts compte les jobs par état, backend et repos viennent de la config machine', async () => {

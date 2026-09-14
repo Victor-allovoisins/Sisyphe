@@ -3,7 +3,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pino from 'pino';
-import { parseMachineConfig } from '../../src/config/machine.js';
+import { parseMachineConfig, type AgentBackend } from '../../src/config/machine.js';
 import { dataPaths, ensureDataDirs } from '../../src/config/paths.js';
 import { Git } from '../../src/git/git.js';
 import { parseRepo } from '../../src/github/source.js';
@@ -44,7 +44,9 @@ export const writeFeature = (content: string): NonNullable<ScriptedStep['sideEff
 export interface HarnessOptions {
   steps: ScriptedStep[];
   withConfig?: boolean;
-  dailyBudgetUsd?: number;
+  /** `null` : aucune ligne `dailyBudgetUsd` dans la config, pour tester la résolution du plafond. */
+  dailyBudgetUsd?: number | null;
+  agentBackend?: AgentBackend;
   issues?: Array<{ number: number; title: string; author?: string; labeledBy?: string }>;
   /** Fichiers ajoutés au repo distant ; peuvent remplacer ceux du fixture, `sisyphe.yml` compris. */
   files?: Record<string, string>;
@@ -77,8 +79,9 @@ export async function makeHarness(o: HarnessOptions) {
     source.addIssue(repoRef, { ...issue, body: 'On veut hello.', author: issue.author ?? 'alice' });
   }
   const agent = new ScriptedAgentRunner(o.steps);
+  const budgetLine = o.dailyBudgetUsd === null ? '' : `dailyBudgetUsd: ${o.dailyBudgetUsd ?? 60}\n`;
   const machine = parseMachineConfig(
-    `github:\n  appId: 1\n  installationId: 1\n  privateKeyPath: /dev/null\nrepos:\n  - ${REPO}\ndataDir: ${paths.root}\ndailyBudgetUsd: ${o.dailyBudgetUsd ?? 60}\n`,
+    `github:\n  appId: 1\n  installationId: 1\n  privateKeyPath: /dev/null\nrepos:\n  - ${REPO}\ndataDir: ${paths.root}\nagentBackend: ${o.agentBackend ?? 'sdk'}\n${budgetLine}`,
   );
   const deps: PipelineDeps = {
     store, phases, actions, source, agent, git: new Git(paths), paths, machine,

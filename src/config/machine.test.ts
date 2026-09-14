@@ -26,6 +26,17 @@ describe('parseMachineConfig', () => {
     expect(c.github.privateKeyPath).toBe(join(homedir(), '.sisyphe/app.pem'));
   });
 
+  it('résout le plafond quotidien selon le backend, et refuse une valeur nulle', () => {
+    // Champ absent : `sdk` garde son plafond historique, `cli` n'en a aucun.
+    expect(parseMachineConfig(minimal).dailyBudgetUsd).toBe(60);
+    expect(parseMachineConfig(`${minimal}agentBackend: cli\n`).dailyBudgetUsd).toBeUndefined();
+    // Valeur présente : conservée telle quelle, quel que soit le backend.
+    expect(parseMachineConfig(`${minimal}dailyBudgetUsd: 12.5\n`).dailyBudgetUsd).toBe(12.5);
+    expect(parseMachineConfig(`${minimal}agentBackend: cli\ndailyBudgetUsd: 12.5\n`).dailyBudgetUsd).toBe(12.5);
+    // Pour supprimer le plafond, on retire le champ : 0 n'est pas une façon valide de le dire.
+    expect(() => parseMachineConfig(`${minimal}dailyBudgetUsd: 0\n`)).toThrow(/dailyBudgetUsd/);
+  });
+
   it('accepte agentBackend cli, refuse une valeur inconnue', () => {
     expect(parseMachineConfig(`${minimal}agentBackend: cli\n`).agentBackend).toBe('cli');
     expect(() => parseMachineConfig(`${minimal}agentBackend: bedrock\n`)).toThrow(/agentBackend/);

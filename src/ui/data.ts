@@ -104,7 +104,8 @@ export interface Overview {
   readOnly: boolean;
   recentActions: ActionRow[];
   service: ServiceStatus;
-  budget: { spentTodayUsd: number; dailyBudgetUsd: number; ratio: number };
+  /** `dailyBudgetUsd` à `null` : aucun plafond configuré. La dépense du jour reste affichée. */
+  budget: { spentTodayUsd: number; dailyBudgetUsd: number | null; ratio: number };
   backend: AgentBackend;
   repos: string[];
   counts: Counts;
@@ -317,8 +318,8 @@ export function createUiData(deps: UiDataDeps): UiData {
       service: await serviceStatus(),
       budget: {
         spentTodayUsd,
-        dailyBudgetUsd: machine.dailyBudgetUsd,
-        ratio: machine.dailyBudgetUsd > 0 ? spentTodayUsd / machine.dailyBudgetUsd : 0,
+        dailyBudgetUsd: machine.dailyBudgetUsd ?? null,
+        ratio: machine.dailyBudgetUsd === undefined ? 0 : spentTodayUsd / machine.dailyBudgetUsd,
       },
       backend: machine.agentBackend,
       repos: machine.repos,

@@ -107,7 +107,10 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
 
   let worktreePath: string | null = null;
   let branch: string | null = null;
-  /** Le nettoyage ne fait jamais échouer un job : un worktree résiduel se répare, un job perdu non. */
+  /**
+   * Le nettoyage ne fait jamais échouer un job : un worktree résiduel se répare, un job perdu non.
+   * Idempotent — `removeWorktree` ignore les codes de sortie de git et supprime le dossier en `force`.
+   */
   const cleanup = async () => {
     if (!worktreePath) return;
     await deps.git.removeWorktree(job.repo, worktreePath, branch ?? undefined).catch((err) => log.warn({ err }, 'worktree non supprimé'));
@@ -257,6 +260,7 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
       if (verify.flags.secretsFound.length > 0) {
         await source.comment(issueRef, renderSecretsComment(verify.flags.secretsFound, trigger));
         await source.setStatus(issueRef, 'failed');
+        await cleanup();
         return finish('failed', { error: 'secrets détectés dans le diff' });
       }
       if (verify.ok) break;
@@ -295,7 +299,8 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
     job = store.update(job.id, { prNumber: delivered.prNumber, prUrl: delivered.prUrl, prState: 'open' });
     if (delivered.warnings.length) log.warn({ warnings: delivered.warnings }, 'livraison : mises à jour de l’issue partielles');
     const final: JobState = job.flags.verificationFailed ? 'failed' : 'done';
-    if (final === 'done') await cleanup();
+    // Même en échec : le post-mortem se fait sur `jobs/<id>/` (transcripts, logs, diff) et sur la PR, pas sur le clone.
+    await cleanup();
     log.info({ state: final, pr: delivered.prUrl, costUsd: job.costUsd }, 'job terminé');
     return finish(final);
   } catch (err) {
@@ -314,6 +319,7 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
     }
     const message = err instanceof Error ? err.message : String(err);
     log.error({ err }, 'job en échec');
+    await cleanup();
     await source.comment(issueRef, renderFailedComment(job.id, message.slice(0, 500), trigger)).catch(() => undefined);
     await source.setStatus(issueRef, 'failed').catch(() => undefined);
     return finish('failed', { error: message });

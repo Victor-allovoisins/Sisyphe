@@ -221,16 +221,18 @@ export class Daemon {
     if (this.stopping) return null;
     if (this.paused) return null;
     if (this.purging) return null;
+    const dailyBudgetUsd = this.d.machine.dailyBudgetUsd;
     const check = canStartJob({
       activeCount: this.running.size,
       maxConcurrent: this.d.machine.maxConcurrentJobs,
       spentTodayUsd: this.d.phases.costSince(startOfLocalDay()),
-      dailyBudgetUsd: this.d.machine.dailyBudgetUsd,
+      dailyBudgetUsd,
     });
     if (!check.ok) {
-      if (check.reason === 'budget') {
+      // `reason: 'budget'` implique un plafond défini ; le test le redit pour le typage plutôt que de l'affirmer.
+      if (check.reason === 'budget' && dailyBudgetUsd !== undefined) {
         // Suivi dans inflight pour que runOnce() et stop() attendent les commentaires.
-        const p: Promise<unknown> = this.announceBudgetPause().finally(() => this.inflight.delete(p));
+        const p: Promise<unknown> = this.announceBudgetPause(dailyBudgetUsd).finally(() => this.inflight.delete(p));
         this.inflight.add(p);
       }
       return null;
@@ -255,7 +257,7 @@ export class Daemon {
     return p;
   }
 
-  private async announceBudgetPause(): Promise<void> {
+  private async announceBudgetPause(dailyBudgetUsd: number): Promise<void> {
     const day = startOfLocalDay();
     if (day !== this.budgetDay) {
       this.budgetDay = day;
@@ -266,7 +268,7 @@ export class Daemon {
       if (this.budgetAnnounced.has(key)) continue;
       this.budgetAnnounced.add(key);
       this.log.warn({ jobId: job.id }, 'budget quotidien atteint');
-      await this.d.source.comment(issueRefOf(job), renderBudgetPauseComment(this.d.machine.dailyBudgetUsd)).catch(() => undefined);
+      await this.d.source.comment(issueRefOf(job), renderBudgetPauseComment(dailyBudgetUsd)).catch(() => undefined);
     }
   }
 

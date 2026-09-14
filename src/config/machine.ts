@@ -22,13 +22,16 @@ export const MachineConfigSchema = z.strictObject({
   triggerLabel: z.string().min(1).max(38).regex(/^[A-Za-z0-9][\w.-]*$/, 'lettres, chiffres, . _ -').default('sisyphe'),
   pollIntervalSeconds: z.number().int().min(10).max(3600).default(60),
   maxConcurrentJobs: z.number().int().min(1).max(8).default(1),
-  dailyBudgetUsd: z.number().positive().max(1000).default(60),
+  /** Facultatif : absent, le plafond est résolu après le parse selon le backend (voir `parseMachineConfig`). */
+  dailyBudgetUsd: z.number().positive().max(1000).optional(),
   sandbox: z.boolean().default(false),
   /** `sdk` : Agent SDK, exige ANTHROPIC_API_KEY. `cli` : la CLI Claude Code locale (`claude -p`), donc l'abonnement claude.ai. */
   agentBackend: z.enum(['sdk', 'cli']).default('sdk'),
   dataDir: homeOrAbsolute.default('~/.sisyphe'),
 });
 export type MachineConfig = z.infer<typeof MachineConfigSchema>;
+/** Plafond historique, conservé pour une config `sdk` muette : sous clé API, le coût est facturé. */
+const SDK_DEFAULT_DAILY_BUDGET_USD = 60;
 export type AgentBackend = MachineConfig['agentBackend'];
 
 export type MachineConfigErrorKind = 'missing' | 'invalid';
@@ -55,6 +58,11 @@ export function parseMachineConfig(yamlText: string): MachineConfig {
   const c = result.data;
   return {
     ...c,
+    // Résolu ici, après le parse, pour que tous les appelants reçoivent la même valeur : champ absent sous `sdk`,
+    // le plafond historique de 60 $ s'applique — rien n'est désactivé en silence sur une config existante ; champ
+    // absent sous `cli`, aucun plafond, le coût n'y étant que notionnel. Seule une valeur explicitement vidée
+    // depuis la page des réglages supprime le plafond d'une config `sdk`.
+    dailyBudgetUsd: c.dailyBudgetUsd ?? (c.agentBackend === 'sdk' ? SDK_DEFAULT_DAILY_BUDGET_USD : undefined),
     dataDir: expandHome(c.dataDir),
     github: { ...c.github, privateKeyPath: expandHome(c.github.privateKeyPath) },
   };

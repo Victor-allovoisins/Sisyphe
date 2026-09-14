@@ -35,6 +35,10 @@ describe('PAGE_HTML', () => {
     expect(PAGE_HTML).toContain("'/api/report?since='");
   });
 
+  it('affiche « aucune limite » quand le budget du jour n’a pas de plafond', () => {
+    expect(PAGE_HTML).toContain("'aucune limite'");
+  });
+
   it('porte les couleurs d’état alignées sur les labels GitHub', () => {
     for (const cls of ['.s-run', '.s-done', '.s-blocked', '.s-failed', '.s-cancelled', '.s-queued']) {
       expect(PAGE_HTML).toContain(cls);
