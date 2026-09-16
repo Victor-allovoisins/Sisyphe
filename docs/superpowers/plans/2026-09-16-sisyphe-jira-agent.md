@@ -1314,10 +1314,10 @@ dont la sortie a la forme d'un `JiraSyncReport`. C'est la première chose à fai
 Ajouter en tête de `test/integration/jira-pipeline.test.ts` :
 
 ```typescript
-/** Ce que la phase `jira` rend quand elle a fait son travail. */
-const jiraOk = { status: 'En relecture', commented: true, handedBack: false, note: '' };
+/** Ce que la phase `jira` rend quand elle a fait son travail : elle a transitionné et rédigé son texte. */
+const jiraOk = { status: 'En relecture', comment: '🪨 PR prête : https://example.test/pr/1', handedBack: false, note: '' };
 /** Ce qu'elle rend quand elle n'a rien pu faire : c'est le cas que le filet doit rattraper. */
-const jiraMuet = { status: '', commented: false, handedBack: false, note: 'coincé' };
+const jiraMuet = { status: '', comment: '', handedBack: false, note: 'coincé' };
 ```
 
 puis les tests :
@@ -1350,17 +1350,19 @@ puis les tests :
     expect(j.state.comments.join('\n')).toContain('🪨');
   });
 
-  it('ne double pas le commentaire quand la phase jira en a posté un', async () => {
+  it('poste le texte rédigé par la phase jira, et lui seul', async () => {
     const j = fakeJira();
     const h = await harnessOn(j.tracker, [
       { output: readyVerdict },
       { output: report('Créé'), sideEffect: writeFeature('hello\n') },
-      { output: jiraOk, sideEffect: async () => { j.state.comments.push('🪨 PR prête : …'); } },
+      { output: jiraOk },
     ], ['release/8.42.0']);
     const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
     await runJob(job.id, h.deps, signal());
 
+    // Un seul commentaire, et c'est celui de l'agent : le message scripté ne doit pas s'y ajouter.
     expect(j.state.comments).toHaveLength(1);
+    expect(j.state.comments[0]).toContain('https://example.test/pr/1');
   });
 ```
 
