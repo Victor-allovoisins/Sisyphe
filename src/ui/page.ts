@@ -298,7 +298,7 @@ export const PAGE_HTML = `<!doctype html>
         <label class="field">Clé privée (chemin)<input type="text" id="set-key-path"></label>
         <label class="field">Dossier de données<input type="text" id="set-data-dir" disabled></label>
       </div>
-      <div id="set-jira-block" hidden>
+      <div id="set-jira-block">
         <h2 class="section-title">Jira</h2>
         <div class="settings-grid">
           <label class="field">Site<input type="text" id="set-jira-site" placeholder="xxx.atlassian.net"></label>
@@ -307,7 +307,14 @@ export const PAGE_HTML = `<!doctype html>
         </div>
         <p class="hint muted">Seul le chemin est manipulé ici : le jeton lui-même n'est ni lu, ni affiché, ni transmis à la page.</p>
         <ul class="plain" id="set-jira-projects"></ul>
-        <p class="hint muted">Projets et statuts se changent par <code>sisyphe setup</code>.</p>
+        <div class="filters" id="set-jira-add-row">
+          <label class="field">Projet<input type="text" id="set-jira-new-key" placeholder="IOS"></label>
+          <label class="field">Dépôt<select id="set-jira-new-repo"></select></label>
+          <label class="field">Compte Sisyphe<input type="text" id="set-jira-new-account" placeholder="adresse ou nom"></label>
+          <button type="button" class="action" id="set-jira-add">Ajouter</button>
+        </div>
+        <p class="hint muted" id="set-jira-add-hint"></p>
+        <p class="hint muted">Sans projet, le suivi reste sur les issues GitHub.</p>
       </div>
       <h2 class="section-title">Dépôts surveillés</h2>
       <ul class="plain" id="set-repos"></ul>
@@ -1249,7 +1256,7 @@ export const PAGE_HTML = `<!doctype html>
   var REPO_CHECK_SUFFIX = ' · sisyphe.yml';
 
   /** État du formulaire : dernière config enregistrée (chaîne comparable) et liste de dépôts en cours d'édition. */
-  var settings = { loaded: false, loading: false, baseline: null, repos: [], jira: null, notice: null, lastReadOnly: null };
+  var settings = { loaded: false, loading: false, baseline: null, repos: [], jira: null, jiraNames: {}, notice: null, lastReadOnly: null };
 
   function numberValue(id) {
     var v = byId(id).value.trim();
@@ -1279,14 +1286,14 @@ export const PAGE_HTML = `<!doctype html>
     // La section Jira n'est éditable que sur ses trois scalaires ; les projets repartent tels qu'ils ont été
     // chargés. Il faut la réémettre entière : le schéma exige projects, et l'omettre ferait reporter
     // l'ancienne section par le serveur, donc perdre la saisie.
-    if (settings.jira) {
-      config.jira = {
-        site: byId('set-jira-site').value.trim(),
-        email: byId('set-jira-email').value.trim(),
-        apiTokenPath: byId('set-jira-token').value.trim(),
-        projects: settings.jira.projects
-      };
-    }
+    var site = byId('set-jira-site').value.trim();
+    var email = byId('set-jira-email').value.trim();
+    var token = byId('set-jira-token').value.trim();
+    // Un null explicite quand il ne reste rien à décrire : sans lui, le serveur reporterait l'ancienne
+    // section et le suivi Jira serait impossible à retirer depuis la page.
+    config.jira = (site && email && token && settings.jira.projects.length)
+      ? { site: site, email: email, apiTokenPath: token, projects: settings.jira.projects.map(cleanJiraProject) }
+      : null;
     // Les deux champs vides : aucune clé agentModels envoyée, le serveur garde ses défauts. Sinon seules les surcharges saisies partent.
     if (triage || implement) {
       config.agentModels = {};
@@ -1316,6 +1323,7 @@ export const PAGE_HTML = `<!doctype html>
         remove.addEventListener('click', function () {
           settings.repos.splice(index, 1);
           renderReposEditor();
+          renderJiraRepoChoices();
           updateSaveState();
         });
         li.appendChild(remove);
@@ -1339,24 +1347,159 @@ export const PAGE_HTML = `<!doctype html>
     setField('set-model-implement', models.implement);
     setField('set-data-dir', dataDir);
     settings.repos = config.repos.slice();
-    settings.jira = config.jira || null;
-    byId('set-jira-block').hidden = !settings.jira;
-    if (settings.jira) {
-      setField('set-jira-site', settings.jira.site);
-      setField('set-jira-email', settings.jira.email);
-      setField('set-jira-token', settings.jira.apiTokenPath);
-      renderJiraProjects();
-    }
+    // Toujours un objet, même sans section en place : la page doit pouvoir en créer une de zéro.
+    settings.jira = config.jira || { site: '', email: '', apiTokenPath: '', projects: [] };
+    settings.jira.projects = (settings.jira.projects || []).slice();
+    setField('set-jira-site', settings.jira.site);
+    setField('set-jira-email', settings.jira.email);
+    setField('set-jira-token', settings.jira.apiTokenPath);
+    renderJiraProjects();
+    renderJiraRepoChoices();
     renderReposEditor();
   }
 
-  /** Les projets en lecture seule : leur édition passe par sisyphe setup, qui résout aussi les accountId. */
+  /**
+   * Un projet par ligne. Les statuts sont saisis en liste séparée par des virgules : l'ordre y est
+   * signifiant — c'est lui que suit la marche de transitions — et une liste ordonnée se relit mieux sur
+   * une ligne que dans un tableau. Les deux statuts de travail sont des menus construits depuis cette
+   * liste, pour qu'ils ne puissent pas désigner un statut absent du workflow.
+   */
   function renderJiraProjects() {
     var list = byId('set-jira-projects');
     clear(list);
-    (settings.jira.projects || []).forEach(function (p) {
-      list.appendChild(el('li', null, p.key + ' → ' + p.repo + ' · ' + p.inProgressStatus + ' → ' + p.doneStatus));
+    var projects = settings.jira.projects || [];
+    if (!projects.length) {
+      list.appendChild(el('li', 'muted', 'Aucun projet Jira : le suivi reste sur les issues GitHub.'));
+      return;
+    }
+    projects.forEach(function (p, index) {
+      var li = el('li', 'jira-row');
+      var head = el('div', 'jira-row-head');
+      head.appendChild(el('strong', null, p.key + ' → ' + p.repo));
+      head.appendChild(el('span', 'muted', settings.jiraNames[p.accountId] || p.accountId));
+      if (!ui.readOnly) {
+        var remove = el('button', 'action small danger', 'Retirer');
+        remove.type = 'button';
+        remove.addEventListener('click', function () {
+          settings.jira.projects.splice(index, 1);
+          renderJiraProjects();
+          updateSaveState();
+        });
+        head.appendChild(remove);
+      }
+      li.appendChild(head);
+      li.appendChild(jiraListField(p, index, 'candidateStatuses', 'Statuts déclencheurs'));
+      li.appendChild(jiraListField(p, index, 'statusesInOrder', 'Ordre du workflow'));
+      li.appendChild(jiraStatusSelect(p, index, 'inProgressStatus', 'Pendant le travail'));
+      li.appendChild(jiraStatusSelect(p, index, 'doneStatus', 'PR ouverte'));
+      list.appendChild(li);
     });
+  }
+
+  /** Le nom lisible du compte n'est qu'un confort d'affichage : il ne fait pas partie de la configuration. */
+  function cleanJiraProject(p) {
+    return {
+      key: p.key, accountId: p.accountId, repo: p.repo,
+      candidateStatuses: p.candidateStatuses, statusesInOrder: p.statusesInOrder,
+      inProgressStatus: p.inProgressStatus, doneStatus: p.doneStatus
+    };
+  }
+
+  function jiraListField(project, index, field, label) {
+    var wrap = el('label', 'field', label);
+    var input = el('input');
+    input.type = 'text';
+    input.value = (project[field] || []).join(', ');
+    input.disabled = ui.readOnly;
+    input.addEventListener('input', function () {
+      settings.jira.projects[index][field] = input.value.split(',').map(function (v) { return v.trim(); }).filter(Boolean);
+      // L'ordre du workflow alimente les deux menus : ils se reconstruisent à chaque frappe.
+      if (field === 'statusesInOrder') renderJiraProjects();
+      updateSaveState();
+    });
+    wrap.appendChild(input);
+    return wrap;
+  }
+
+  function jiraStatusSelect(project, index, field, label) {
+    var wrap = el('label', 'field', label);
+    var select = el('select');
+    var options = (project.statusesInOrder || []).slice();
+    // Une valeur hors du workflow reste proposée plutôt que d'être effacée en silence : c'est justement
+    // celle que doctor signale, et l'escamoter empêcherait de la voir pour la corriger.
+    if (project[field] && options.indexOf(project[field]) === -1) options.push(project[field]);
+    options.forEach(function (name) {
+      var opt = el('option', null, name);
+      opt.value = name;
+      select.appendChild(opt);
+    });
+    select.value = project[field] || '';
+    select.disabled = ui.readOnly;
+    select.addEventListener('change', function () {
+      settings.jira.projects[index][field] = select.value;
+      updateSaveState();
+    });
+    wrap.appendChild(select);
+    return wrap;
+  }
+
+  /** Ajout d'un projet : le compte est cherché côté serveur, jamais saisi en identifiant brut. */
+  function addJiraProject() {
+    var hint = byId('set-jira-add-hint');
+    var key = byId('set-jira-new-key').value.trim().toUpperCase();
+    var repo = byId('set-jira-new-repo').value;
+    var query = byId('set-jira-new-account').value.trim();
+    if (!key || !repo || !query) {
+      hint.textContent = 'Projet, dépôt et compte sont requis.';
+      return;
+    }
+    if (settings.jira.projects.some(function (p) { return p.repo === repo; })) {
+      hint.textContent = 'Ce dépôt est déjà servi par un projet Jira.';
+      return;
+    }
+    hint.textContent = 'Recherche du compte…';
+    api('jira-accounts', {
+      site: byId('set-jira-site').value.trim(),
+      email: byId('set-jira-email').value.trim(),
+      apiTokenPath: byId('set-jira-token').value.trim(),
+      query: query
+    }).then(function (r) {
+      if (!r.ok) { hint.textContent = r.error; return; }
+      var accounts = (r.result && r.result.accounts) || [];
+      if (!accounts.length) { hint.textContent = 'Aucun compte ne correspond à « ' + query + ' ».'; return; }
+      if (accounts.length > 1) {
+        hint.textContent = accounts.length + ' comptes correspondent : précisez l’adresse exacte.';
+        return;
+      }
+      settings.jiraNames[accounts[0].accountId] = accounts[0].displayName;
+      settings.jira.projects.push({
+        key: key,
+        accountId: accounts[0].accountId,
+        repo: repo,
+        candidateStatuses: ['Nouveau', 'En analyse'],
+        statusesInOrder: ['Nouveau', 'En analyse', 'A développer', 'En développement', 'En relecture', 'Developpement fini'],
+        inProgressStatus: 'En développement',
+        doneStatus: 'En relecture'
+      });
+      byId('set-jira-new-key').value = '';
+      byId('set-jira-new-account').value = '';
+      hint.textContent = 'Ajouté : ' + accounts[0].displayName;
+      renderJiraProjects();
+      updateSaveState();
+    });
+  }
+
+  /** Les dépôts proposés sont ceux que Sisyphe surveille : un projet Jira n'a de sens que pour l'un d'eux. */
+  function renderJiraRepoChoices() {
+    var select = byId('set-jira-new-repo');
+    var previous = select.value;
+    clear(select);
+    settings.repos.forEach(function (repo) {
+      var opt = el('option', null, repo);
+      opt.value = repo;
+      select.appendChild(opt);
+    });
+    if (previous) select.value = previous;
   }
 
   function updateSaveState() {
@@ -1395,12 +1538,16 @@ export const PAGE_HTML = `<!doctype html>
     byId('set-data-dir').disabled = true;
     byId('set-repo-new').hidden = disabled;
     byId('set-repo-add').hidden = disabled;
+    byId('set-jira-add-row').hidden = disabled;
     byId('set-save').hidden = disabled;
     byId('purge-cache').hidden = disabled;
     // La liste des dépôts n'a de boutons « Retirer » qu'en écriture : elle n'est reconstruite qu'au changement de mode.
     if (settings.lastReadOnly !== disabled) {
       settings.lastReadOnly = disabled;
-      if (settings.loaded) renderReposEditor();
+      if (settings.loaded) {
+        renderReposEditor();
+        renderJiraProjects();
+      }
     }
   }
 
@@ -1415,6 +1562,7 @@ export const PAGE_HTML = `<!doctype html>
     settings.repos.push(value);
     field.value = '';
     renderReposEditor();
+    renderJiraRepoChoices();
     updateSaveState();
   }
 
@@ -1732,6 +1880,7 @@ export const PAGE_HTML = `<!doctype html>
     submitSettings(byId('set-save'));
   });
   byId('set-repo-add').addEventListener('click', addRepo);
+  byId('set-jira-add').addEventListener('click', addJiraProject);
   byId('set-repo-new').addEventListener('keydown', function (event) {
     if (event.key !== 'Enter') return;
     // Sans cela, Entrée soumettrait le formulaire au lieu d'ajouter le dépôt.

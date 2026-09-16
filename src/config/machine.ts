@@ -81,7 +81,10 @@ export const MachineConfigSchema = z.strictObject({
         .refine((v) => new Set(v.map((p) => p.key)).size === v.length, 'clé de projet en double')
         .refine((v) => new Set(v.map((p) => p.repo)).size === v.length, 'dépôt en double'),
     })
-    .optional(),
+    // `null` explicite : c'est ainsi que la page de réglages demande la suppression de la section. L'absence
+    // de la clé, elle, veut dire « je ne gère pas ce champ » et fait reporter la section en place.
+    .nullish()
+    .transform((v) => v ?? undefined),
   dataDir: homeOrAbsolute.default('~/.sisyphe'),
 });
 export type MachineConfig = z.infer<typeof MachineConfigSchema>;

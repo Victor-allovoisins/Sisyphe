@@ -73,6 +73,20 @@ describe('validateMachineConfigInput', () => {
     expect(config.maxConcurrentJobs).toBe(2);
   });
 
+  it('retire la section jira sur un null explicite, là où l’absence de clé la conserve', async () => {
+    const tokenPath = join(dir, 'jira-token.txt');
+    await writeFile(tokenPath, 'jeton');
+    const withJira = parseMachineConfig(stringify({
+      ...rawInput(),
+      jira: {
+        site: 'allovoisins.atlassian.net', email: 'ia+jira@allovoisins.com', apiTokenPath: tokenPath,
+        projects: [{ key: 'IOS', accountId: 'acc', repo: 'ILokYou/ILokYou-iOS' }],
+      },
+    }));
+    const config = expectOk(await validateMachineConfigInput(rawInput({ jira: null }), withJira));
+    expect(config.jira).toBeUndefined();
+  });
+
   it('refuse un jeton Jira introuvable', async () => {
     const jira = {
       site: 'allovoisins.atlassian.net',

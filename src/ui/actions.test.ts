@@ -311,6 +311,45 @@ describe('runAction : settings', () => {
   });
 });
 
+describe('runAction : jira-accounts', () => {
+  it("refuse un site hors d'Atlassian : le jeton sert de mot de passe et ne doit pas partir ailleurs", async () => {
+    const client = fakeClient();
+
+    const res = await runAction(
+      'jira-accounts',
+      { site: 'evil.example.com', email: 'a@b.test', apiTokenPath: '/dev/null', query: 'x' },
+      await deps({ client }),
+    );
+
+    expect(res.status).toBe(400);
+    expect((res.body as { error: string }).error).toContain('atlassian.net');
+    expect(client.send).not.toHaveBeenCalled();
+  });
+
+  it('dit quel fichier de jeton est illisible plutôt que de lever', async () => {
+    const res = await runAction(
+      'jira-accounts',
+      { site: 'allovoisins.atlassian.net', email: 'a@b.test', apiTokenPath: join(tmpdir(), 'jeton-absent-xyz'), query: 'x' },
+      await deps(),
+    );
+
+    expect(res.status).toBe(400);
+    expect((res.body as { error: string }).error).toContain('Jeton illisible');
+  });
+
+  it("n'atteint jamais le daemon : la recherche part directement vers Jira", async () => {
+    const client = fakeClient();
+
+    await runAction(
+      'jira-accounts',
+      { site: 'allovoisins.atlassian.net', email: 'a@b.test', apiTokenPath: '/dev/null', query: 'x' },
+      await deps({ client }),
+    );
+
+    expect(client.send).not.toHaveBeenCalled();
+  });
+});
+
 describe('runAction : purge-cache', () => {
   it('daemon joignable : c’est lui qui purge, la mesure disque est périmée, aucune purge locale', async () => {
     const client = fakeClient({ send: vi.fn<ActionClient['send']>(async () => ({ ok: true, result: { freedBytes: 7 } })) });
