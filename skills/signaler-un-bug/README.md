@@ -9,7 +9,7 @@ Il est conçu pour tourner sur **claude.ai / l'app Desktop**, avec le connecteur
 ## Avant la mise en service
 
 1. Vérifier que le connecteur Atlassian de claude.ai peut **créer un ticket et l'assigner** dans le projet `IOS`, pour chaque personne concernée.
-2. Le compte Jira dédié est « Agent IA » (`ia+jira@allovoisins.com`), déjà créé. Il doit être renseigné dans la config machine de Sisyphe (`sisyphe setup`), et le skill le nomme à l'étape 12 — les deux doivent désigner le même compte.
+2. Le compte Jira dédié est « Agent IA », déjà créé. Il doit être renseigné dans la config machine de Sisyphe (`sisyphe setup`), et le skill le nomme à l'étape 12 — les deux doivent désigner le même compte. Le skill n'en donne que le nom d'affichage : l'adresse et l'`accountId` vivent dans la config machine, hors du dépôt.
 3. Confirmer que `sisyphe.yml` est bien commité à la racine de `develop` (la branche par défaut du dépôt iOS). Modèle : `examples/sisyphe.ios.yml`.
 
 ## Installation sur claude.ai

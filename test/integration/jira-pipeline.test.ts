@@ -74,7 +74,7 @@ function fakeJira(start = 'Nouveau') {
 
   const tracker = new JiraIssueTracker({
     site: 'allovoisins.atlassian.net',
-    email: 'bot@allovoisins.com',
+    email: 'bot@example.test',
     apiToken: 'jeton',
     projects: [{
       key: 'IOS', accountId: ACCOUNT, repo: REPO,
@@ -100,7 +100,7 @@ async function harnessOn(jiraTracker: JiraIssueTracker, steps: Parameters<typeof
     ...h.deps.machine,
     jira: {
       site: 'allovoisins.atlassian.net',
-      email: 'bot@allovoisins.com',
+      email: 'bot@example.test',
       apiTokenPath: '/dev/null',
       projects: [{
         key: 'IOS', accountId: ACCOUNT, repo: REPO,

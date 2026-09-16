@@ -42,7 +42,7 @@ function harness(routes: Record<string, unknown | ((body: unknown) => unknown)>)
 
   const tracker = new JiraIssueTracker({
     site: 'allovoisins.atlassian.net',
-    email: 'bot@allovoisins.com',
+    email: 'bot@example.test',
     apiToken: 'jeton',
     projects: [PROJECT],
     fetchImpl,

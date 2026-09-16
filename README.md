@@ -80,11 +80,11 @@ Par défaut, Sisyphe lit des issues GitHub. Une section `jira` dans la config ma
 ```yaml
 jira:
   site: allovoisins.atlassian.net
-  email: ia+jira@allovoisins.com         # compte porteur du jeton, signataire des commentaires
+  email: bot@exemple.tld                # compte porteur du jeton, signataire des commentaires
   apiTokenPath: ~/.sisyphe/jira-token.txt
   projects:
     - key: IOS
-      accountId: 712020:4963213c-f4db-4741-a1d7-ae8a7084ebdc   # « Agent IA »
+      accountId: 712020:...               # sisyphe setup le résout depuis une adresse
       repo: ILokYou/ILokYou-iOS
       candidateStatuses: [Nouveau, En analyse]
       statusesInOrder: [Nouveau, En analyse, A développer, En développement, En relecture, Developpement fini]

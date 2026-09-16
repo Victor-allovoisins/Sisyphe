@@ -61,7 +61,7 @@ describe('validateMachineConfigInput', () => {
     await writeFile(tokenPath, 'jeton');
     const jira = {
       site: 'allovoisins.atlassian.net',
-      email: 'bot@allovoisins.com',
+      email: 'bot@example.test',
       apiTokenPath: tokenPath,
       projects: [{ key: 'IOS', accountId: 'acc-sisyphe', repo: 'ILokYou/ILokYou-iOS' }],
     };
@@ -79,7 +79,7 @@ describe('validateMachineConfigInput', () => {
     const withJira = parseMachineConfig(stringify({
       ...rawInput(),
       jira: {
-        site: 'allovoisins.atlassian.net', email: 'ia+jira@allovoisins.com', apiTokenPath: tokenPath,
+        site: 'allovoisins.atlassian.net', email: 'bot@example.test', apiTokenPath: tokenPath,
         projects: [{ key: 'IOS', accountId: 'acc', repo: 'ILokYou/ILokYou-iOS' }],
       },
     }));
@@ -90,7 +90,7 @@ describe('validateMachineConfigInput', () => {
   it('refuse un jeton Jira introuvable', async () => {
     const jira = {
       site: 'allovoisins.atlassian.net',
-      email: 'bot@allovoisins.com',
+      email: 'bot@example.test',
       apiTokenPath: join(dir, 'absent.txt'),
       projects: [{ key: 'IOS', accountId: 'acc-sisyphe', repo: 'ILokYou/ILokYou-iOS' }],
     };

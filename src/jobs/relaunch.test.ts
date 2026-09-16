@@ -17,7 +17,7 @@ const machine = (jira?: MachineConfig['jira']): Pick<MachineConfig, 'triggerLabe
 
 const withJira = machine({
   site: 'allovoisins.atlassian.net',
-  email: 'bot@allovoisins.com',
+  email: 'bot@example.test',
   apiTokenPath: '/dev/null',
   projects: [project],
 });

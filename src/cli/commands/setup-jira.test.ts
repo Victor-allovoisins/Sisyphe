@@ -57,7 +57,7 @@ describe('askJira', () => {
 
   it('construit la section et résout l’accountId depuis une adresse', async () => {
     const lookup = found(1);
-    const s = scripted(['o', 'allovoisins.atlassian.net', 'bot@allovoisins.com', tokenPath, 'ios', 'sisyphe-ios@allovoisins.com']);
+    const s = scripted(['o', 'allovoisins.atlassian.net', 'bot@example.test', tokenPath, 'ios', 'bot@example.test']);
     const jira = await askJira({ ...s, repos: ['ILokYou/ILokYou-iOS'], dataDir: dir, lookup });
 
     expect(jira?.site).toBe('allovoisins.atlassian.net');
@@ -66,17 +66,17 @@ describe('askJira', () => {
     ]);
     // Le jeton sert à la recherche, il n'est jamais recopié dans la configuration.
     expect(JSON.stringify(jira)).not.toContain('jeton');
-    expect(lookup).toHaveBeenCalledWith(expect.objectContaining({ apiToken: 'jeton' }), 'sisyphe-ios@allovoisins.com');
+    expect(lookup).toHaveBeenCalledWith(expect.objectContaining({ apiToken: 'jeton' }), 'bot@example.test');
   });
 
   it('fait choisir quand plusieurs comptes répondent', async () => {
-    const s = scripted(['o', 'allovoisins.atlassian.net', 'bot@allovoisins.com', tokenPath, 'IOS', 'sisyphe', '2']);
+    const s = scripted(['o', 'allovoisins.atlassian.net', 'bot@example.test', tokenPath, 'IOS', 'sisyphe', '2']);
     const jira = await askJira({ ...s, repos: ['ILokYou/ILokYou-iOS'], dataDir: dir, lookup: found(3) });
     expect(jira?.projects[0].accountId).toBe('acc-2');
   });
 
   it('laisse un dépôt sur les issues GitHub quand aucun projet n’est donné', async () => {
-    const s = scripted(['o', 'allovoisins.atlassian.net', 'bot@allovoisins.com', tokenPath, '', '']);
+    const s = scripted(['o', 'allovoisins.atlassian.net', 'bot@example.test', tokenPath, '', '']);
     const jira = await askJira({ ...s, repos: ['ILokYou/a', 'ILokYou/b'], dataDir: dir, lookup: found(1) });
     expect(jira).toBeUndefined();
   });
@@ -85,7 +85,7 @@ describe('askJira', () => {
     const lookup = vi.fn(async () => {
       throw new Error('ECONNREFUSED');
     });
-    const s = scripted(['o', 'allovoisins.atlassian.net', 'bot@allovoisins.com', tokenPath, 'IOS', 'sisyphe', 'acc-saisi']);
+    const s = scripted(['o', 'allovoisins.atlassian.net', 'bot@example.test', tokenPath, 'IOS', 'sisyphe', 'acc-saisi']);
     const jira = await askJira({ ...s, repos: ['ILokYou/ILokYou-iOS'], dataDir: dir, lookup });
     expect(jira?.projects[0].accountId).toBe('acc-saisi');
   });
@@ -100,7 +100,7 @@ github: { appId: 1, installationId: 2, privateKeyPath: /dev/null }
 repos: [ILokYou/ILokYou-iOS]
 jira:
   site: allovoisins.atlassian.net
-  email: bot@allovoisins.com
+  email: bot@example.test
   apiTokenPath: /dev/null
   projects:
     - { key: IOS, accountId: acc-1, repo: ILokYou/ILokYou-iOS }
@@ -110,7 +110,7 @@ jira:
   });
 
   it('écrit la section neuve quand setup vient d’en produire une', () => {
-    const jira = { site: 'allovoisins.atlassian.net', email: 'bot@allovoisins.com', apiTokenPath: '/dev/null', projects: [] as never[] };
+    const jira = { site: 'allovoisins.atlassian.net', email: 'bot@example.test', apiTokenPath: '/dev/null', projects: [] as never[] };
     const raw = buildRawConfig({ ...answers, jira: jira as never }, undefined) as { jira?: { site: string } };
     expect(raw.jira?.site).toBe('allovoisins.atlassian.net');
   });

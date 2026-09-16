@@ -264,7 +264,7 @@ Dans le doute, laisse vide. Une version fausse envoie le correctif sur la mauvai
 
 Montre le récapitulatif — titre, type, version si tu en as mis une, corps — et demande « je crée ? ». Attends le oui.
 
-Puis crée le ticket dans le projet `IOS` avec le type retenu, et **assigne-le au compte « Agent IA » (`ia+jira@allovoisins.com`)**. C'est l'assignation qui déclenche le traitement : sans elle, le ticket dort.
+Puis crée le ticket dans le projet `IOS` avec le type retenu, et **assigne-le au compte « Agent IA »**. C'est l'assignation qui déclenche le traitement : sans elle, le ticket dort.
 
 Laisse le statut par défaut (`Nouveau`). Ne le fais pas avancer toi-même : c'est Sisyphe qui déplacera le ticket dans le board au fil de son travail.
 
