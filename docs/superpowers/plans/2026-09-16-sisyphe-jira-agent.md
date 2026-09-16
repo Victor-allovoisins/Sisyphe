@@ -1474,6 +1474,12 @@ function statusFor(state: JobState): StatusLabel | null {
 }
 ```
 
+**Le répertoire du job doit exister avant la première sortie possible.** `await mkdir(dir, { recursive: true })`
+est aujourd'hui après `signal.throwIfAborted()` et après la transition vers `triaging` : une annulation au
+tout début atteint le `catch` avec un `dir` inexistant, et la phase `jira` échoue en ENOENT sur l'écriture de
+son transcript. Hisser le `mkdir` au-dessus du premier `throwIfAborted()`, avant le `try`. Constaté en Task 7,
+qui a un test du cas dégradé — mais dégrader ici veut dire perdre la clôture Jira, pas un détail.
+
 **Deux variables à sortir du `try`.** `closeTicket` est appelée depuis les sorties les plus précoces comme
 depuis le `catch` ; ce qu'elle lit doit exister avant elles :
 
