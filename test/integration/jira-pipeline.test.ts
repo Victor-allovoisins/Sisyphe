@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { JIRA_STATUSES_DEFAULT } from '../../src/config/machine.js';
+import { WORKFLOW } from '../fakes/jira-workflow.js';
 import { JiraIssueTracker } from '../../src/jira/client.js';
 import { runJob } from '../../src/jobs/pipeline.js';
 import { REPO, makeHarness, readyVerdict, report, writeFeature } from '../helpers/harness.js';
@@ -13,11 +13,11 @@ import { REPO, makeHarness, readyVerdict, report, writeFeature } from '../helper
  * rendue quand il s'arrête.
  */
 
-const ACCOUNT = 'acc-sisyphe-ios';
-const ORDER: string[] = [...JIRA_STATUSES_DEFAULT];
+const ACCOUNT = 'acc-bot';
+const ORDER: string[] = [...WORKFLOW];
 
 /** Jira factice : un statut, un assigné, et un graphe de transitions qui suit le workflow réel. */
-function fakeJira(start = 'Nouveau') {
+function fakeJira(start = 'À faire') {
   const state = { status: start, assignee: ACCOUNT as string | null, comments: [] as string[] };
   const transitionsFrom = (s: string) => {
     const i = ORDER.indexOf(s);
@@ -33,30 +33,30 @@ function fakeJira(start = 'Nouveau') {
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
     const p = u.pathname;
 
-    if (p === '/rest/api/3/issue/IOS-7' && method === 'GET') {
+    if (p === '/rest/api/3/issue/PROJ-7' && method === 'GET') {
       return json({
-        key: 'IOS-7',
+        key: 'PROJ-7',
         fields: {
           summary: 'Ajouter feature hello',
           description: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'On veut hello.' }] }] },
-          status: { name: state.status, statusCategory: { key: state.status === 'Fermé' ? 'done' : 'indeterminate' } },
+          status: { name: state.status, statusCategory: { key: state.status === 'Terminé' ? 'done' : 'indeterminate' } },
           reporter: { displayName: 'alice', accountId: 'acc-alice' },
-          assignee: state.assignee ? { displayName: 'Sisyphe iOS', accountId: state.assignee } : null,
+          assignee: state.assignee ? { displayName: 'Robot', accountId: state.assignee } : null,
           labels: [],
-          issuetype: { name: 'Bug PROD' },
+          issuetype: { name: 'Bug' },
           fixVersions: [{ name: '8.42.0' }],
         },
       });
     }
-    if (p === '/rest/api/3/issue/IOS-7/comment') {
+    if (p === '/rest/api/3/issue/PROJ-7/comment') {
       if (method === 'POST') {
         state.comments.push(JSON.stringify(body));
         return json({ id: '1' });
       }
       return json({ comments: [] });
     }
-    if (p === '/rest/api/3/issue/IOS-7/changelog') return json({ values: [{ author: { displayName: 'Victor', accountId: 'acc-victor' }, items: [{ field: 'assignee' }] }] });
-    if (p === '/rest/api/3/issue/IOS-7/transitions') {
+    if (p === '/rest/api/3/issue/PROJ-7/changelog') return json({ values: [{ author: { displayName: 'Victor', accountId: 'acc-victor' }, items: [{ field: 'assignee' }] }] });
+    if (p === '/rest/api/3/issue/PROJ-7/transitions') {
       if (method === 'GET') return json({ transitions: transitionsFrom(state.status) });
       const id = (body as { transition: { id: string } }).transition.id;
       const hop = transitionsFrom(state.status).find((t) => t.id === id);
@@ -64,22 +64,22 @@ function fakeJira(start = 'Nouveau') {
       state.status = hop.to.name;
       return new Response(null, { status: 204 });
     }
-    if (p === '/rest/api/3/issue/IOS-7/assignee' && method === 'PUT') {
+    if (p === '/rest/api/3/issue/PROJ-7/assignee' && method === 'PUT') {
       state.assignee = (body as { accountId: string | null }).accountId;
       return new Response(null, { status: 204 });
     }
-    if (p === '/rest/api/3/search/jql') return json({ issues: [{ key: 'IOS-7' }] });
+    if (p === '/rest/api/3/search/jql') return json({ issues: [{ key: 'PROJ-7' }] });
     return new Response('not found', { status: 404 });
   }) as unknown as typeof fetch;
 
   const tracker = new JiraIssueTracker({
-    site: 'allovoisins.atlassian.net',
-    email: 'bot@allovoisins.com',
+    site: 'acme.atlassian.net',
+    email: 'bot@example.test',
     apiToken: 'jeton',
     projects: [{
-      key: 'IOS', accountId: ACCOUNT, repo: REPO,
-      candidateStatuses: ['Nouveau', 'En analyse'], statusesInOrder: ORDER,
-      inProgressStatus: 'En développement', doneStatus: 'En relecture',
+      key: 'PROJ', accountId: ACCOUNT, repo: REPO,
+      candidateStatuses: ['À faire', 'En analyse'], statusesInOrder: ORDER,
+      inProgressStatus: 'En cours', doneStatus: 'En revue',
     }],
     fetchImpl,
     retry: { attempts: 1, sleep: async () => {} },
@@ -99,13 +99,13 @@ async function harnessOn(jiraTracker: JiraIssueTracker, steps: Parameters<typeof
   h.deps.machine = {
     ...h.deps.machine,
     jira: {
-      site: 'allovoisins.atlassian.net',
-      email: 'bot@allovoisins.com',
+      site: 'acme.atlassian.net',
+      email: 'bot@example.test',
       apiTokenPath: '/dev/null',
       projects: [{
-        key: 'IOS', accountId: ACCOUNT, repo: REPO,
-        candidateStatuses: ['Nouveau', 'En analyse'], statusesInOrder: ORDER,
-        inProgressStatus: 'En développement', doneStatus: 'En relecture',
+        key: 'PROJ', accountId: ACCOUNT, repo: REPO,
+        candidateStatuses: ['À faire', 'En analyse'], statusesInOrder: ORDER,
+        inProgressStatus: 'En cours', doneStatus: 'En revue',
       }],
     },
   };
@@ -113,7 +113,7 @@ async function harnessOn(jiraTracker: JiraIssueTracker, steps: Parameters<typeof
 }
 
 describe('pipeline sur Jira', () => {
-  it('fait avancer le ticket jusqu’à « En relecture » et ouvre la PR sur la release', async () => {
+  it('fait avancer le ticket jusqu’à la colonne de relecture et ouvre la PR sur la release', async () => {
     const j = fakeJira();
     const h = await harnessOn(j.tracker, [{ output: readyVerdict }, { output: report('Créé'), sideEffect: writeFeature('hello\n') }], ['release/8.42.0']);
     const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
@@ -121,7 +121,7 @@ describe('pipeline sur Jira', () => {
 
     expect(done.state).toBe('done');
     // La marche a bien traversé les colonnes intermédiaires, sans en sauter.
-    expect(j.state.status).toBe('En relecture');
+    expect(j.state.status).toBe('En revue');
     expect(j.state.assignee).toBe(ACCOUNT);
     expect(h.source.pulls[0].base).toBe('release/8.42.0');
   });
@@ -135,7 +135,7 @@ describe('pipeline sur Jira', () => {
 
     expect(done.state).toBe('blocked');
     expect(j.state.assignee).toBe('acc-victor');
-    expect(j.state.status).toBe('En développement');
+    expect(j.state.status).toBe('En cours');
     // Le message de relance parle d'assignation, pas de label : le lecteur est sur un ticket Jira.
     expect(j.state.comments.join('\n')).toContain('réassignez-le');
     expect(j.state.comments.join('\n')).not.toContain('label');

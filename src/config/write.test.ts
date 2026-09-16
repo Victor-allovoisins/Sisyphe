@@ -2,6 +2,7 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { jiraProject } from '../../test/fakes/jira-workflow.js';
 import { parse, stringify } from 'yaml';
 import { SANDBOX_BACKEND_ERROR, loadMachineConfig, parseMachineConfig, type MachineConfig } from './machine.js';
 import { expandHome } from './paths.js';
@@ -16,7 +17,7 @@ let current: MachineConfig;
 /** Un corps tel que la page de réglages le poste : des chemins absolus, aucun champ optionnel de trop. */
 const rawInput = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
   github: { appId: 12, installationId: 34, privateKeyPath: keyPath },
-  repos: ['ILokYou/ILokYou-iOS'],
+  repos: ['acme/demo'],
   dataDir: dir,
   ...over,
 });
@@ -47,7 +48,7 @@ describe('validateMachineConfigInput', () => {
   it('accepte une configuration valide', async () => {
     const config = expectOk(await validateMachineConfigInput(rawInput({ maxConcurrentJobs: 3, sandbox: true }), current));
     expect(config.maxConcurrentJobs).toBe(3);
-    expect(config.repos).toEqual(['ILokYou/ILokYou-iOS']);
+    expect(config.repos).toEqual(['acme/demo']);
   });
 
   it("reconnaît ~ et sa forme développée comme le même dataDir, et n'en écrit pas l'expansion", async () => {
@@ -60,16 +61,16 @@ describe('validateMachineConfigInput', () => {
     const tokenPath = join(dir, 'jira-token.txt');
     await writeFile(tokenPath, 'jeton');
     const jira = {
-      site: 'allovoisins.atlassian.net',
-      email: 'bot@allovoisins.com',
+      site: 'acme.atlassian.net',
+      email: 'bot@example.test',
       apiTokenPath: tokenPath,
-      projects: [{ key: 'IOS', accountId: 'acc-sisyphe', repo: 'ILokYou/ILokYou-iOS' }],
+      projects: [jiraProject({ repo: 'acme/demo' })],
     };
     const withJira = parseMachineConfig(stringify({ ...rawInput(), jira }));
     // Le corps posté par la page n'a pas de clé `jira` du tout.
     const config = expectOk(await validateMachineConfigInput(rawInput({ maxConcurrentJobs: 2 }), withJira));
-    expect(config.jira?.projects[0].key).toBe('IOS');
-    expect(config.jira?.projects[0].inProgressStatus).toBe('En développement');
+    expect(config.jira?.projects[0].key).toBe('PROJ');
+    expect(config.jira?.projects[0].inProgressStatus).toBe('En cours');
     expect(config.maxConcurrentJobs).toBe(2);
   });
 
@@ -79,8 +80,8 @@ describe('validateMachineConfigInput', () => {
     const withJira = parseMachineConfig(stringify({
       ...rawInput(),
       jira: {
-        site: 'allovoisins.atlassian.net', email: 'ia+jira@allovoisins.com', apiTokenPath: tokenPath,
-        projects: [{ key: 'IOS', accountId: 'acc', repo: 'ILokYou/ILokYou-iOS' }],
+        site: 'acme.atlassian.net', email: 'bot@example.test', apiTokenPath: tokenPath,
+        projects: [jiraProject({ repo: 'acme/demo' })],
       },
     }));
     const config = expectOk(await validateMachineConfigInput(rawInput({ jira: null }), withJira));
@@ -89,10 +90,10 @@ describe('validateMachineConfigInput', () => {
 
   it('refuse un jeton Jira introuvable', async () => {
     const jira = {
-      site: 'allovoisins.atlassian.net',
-      email: 'bot@allovoisins.com',
+      site: 'acme.atlassian.net',
+      email: 'bot@example.test',
       apiTokenPath: join(dir, 'absent.txt'),
-      projects: [{ key: 'IOS', accountId: 'acc-sisyphe', repo: 'ILokYou/ILokYou-iOS' }],
+      projects: [jiraProject({ repo: 'acme/demo' })],
     };
     const issues = expectIssues(await validateMachineConfigInput(rawInput({ jira }), current));
     expect(issues.map((i) => i.path)).toContain('jira.apiTokenPath');
@@ -226,7 +227,7 @@ describe('writeMachineConfig', () => {
     // Une config posée à la main peut être en 0644 : la copie ne doit pas hériter de ce mode.
     await chmod(configPath, 0o644);
     await writeMachineConfig(configPath, expectOk(await validateMachineConfigInput(rawInput({ repos: ['a/b'] }), current)));
-    expect(parse(await readFile(backup, 'utf8')).repos).toEqual(['ILokYou/ILokYou-iOS']);
+    expect(parse(await readFile(backup, 'utf8')).repos).toEqual(['acme/demo']);
     expect((await loadMachineConfig(configPath)).repos).toEqual(['a/b']);
     expect((await stat(backup)).mode & 0o777).toBe(0o600);
     expect((await stat(configPath)).mode & 0o777).toBe(0o600);
@@ -244,7 +245,7 @@ describe('writeMachineConfig', () => {
     await chmod(dir, 0o700);
 
     expect((await loadMachineConfig(configPath)).repos).toEqual(['a/b']);
-    expect(parse(await readFile(backup, 'utf8')).repos).toEqual(['ILokYou/ILokYou-iOS']);
+    expect(parse(await readFile(backup, 'utf8')).repos).toEqual(['acme/demo']);
   });
 
   it('ne laisse aucun fichier temporaire après un succès', async () => {

@@ -9,7 +9,7 @@ commands:
   build: make build
 `);
 
-const REPO = parseRepo('ILokYou/ILokYou-iOS');
+const REPO = parseRepo('acme/demo');
 
 function issue(tracker?: Issue['tracker']): Issue {
   return {

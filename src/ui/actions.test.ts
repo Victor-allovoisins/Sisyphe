@@ -329,7 +329,7 @@ describe('runAction : jira-accounts', () => {
   it('dit quel fichier de jeton est illisible plutôt que de lever', async () => {
     const res = await runAction(
       'jira-accounts',
-      { site: 'allovoisins.atlassian.net', email: 'a@b.test', apiTokenPath: join(tmpdir(), 'jeton-absent-xyz'), query: 'x' },
+      { site: 'acme.atlassian.net', email: 'a@b.test', apiTokenPath: join(tmpdir(), 'jeton-absent-xyz'), query: 'x' },
       await deps(),
     );
 
@@ -342,7 +342,7 @@ describe('runAction : jira-accounts', () => {
 
     await runAction(
       'jira-accounts',
-      { site: 'allovoisins.atlassian.net', email: 'a@b.test', apiTokenPath: '/dev/null', query: 'x' },
+      { site: 'acme.atlassian.net', email: 'a@b.test', apiTokenPath: '/dev/null', query: 'x' },
       await deps({ client }),
     );
 

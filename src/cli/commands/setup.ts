@@ -5,12 +5,12 @@ import { createInterface } from 'node:readline/promises';
 import { stringify } from 'yaml';
 import { createApp, type App } from '../../app.js';
 import {
-  AGENT_BACKENDS, JIRA_STATUSES_DEFAULT, MachineConfigError, parseMachineConfig, parseMachineConfigAsWritten, type AgentBackend, type MachineConfig,
+  AGENT_BACKENDS, MachineConfigError, parseMachineConfig, parseMachineConfigAsWritten, type AgentBackend, type MachineConfig,
 } from '../../config/machine.js';
 import { writeMachineConfig } from '../../config/write.js';
 import { dataPaths, defaultDataDir, ensureDataDirs, expandHome, machineConfigPath, type DataPaths } from '../../config/paths.js';
 import { parseRepo } from '../../github/source.js';
-import { searchAccounts } from '../../jira/client.js';
+import { projectStatuses, searchAccounts } from '../../jira/client.js';
 import { openDatabase } from '../../store/db.js';
 import type { ServiceManager } from '../../service/index.js';
 import { buildChecks } from './doctor.js';
@@ -125,8 +125,9 @@ interface AskJiraDeps {
   repos: string[];
   existing?: MachineConfig;
   dataDir: string;
-  /** Injecté par les tests : évite tout appel réseau. */
+  /** Injectés par les tests : évitent tout appel réseau. */
   lookup?: typeof searchAccounts;
+  statuses?: typeof projectStatuses;
 }
 
 /**
@@ -166,15 +167,8 @@ export async function askJira(d: AskJiraDeps): Promise<MachineConfig['jira'] | u
     const key = await d.ask(`Projet Jira pour ${repo} (vide = rester sur les issues GitHub)`, prev?.key);
     if (!key) continue;
     const accountId = await resolveAccount({ site, email, apiToken }, d, repo, prev?.accountId, lookup);
-    projects.push({
-      key: key.toUpperCase(),
-      accountId,
-      repo,
-      candidateStatuses: prev?.candidateStatuses ?? ['Nouveau', 'En analyse'],
-      statusesInOrder: prev?.statusesInOrder ?? [...JIRA_STATUSES_DEFAULT],
-      inProgressStatus: prev?.inProgressStatus ?? 'En développement',
-      doneStatus: prev?.doneStatus ?? 'En relecture',
-    });
+    const workflow = await askWorkflow({ site, email, apiToken }, d, key.toUpperCase(), prev);
+    projects.push({ key: key.toUpperCase(), accountId, repo, ...workflow });
   }
   if (projects.length === 0) {
     console.log('Aucun projet Jira renseigné : le suivi reste sur les issues GitHub.');
@@ -182,6 +176,45 @@ export async function askJira(d: AskJiraDeps): Promise<MachineConfig['jira'] | u
   }
   return { site, email, apiTokenPath, projects };
 }
+
+/**
+ * Le workflow du projet : quels statuts déclenchent, dans quel ordre ils s'enchaînent, et où Sisyphe pose le
+ * ticket pendant son travail puis une fois la PR ouverte.
+ *
+ * Sisyphe n'impose aucun vocabulaire — il n'a donc pas de valeur par défaut à proposer. Il lit ce que le
+ * projet déclare et le donne à ranger : l'API rend les statuts sans ordre exploitable, et seul un humain sait
+ * lequel précède l'autre.
+ */
+async function askWorkflow(
+  cfg: { site: string; email: string; apiToken: string },
+  d: AskJiraDeps,
+  key: string,
+  prev: NonNullable<MachineConfig['jira']>['projects'][number] | undefined,
+): Promise<Pick<NonNullable<MachineConfig['jira']>['projects'][number], 'candidateStatuses' | 'statusesInOrder' | 'inProgressStatus' | 'doneStatus'>> {
+  let declared: string[] = [];
+  try {
+    declared = await (d.statuses ?? projectStatuses)(cfg, key);
+  } catch (err) {
+    console.log(`Statuts du projet ${key} illisibles (${err instanceof Error ? err.message : String(err)}) : à saisir à la main.`);
+  }
+  if (declared.length > 0) console.log(`Statuts déclarés par ${key} : ${declared.join(', ')}`);
+
+  const list = (question: string, def?: string) =>
+    d.askValidated(question, (v) => (parseList(v).length > 0 ? null : 'Au moins un statut, séparés par des virgules.'), def);
+
+  const order = parseList(await list(`Ordre du workflow de ${key}, du premier au dernier`, prev?.statusesInOrder.join(', ')));
+  const inList = (label: string, def: string | undefined) =>
+    d.askValidated(label, (v) => (order.some((s) => s.toLowerCase() === v.trim().toLowerCase()) ? null : `Doit figurer dans : ${order.join(', ')}`), def);
+
+  return {
+    candidateStatuses: parseList(await list('Statuts sur lesquels un ticket assigné est pris en charge', prev?.candidateStatuses.join(', ') ?? order[0])),
+    statusesInOrder: order,
+    inProgressStatus: (await inList('Statut pendant le travail', prev?.inProgressStatus)).trim(),
+    doneStatus: (await inList('Statut une fois la PR ouverte', prev?.doneStatus)).trim(),
+  };
+}
+
+const parseList = (v: string): string[] => v.split(',').map((x) => x.trim()).filter(Boolean);
 
 /** Le compte auquel on assignera les tickets de ce dépôt, résolu depuis une adresse ou un nom. */
 async function resolveAccount(

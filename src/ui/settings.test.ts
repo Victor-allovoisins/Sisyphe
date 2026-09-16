@@ -22,7 +22,7 @@ const CONFIG_YAML = `github:
   installationId: 34
   privateKeyPath: ~/.sisyphe/app.pem
 repos:
-  - ILokYou/ILokYou-iOS
+  - acme/demo
 agentBackend: cli
 dataDir: ~/.sisyphe
 `;
@@ -261,9 +261,9 @@ describe('diagnostics', () => {
 
 describe('diskUsage', () => {
   beforeEach(async () => {
-    await seedFile('cache/ILokYou__ILokYou-iOS/DerivedData/a.o', 1000);
-    await seedFile('cache/ILokYou__ILokYou-iOS/b.o', 500);
-    await seedFile('mirrors/ILokYou__ILokYou-iOS.git/packed-refs', 200);
+    await seedFile('cache/acme__acme-iOS/DerivedData/a.o', 1000);
+    await seedFile('cache/acme__acme-iOS/b.o', 500);
+    await seedFile('mirrors/acme__acme-iOS.git/packed-refs', 200);
     await seedFile('work/.gardé', 10);
     await seedFile('logs/sisyphe.log', 300);
     // `jobs/` n'existe pas : un dossier absent vaut 0 octet.
@@ -312,7 +312,7 @@ describe('diskUsage', () => {
 
 describe('createSettingsData : purge', () => {
   beforeEach(async () => {
-    await seedFile('cache/ILokYou__ILokYou-iOS/DerivedData/a.o', 1000);
+    await seedFile('cache/acme__acme-iOS/DerivedData/a.o', 1000);
     await seedFile('cache/b.o', 500);
     await seedFile('mirrors/gardé.git/packed-refs', 200);
   });

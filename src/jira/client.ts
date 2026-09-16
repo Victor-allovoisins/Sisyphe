@@ -397,3 +397,33 @@ export async function searchAccounts(
     .filter((u): u is { accountId: string; displayName?: string; emailAddress?: string } => typeof u.accountId === 'string')
     .map((u) => ({ accountId: u.accountId, displayName: u.displayName ?? u.accountId, emailAddress: u.emailAddress }));
 }
+
+/**
+ * Les statuts déclarés par un projet Jira, dédoublonnés.
+ *
+ * Sisyphe n'impose aucun workflow : il faut bien que `sisyphe setup` sache lesquels proposer. L'API les rend
+ * groupés par type de ticket et sans ordre utile — c'est à l'humain de les ranger, lui seul sait ce qui
+ * précède quoi.
+ */
+export async function projectStatuses(
+  cfg: { site: string; email: string; apiToken: string; fetchImpl?: typeof fetch },
+  projectKey: string,
+): Promise<string[]> {
+  const doFetch = cfg.fetchImpl ?? fetch;
+  const path = `/rest/api/3/project/${encodeURIComponent(projectKey)}/statuses`;
+  const res = await doFetch(`https://${cfg.site}${path}`, {
+    headers: {
+      Authorization: `Basic ${Buffer.from(`${cfg.email}:${cfg.apiToken}`).toString('base64')}`,
+      Accept: 'application/json',
+    },
+  });
+  if (!res.ok) throw new JiraHttpError(res.status, 'GET', path, await res.text().catch(() => ''));
+  const types = (await res.json()) as { statuses?: { name?: string }[] }[];
+  const names: string[] = [];
+  for (const t of types) {
+    for (const st of t.statuses ?? []) {
+      if (st.name && !names.includes(st.name)) names.push(st.name);
+    }
+  }
+  return names;
+}

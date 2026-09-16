@@ -22,7 +22,7 @@ describe('paths', () => {
   });
 
   it('dérive une clé de repo sans slash', () => {
-    expect(repoKey('ILokYou/ILokYou-iOS')).toBe('ILokYou__ILokYou-iOS');
+    expect(repoKey('acme/demo')).toBe('acme__demo');
   });
 
   it('construit l’arborescence', () => {
