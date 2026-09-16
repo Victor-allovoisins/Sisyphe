@@ -19,6 +19,8 @@ export interface AgentRunOptions {
   disallowedTools: string[];
   /** Garde-fou d'écriture : chaque backend le traduit dans son propre mécanisme de hook PreToolUse. */
   pathGuard?: { worktreePath: string; protectedPatterns: string[] };
+  /** Garde-fou Bash : `true` n'autorise que `sisyphe jira …`. Utilisé par la phase `jira`, qui n'a rien d'autre à lancer. */
+  bashGuard?: boolean;
   /** Environnement du processus agent (agentEnv : daemon épuré + SISYPHE_* + clé API). */
   env: Record<string, string>;
   timeoutMs: number;

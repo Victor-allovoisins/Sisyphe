@@ -10,6 +10,7 @@ const FAKE_CLAUDE = fileURLToPath(new URL('../../../test/fakes/fake-claude.sh', 
 // Le runner refuse de démarrer si le script du hook n'existe pas : on pointe sur un fichier réel
 // (la source du hook, restée dans `src/agent/`), jamais exécuté ici puisque le faux `claude` n'appelle aucun hook.
 const HOOK_SCRIPT = fileURLToPath(new URL('../path-guard-cli.ts', import.meta.url));
+const BASH_HOOK_SCRIPT = fileURLToPath(new URL('../bash-guard-cli.ts', import.meta.url));
 
 const initLine = JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sess-1', cwd: '/wt' });
 const assistantLine = JSON.stringify({
@@ -64,7 +65,7 @@ async function ctx(o: { lines?: string[]; rawScript?: string; lateLines?: string
   };
 }
 
-const runner = () => new ClaudeCodeAgentRunner({ claudeBin: FAKE_CLAUDE, hookScript: HOOK_SCRIPT });
+const runner = () => new ClaudeCodeAgentRunner({ claudeBin: FAKE_CLAUDE, hookScript: HOOK_SCRIPT, bashHookScript: BASH_HOOK_SCRIPT });
 
 /** Un argument vide est une ligne vide : on ne filtre que le saut de ligne final. */
 async function readArgs(file: string): Promise<string[]> {
@@ -142,6 +143,45 @@ describe('ClaudeCodeAgentRunner : arguments', () => {
         PreToolUse: [{ matcher: 'Edit|Write', hooks: [{ type: 'command', command: `"${process.execPath}" "${HOOK_SCRIPT}"`, timeout: 15 }] }],
       },
     });
+  });
+
+  it('avec bashGuard : le hook Bash s’ajoute au fichier de settings', async () => {
+    const c = await ctx({
+      lines: [initLine, resultLine()],
+      opts: { pathGuard: { worktreePath: '/wt', protectedPatterns: [] }, bashGuard: true },
+    });
+    await runner().run(c.opts);
+    const args = await readArgs(c.argsFile);
+    expect(JSON.parse(await readFile(valueOf(args, '--settings')!, 'utf8'))).toEqual({
+      hooks: {
+        PreToolUse: [
+          { matcher: 'Edit|Write', hooks: [{ type: 'command', command: `"${process.execPath}" "${HOOK_SCRIPT}"`, timeout: 15 }] },
+          { matcher: 'Bash', hooks: [{ type: 'command', command: `"${process.execPath}" "${BASH_HOOK_SCRIPT}"`, timeout: 15 }] },
+        ],
+      },
+    });
+  });
+
+  // Sans ce cas, `bashGuard` seul n'écrirait aucun fichier de settings : `--settings` disparaîtrait et
+  // l'agent tournerait sans garde Bash du tout, alors qu'on l'a justement demandée.
+  it('bashGuard sans pathGuard : --settings est quand même passé, avec le hook Bash', async () => {
+    const c = await ctx({ lines: [initLine, resultLine()], opts: { bashGuard: true } });
+    await runner().run(c.opts);
+    const args = await readArgs(c.argsFile);
+    const settings = JSON.parse(await readFile(valueOf(args, '--settings')!, 'utf8')) as {
+      hooks: { PreToolUse: Array<{ matcher: string }> };
+    };
+    expect(settings.hooks.PreToolUse.map((e) => e.matcher)).toEqual(['Edit|Write', 'Bash']);
+  });
+
+  it('sans bashGuard : aucun hook Bash dans les settings', async () => {
+    const c = await ctx({ lines: [initLine, resultLine()], opts: { pathGuard: { worktreePath: '/wt', protectedPatterns: [] } } });
+    await runner().run(c.opts);
+    const args = await readArgs(c.argsFile);
+    const settings = JSON.parse(await readFile(valueOf(args, '--settings')!, 'utf8')) as {
+      hooks: { PreToolUse: Array<{ matcher: string }> };
+    };
+    expect(settings.hooks.PreToolUse.map((e) => e.matcher)).toEqual(['Edit|Write']);
   });
 });
 
@@ -269,7 +309,23 @@ describe('ClaudeCodeAgentRunner : arrêts', () => {
 describe('ClaudeCodeAgentRunner : refus de démarrer', () => {
   it('hookScript absent avec pathGuard : run() rejette et ne lance rien', async () => {
     const c = await ctx({ lines: [resultLine()], opts: { pathGuard: { worktreePath: '/wt', protectedPatterns: [] } } });
-    const broken = new ClaudeCodeAgentRunner({ claudeBin: FAKE_CLAUDE, hookScript: '/introuvable/path-guard-cli.js' });
+    const broken = new ClaudeCodeAgentRunner({ claudeBin: FAKE_CLAUDE, hookScript: '/introuvable/path-guard-cli.js', bashHookScript: BASH_HOOK_SCRIPT });
+    await expect(broken.run(c.opts)).rejects.toThrow(/Garde-fou introuvable/);
+    await expect(readFile(c.argsFile, 'utf8')).rejects.toThrow();
+  });
+
+  it('script du garde Bash absent avec bashGuard : run() rejette plutôt que de tourner sans garde', async () => {
+    const c = await ctx({ lines: [resultLine()], opts: { bashGuard: true } });
+    const broken = new ClaudeCodeAgentRunner({ claudeBin: FAKE_CLAUDE, hookScript: HOOK_SCRIPT, bashHookScript: '/introuvable/bash-guard-cli.js' });
+    await expect(broken.run(c.opts)).rejects.toThrow(/Garde-fou introuvable/);
+    await expect(readFile(c.argsFile, 'utf8')).rejects.toThrow();
+  });
+
+  // Le fichier de settings référence toujours le garde de chemins, même quand seul `bashGuard` est demandé :
+  // s'il manque, Claude Code ignorerait un hook cassé en silence.
+  it('bashGuard seul avec un garde de chemins introuvable : run() rejette aussi', async () => {
+    const c = await ctx({ lines: [resultLine()], opts: { bashGuard: true } });
+    const broken = new ClaudeCodeAgentRunner({ claudeBin: FAKE_CLAUDE, hookScript: '/introuvable/path-guard-cli.js', bashHookScript: BASH_HOOK_SCRIPT });
     await expect(broken.run(c.opts)).rejects.toThrow(/Garde-fou introuvable/);
     await expect(readFile(c.argsFile, 'utf8')).rejects.toThrow();
   });
