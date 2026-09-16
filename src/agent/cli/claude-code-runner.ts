@@ -3,7 +3,7 @@ import { stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { zeroUsage } from '../../store/types.js';
-import { agentPluginPath } from '../plugin-path.js';
+import { agentPluginPath, toolsWithSkill } from '../plugin-path.js';
 import type { AgentResult, AgentRunOptions, AgentRunner } from '../runner.js';
 import { summarizeResult } from '../sdk-runner.js';
 import { callSlug, runCliProcess } from './process.js';
@@ -65,8 +65,10 @@ export function buildCliArgs(o: AgentRunOptions, files: { appendPath: string; se
   ];
   if (files.settingsPath) args.push('--settings', files.settingsPath);
   // `--tools ""` est la façon documentée de n'autoriser aucun outil : une liste vide ne doit pas
-  // faire disparaître le drapeau, ce serait « tous les outils ».
-  args.push('--tools', ...(o.allowedTools.length ? o.allowedTools : ['']));
+  // faire disparaître le drapeau, ce serait « tous les outils ». `Skill` s'ajoute ici et pas à
+  // `--allowedTools`, qui reste la liste demandée par l'appelant (voir `toolsWithSkill`).
+  const tools = toolsWithSkill(o);
+  args.push('--tools', ...(tools.length ? tools : ['']));
   if (o.allowedTools.length) args.push('--allowedTools', ...o.allowedTools);
   if (o.disallowedTools.length) args.push('--disallowedTools', ...o.disallowedTools);
   // Absent = la CLI choisit son modèle par défaut.

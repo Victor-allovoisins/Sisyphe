@@ -2,7 +2,7 @@ import { query as sdkQuery, type Options, type SDKResultMessage } from '@anthrop
 import { appendFile } from 'node:fs/promises';
 import { zeroUsage, type AgentUsage } from '../store/types.js';
 import { bashGuardHook, pathGuardHook } from './hooks.js';
-import { agentPluginPath } from './plugin-path.js';
+import { agentPluginPath, toolsWithSkill } from './plugin-path.js';
 import type { AgentResult, AgentRunOptions, AgentRunner, AgentStopReason } from './runner.js';
 
 /**
@@ -42,7 +42,9 @@ export function buildOptions(o: AgentRunOptions, cfg: SdkRunnerConfig, controlle
     settingSources: [],
     managedSettings: { strictPluginOnlyCustomization: ['hooks', 'mcp'] },
     permissionMode: 'dontAsk',
-    tools: o.allowedTools,
+    // `tools` est le jeu d'outils qui existent, `allowedTools` ceux qui sont auto-approuvés : seul le
+    // premier gagne `Skill` quand des skills sont demandés. Voir `toolsWithSkill`.
+    tools: toolsWithSkill(o),
     allowedTools: o.allowedTools,
     disallowedTools: o.disallowedTools,
     maxTurns: o.maxTurns,

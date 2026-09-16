@@ -128,6 +128,22 @@ describe('buildOptions', () => {
     expect(plain.skills).toBeUndefined();
     expect(buildOptions(runOptions({ skills: [] }), { sandbox: false }, new AbortController(), () => undefined).plugins).toBeUndefined();
   });
+
+  /**
+   * Sans `Skill` dans `tools`, le skill se charge et reste malgré tout impossible à invoquer, sans le
+   * moindre refus : un test par backend est le seul filet contre cet échec silencieux.
+   */
+  it("l'outil Skill s'ajoute à tools, jamais à allowedTools, et seulement si des skills sont demandés", () => {
+    const withSkills = buildOptions(runOptions({ skills: ['sisyphe:sisyphe-jira'] }), { sandbox: false }, new AbortController(), () => undefined);
+    expect(withSkills.tools).toEqual(['Read', 'Glob', 'Skill']);
+    expect(withSkills.allowedTools).toEqual(['Read', 'Glob']);
+
+    for (const o of [runOptions(), runOptions({ skills: [] })]) {
+      const opts = buildOptions(o, { sandbox: false }, new AbortController(), () => undefined);
+      expect(opts.tools).toEqual(['Read', 'Glob']);
+      expect(opts.allowedTools).not.toContain('Skill');
+    }
+  });
 });
 
 function fakeQuery(messages: SDKMessage[], opts: { hangUntilAbort?: boolean } = {}): QueryFn {

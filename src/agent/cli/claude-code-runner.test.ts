@@ -81,6 +81,13 @@ const valuesOf = (args: string[], flag: string, n: number): string[] => args.sli
 
 const schema = { type: 'object', properties: { answer: { type: 'string' } }, required: ['answer'] };
 
+/** Options minimales pour les tests qui appellent `buildCliArgs` sans lancer de processus. */
+const argOptions = (): AgentRunOptions => ({
+  cwd: '/jobs/job-1', systemPromptAppend: 'append', prompt: 'p', maxTurns: 3, maxBudgetUsd: 1,
+  allowedTools: ['Bash'], disallowedTools: [], env: {}, timeoutMs: 1000,
+  signal: new AbortController().signal, transcriptPath: '/t.jsonl',
+});
+
 describe('ClaudeCodeAgentRunner : arguments', () => {
   it('passe les garde-fous, la liste blanche, le schéma, le prompt sur stdin et le system prompt par fichier', async () => {
     const c = await ctx({
@@ -186,16 +193,30 @@ describe('ClaudeCodeAgentRunner : arguments', () => {
   });
 
   it('avec des skills : --plugin-dir pointe sur le plugin livré avec Sisyphe ; sans, le drapeau disparaît', () => {
-    const base: AgentRunOptions = {
-      cwd: '/jobs/job-1', systemPromptAppend: 'append', prompt: 'p', maxTurns: 3, maxBudgetUsd: 1,
-      allowedTools: ['Bash'], disallowedTools: [], env: {}, timeoutMs: 1000,
-      signal: new AbortController().signal, transcriptPath: '/t.jsonl',
-    };
     const files = { appendPath: '/tmp/append.md' };
-    const withSkills = buildCliArgs({ ...base, skills: ['sisyphe:sisyphe-jira'] }, files);
+    const withSkills = buildCliArgs({ ...argOptions(), skills: ['sisyphe:sisyphe-jira'] }, files);
     expect(valueOf(withSkills, '--plugin-dir')).toBe(agentPluginPath());
-    expect(buildCliArgs(base, files)).not.toContain('--plugin-dir');
-    expect(buildCliArgs({ ...base, skills: [] }, files)).not.toContain('--plugin-dir');
+    expect(buildCliArgs(argOptions(), files)).not.toContain('--plugin-dir');
+    expect(buildCliArgs({ ...argOptions(), skills: [] }, files)).not.toContain('--plugin-dir');
+  });
+
+  /**
+   * Sans `Skill` dans `--tools`, le skill se charge et reste malgré tout impossible à invoquer, sans le
+   * moindre refus : un test par backend est le seul filet contre cet échec silencieux.
+   */
+  it("l'outil Skill s'ajoute à --tools, jamais à --allowedTools, et seulement si des skills sont demandés", () => {
+    const files = { appendPath: '/tmp/append.md' };
+    const withSkills = buildCliArgs({ ...argOptions(), skills: ['sisyphe:sisyphe-jira'] }, files);
+    expect(valuesOf(withSkills, '--tools', 2)).toEqual(['Bash', 'Skill']);
+    expect(valuesOf(withSkills, '--allowedTools', 1)).toEqual(['Bash']);
+    // Une seule occurrence en tout : `Skill` est dans --tools et nulle part ailleurs.
+    expect(withSkills.filter((a) => a === 'Skill')).toHaveLength(1);
+
+    for (const skills of [undefined, []]) {
+      const args = buildCliArgs({ ...argOptions(), skills }, files);
+      expect(valuesOf(args, '--tools', 1)).toEqual(['Bash']);
+      expect(args).not.toContain('Skill');
+    }
   });
 });
 
