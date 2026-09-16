@@ -36,6 +36,17 @@ export interface Issue {
   state: 'open' | 'closed';
   labels: string[];
   comments: IssueComment[];
+  /**
+   * Ce que seul un traqueur de tickets riche sait dire, et dont GitHub n'a pas d'équivalent : absent sur
+   * une issue GitHub. La branche de base d'un ticket Jira se déduit de `fixVersions` et de `issueType`.
+   */
+  tracker?: {
+    /** Clé complète, `IOS-885` : pour l'affichage et les liens, jamais pour identifier un job. */
+    key: string;
+    issueType: string;
+    fixVersions: string[];
+    status: string;
+  };
 }
 
 export type StatusLabel = 'in-progress' | 'blocked' | 'done' | 'failed';
@@ -69,10 +80,10 @@ export interface TriggerCheck {
 }
 
 /**
- * Tout ce que Sisyphe demande à la forge. Une implémentation GitHub en v1,
- * une fake pour les tests. L'implémentation connaît le label trigger.
+ * Le suivi des tickets : lister, lire, commenter, marquer. C'est la partie qui migre vers Jira ;
+ * elle ne connaît rien du dépôt git. L'implémentation connaît le label trigger.
  */
-export interface IssueSource {
+export interface IssueTracker {
   /** Issues ouvertes portant le label trigger et aucun label de statut. */
   listCandidates(repo: RepoRef): Promise<IssueRef[]>;
   listWithStatus(repo: RepoRef, status: StatusLabel): Promise<IssueRef[]>;
@@ -85,8 +96,21 @@ export interface IssueSource {
   /** Pose ce label de statut et retire les autres ; null retire tout statut. */
   setStatus(ref: IssueRef, status: StatusLabel | null): Promise<void>;
   comment(ref: IssueRef, markdown: string): Promise<void>;
+  /**
+   * Issue `blocked` : si son dernier commentaire vient de quelqu'un d'autre que nous et que cette personne a
+   * l'accès write/maintain/admin, retire le statut (candidate au prochain poll) et renvoie true. Sinon false.
+   */
+  resumeIfCommented(ref: IssueRef): Promise<boolean>;
   /** Ouverte et label trigger toujours présent. */
   isStillActive(ref: IssueRef): Promise<boolean>;
+  ensureLabels(repo: RepoRef): Promise<void>;
+}
+
+/**
+ * La forge git : cloner, pousser, ouvrir une PR. Reste GitHub quel que soit le suivi de tickets choisi,
+ * parce qu'aucun traqueur ne sait héberger une branche.
+ */
+export interface Forge {
   getDefaultBranch(repo: RepoRef): Promise<string>;
   /** URL HTTPS avec token d'installation, valide environ une heure : à ré-obtenir juste avant chaque fetch ou push, jamais mémorisée au-delà d'une opération. */
   getAuthenticatedRemoteUrl(repo: RepoRef): Promise<string>;
@@ -95,5 +119,7 @@ export interface IssueSource {
   /** Recherche la PR ouverte dont la branche source est headBranch ; les PR fermées ou fusionnées ne comptent pas. */
   findPullRequest(repo: RepoRef, headBranch: string): Promise<PullRef | null>;
   getPullRequestState(ref: PullRef): Promise<PullRequestState>;
-  ensureLabels(repo: RepoRef): Promise<void>;
 }
+
+/** Ce que GitHub assure aujourd'hui à lui seul : les deux rôles. */
+export interface IssueSource extends IssueTracker, Forge {}

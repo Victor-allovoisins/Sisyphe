@@ -5,7 +5,9 @@
 #
 #   ./install.sh [--dry-run] [--no-setup] [--no-pull]
 #
-# Relancer le script = mettre à jour : git pull --ff-only puis rebuild.
+# Relancer le script = mettre à jour : git pull --ff-only, rebuild, puis
+# redémarrage du service s il tournait — le daemon exécute dist/, qu un rebuild
+# ne change pas pour un processus déjà lancé.
 # Le script est lu une fois au lancement : une version récupérée par le
 # git pull de l étape 5 ne prend effet qu au lancement suivant (pas de ré-exec).
 
@@ -420,6 +422,13 @@ fi
 
 step "Sisyphe (build et lien global)"
 printf '  répertoire : %s\n' "$SCRIPT_DIR"
+# État du service relevé maintenant, avant que le build ne remplace dist/ : après, la commande
+# « sisyphe » pointerait sur des fichiers en cours de réécriture. C est lui qui décide, plus bas,
+# s il faut redémarrer — une mise à jour ne doit pas démarrer un daemon qu on avait laissé arrêté.
+WAS_RUNNING=0
+if [ "$DRY_RUN" != 1 ] && have sisyphe && sisyphe service status 2>/dev/null | grep -q 'running : true'; then
+	WAS_RUNNING=1
+fi
 if [ "$NO_PULL" = 1 ]; then
 	printf '  mise à jour ignorée (--no-pull)\n'
 elif ! have git; then
@@ -462,7 +471,22 @@ else
 	run sisyphe setup
 fi
 
-# ------------------------------------------------------------------ 7. épilogue
+# --------------------------------------------------------- 7. redémarrage du service
+
+step "Service"
+if [ "$DRY_RUN" = 1 ]; then
+	printf '  redémarré seulement s il tournait avant la mise à jour\n'
+elif [ "$WAS_RUNNING" = 1 ]; then
+	printf '  le daemon tournait : redémarrage sur la nouvelle version\n'
+	# Un job en cours est repris au démarrage suivant par la réconciliation : on ne l attend pas.
+	if ! run sisyphe service stop || ! run sisyphe service start; then
+		printf '  redémarrage impossible : relancer « sisyphe service start »\n'
+	fi
+else
+	printf '  daemon arrêté : rien à redémarrer\n'
+fi
+
+# ------------------------------------------------------------------ 8. épilogue
 
 step "Prochaines étapes"
 if [ "$DRY_RUN" = 1 ]; then

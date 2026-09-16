@@ -3,6 +3,7 @@ import { SANDBOX_BACKEND_ERROR, loadMachineConfig, type MachineConfig } from './
 import { dataPaths, ensureDataDirs, machineConfigPath, type DataPaths } from './config/paths.js';
 import { Git } from './git/git.js';
 import { GitHubIssueSource } from './github/client.js';
+import { JiraIssueTracker } from './jira/client.js';
 import type { PipelineDeps } from './jobs/pipeline.js';
 import { createLogger } from './log/logger.js';
 import { ActionStore } from './store/actions.js';
@@ -14,7 +15,10 @@ export interface App {
   machine: MachineConfig;
   paths: DataPaths;
   deps: PipelineDeps;
+  /** Toujours présent : c'est la forge, et elle reste GitHub même quand le suivi est sur Jira. */
   github: GitHubIssueSource;
+  /** Présent seulement quand la section `jira` est configurée. `doctor` s'en sert. */
+  jira?: JiraIssueTracker;
 }
 
 export { machineConfigPath };
@@ -45,9 +49,20 @@ export async function createApp(opts: { logToFile?: boolean; needsAgent?: boolea
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(`Impossible d'initialiser le client GitHub : ${message}. Vérifier github.privateKeyPath dans ${configPath}.`);
   }
+  // Le suivi des tickets bascule sur Jira dès que la section est configurée ; la forge reste GitHub
+  // dans tous les cas — aucun traqueur n'héberge une branche.
+  let jira: JiraIssueTracker | undefined;
+  if (machine.jira) {
+    try {
+      jira = await JiraIssueTracker.fromFiles({ ...machine.jira, log: log.child({ component: 'jira' }) });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`Impossible d'initialiser le client Jira : ${message}. Vérifier jira.apiTokenPath dans ${configPath}.`);
+    }
+  }
   const agent = createAgentRunner(machine.agentBackend, { sandbox: machine.sandbox });
   const deps: PipelineDeps = {
-    store: new JobStore(db), phases: new PhaseStore(db), actions: new ActionStore(db), source: github, agent, git: new Git(paths), paths, machine, log, env: process.env,
+    store: new JobStore(db), phases: new PhaseStore(db), actions: new ActionStore(db), source: jira ?? github, forge: github, agent, git: new Git(paths), paths, machine, log, env: process.env,
   };
-  return { machine, paths, deps, github };
+  return { machine, paths, deps, github, jira };
 }

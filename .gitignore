@@ -3,3 +3,6 @@ dist/
 *.log
 .DS_Store
 .vitest/
+
+# Archive du skill : régénérable depuis skills/signaler-un-bug/
+skills/*.zip

@@ -12,6 +12,8 @@ import type { DataPaths } from '../config/paths.js';
 import { validateMachineConfigInput, writeMachineConfig, type ConfigIssue } from '../config/write.js';
 import { DaemonUnreachableError } from '../daemon/control-client.js';
 import type { CommandResult, ControlArgs, ControlCommand, DaemonStatus, ReloadResult } from '../daemon/control-types.js';
+import { expandHome } from '../config/paths.js';
+import { searchAccounts } from '../jira/client.js';
 import { realExec, type Exec } from '../service/exec.js';
 import { launchdErrLogPath } from '../service/launchd.js';
 import { detachedLogPath } from '../service/none.js';
@@ -46,8 +48,8 @@ const TIMEOUT_MESSAGE = "Le daemon n'a pas répondu à temps ; l'action a peut-�
  * enregistrement se journalise en `reload` et une purge en `purge`, et seulement quand le daemon répond.
  */
 export const UI_ACTIONS = [
-  'cancel', 'retry', 'enqueue', 'poll', 'pause', 'resume', 'stop', 'start', 'settings', 'purge-cache',
-] as const satisfies readonly (ActionName | 'settings' | 'purge-cache')[];
+  'cancel', 'retry', 'enqueue', 'poll', 'pause', 'resume', 'stop', 'start', 'settings', 'purge-cache', 'jira-accounts',
+] as const satisfies readonly (ActionName | 'settings' | 'purge-cache' | 'jira-accounts')[];
 export type UiActionName = (typeof UI_ACTIONS)[number];
 
 /**
@@ -138,6 +140,15 @@ const BODY_SCHEMAS = {
   // `validateMachineConfigInput`, qui rend le détail par champ que ce schéma ne saurait pas produire.
   settings: z.unknown(),
   'purge-cache': emptyBody,
+  // Les identifiants viennent du formulaire et non du fichier : on doit pouvoir chercher un compte avant
+  // d'avoir enregistré quoi que ce soit. `site` est borné aux hôtes Atlassian — sans quoi la page pourrait
+  // faire poster le contenu du fichier de jeton, qui sert de mot de passe, vers un hôte quelconque.
+  'jira-accounts': z.strictObject({
+    site: z.string().regex(/^[a-z0-9-]+\.atlassian\.net$/, 'hôte attendu : xxx.atlassian.net'),
+    email: z.string().email(),
+    apiTokenPath: z.string().min(1),
+    query: z.string().min(1).max(200),
+  }),
 } as const satisfies Record<UiActionName, z.ZodType>;
 
 const ok = (result: unknown): ActionResponse => ({ status: 200, body: { ok: true, result } });
@@ -254,6 +265,35 @@ async function saveSettings(raw: unknown, deps: RunActionDeps): Promise<ActionRe
   return ok(await reloadAfterSave(deps, [...hot, ...restart]));
 }
 
+interface JiraLookupInput {
+  site: string;
+  email: string;
+  apiTokenPath: string;
+  query: string;
+}
+
+/**
+ * Cherche un compte Jira pour la page de réglages, afin que personne n'ait à saisir un `accountId` à la main.
+ *
+ * Le jeton est lu ici et ne repart jamais : la réponse ne porte que des comptes. Un chemin illisible ou un
+ * refus de Jira deviennent un message, pas une exception — la page affiche la raison sous le champ.
+ */
+async function lookupJiraAccounts(input: JiraLookupInput): Promise<ActionResponse> {
+  let apiToken: string;
+  try {
+    apiToken = (await readFile(expandHome(input.apiTokenPath), 'utf8')).trim();
+  } catch (err) {
+    return fail(400, `Jeton illisible (${input.apiTokenPath}) : ${messageOf(err)}`);
+  }
+  if (!apiToken) return fail(400, `Le fichier ${input.apiTokenPath} est vide.`);
+  try {
+    const accounts = await searchAccounts({ site: input.site, email: input.email, apiToken }, input.query);
+    return ok({ accounts });
+  } catch (err) {
+    return fail(502, `Recherche Jira impossible : ${messageOf(err)}`);
+  }
+}
+
 /** Demande au daemon de relire le fichier qui vient d'être écrit ; ne lève jamais, l'écriture ayant abouti. */
 async function reloadAfterSave(deps: RunActionDeps, changed: MachineConfigField[]): Promise<SettingsResult> {
   try {
@@ -331,8 +371,14 @@ export async function runAction(name: string, body: unknown, deps: RunActionDeps
 }
 
 async function dispatch(action: UiActionName, body: unknown, deps: RunActionDeps): Promise<ActionResponse> {
-  // `settings` d'abord : son corps (`unknown`) élargirait sinon le type du corps validé de toutes les autres.
+  // `settings` et `jira-accounts` d'abord, pour la même raison : leurs corps élargiraient le type du corps
+  // validé de toutes les autres actions, qui doit rester assignable aux arguments du daemon.
   if (action === 'settings') return saveSettings(body, deps);
+  if (action === 'jira-accounts') {
+    const lookup = BODY_SCHEMAS['jira-accounts'].safeParse(body);
+    if (!lookup.success) return fail(400, `Arguments invalides : ${issuesOf(lookup.error)}`);
+    return lookupJiraAccounts(lookup.data);
+  }
   const parsed = BODY_SCHEMAS[action].safeParse(body);
   if (!parsed.success) return fail(400, `Arguments invalides : ${issuesOf(parsed.error)}`);
   if (action === 'purge-cache') return purgeBuildCache(deps);

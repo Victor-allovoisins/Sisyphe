@@ -10,6 +10,11 @@ describe('slugify', () => {
     expect(s.length).toBeLessThanOrEqual(40);
     expect(s.endsWith('-')).toBe(false);
   });
+  it('accepte un autre séparateur, sans en laisser traîner un à la fin', () => {
+    expect(slugify('Fix crash au login', 40, '_')).toBe('fix_crash_au_login');
+    // La coupe tombe pile sur le séparateur : il ne doit pas rester en fin de slug.
+    expect(slugify('a'.repeat(39) + ' b', 40, '_')).toBe('a'.repeat(39));
+  });
   it('retombe sur "issue" si rien ne reste', () => {
     expect(slugify('🚀🚀🚀')).toBe('issue');
   });
@@ -20,8 +25,16 @@ describe('slugify', () => {
 });
 
 describe('branchName', () => {
-  it('assemble préfixe, numéro et slug', () => {
-    expect(branchName('feature/', 42, 'Fix crash au login')).toBe('feature/issue-42-fix-crash-au-login');
+  it('suit la convention AlloVoisins : slug snake_case puis numéro', () => {
+    expect(branchName('feature/', 42, 'Fix crash au login')).toBe('feature/fix_crash_au_login_42');
+  });
+  it("reprend l'exemple de la référence av-tools", () => {
+    expect(branchName('feature/', 517, 'Stripe coupons')).toBe('feature/stripe_coupons_517');
+  });
+  it('reste un nom de branche valide quand le titre ne donne rien', () => {
+    const b = branchName('backlog/', 885, '🚀🚀🚀');
+    expect(b).toBe('backlog/issue_885');
+    expect(isValidBranchName(b)).toBe(true);
   });
 });
 

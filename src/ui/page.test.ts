@@ -35,6 +35,25 @@ describe('PAGE_HTML', () => {
     expect(PAGE_HTML).toContain("'/api/report?since='");
   });
 
+  it('expose un bloc Jira qui ne manipule que le chemin du jeton, jamais sa valeur', () => {
+    expect(PAGE_HTML).toContain('id="set-jira-site"');
+    expect(PAGE_HTML).toContain('id="set-jira-email"');
+    expect(PAGE_HTML).toContain('id="set-jira-token"');
+    expect(PAGE_HTML).toContain('Jeton API (chemin)');
+    // Le compte se cherche côté serveur : aucun champ ne demande un accountId brut.
+    expect(PAGE_HTML).toContain("api('jira-accounts'");
+    expect(PAGE_HTML).not.toContain('placeholder="accountId"');
+    // Le nom d'affichage reste côté page : le schéma du serveur est strict et refuserait la clé.
+    expect(PAGE_HTML).toContain('function cleanJiraProject');
+    expect(PAGE_HTML).not.toContain('accountDisplay:');
+  });
+
+  it('permet de retirer le suivi Jira, pas seulement de l’ajouter', () => {
+    // Un null explicite : sans lui le serveur reporterait l'ancienne section, et le retrait serait impossible.
+    expect(PAGE_HTML).toContain('config.jira = (site && email && token && settings.jira.projects.length)');
+    expect(PAGE_HTML).toContain(': null;');
+  });
+
   it('ajoute un quatrième onglet Réglages, avec son formulaire groupé', () => {
     expect(PAGE_HTML).toContain('data-tab="settings"');
     expect(PAGE_HTML).toContain('id="view-settings"');

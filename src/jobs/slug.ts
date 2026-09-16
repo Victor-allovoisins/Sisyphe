@@ -1,16 +1,22 @@
 /**
- * Titre → slug kebab-case ASCII : toujours `[a-z0-9-]+`, jamais vide, jamais terminé par un tiret.
- * Donc toujours un composant de ref git valide ; la validité du préfixe est l'affaire de la config.
+ * Titre → slug ASCII : toujours `[a-z0-9]` séparés par `separator`, jamais vide, jamais terminé par le
+ * séparateur. Donc toujours un composant de ref git valide ; la validité du préfixe est l'affaire de la config.
  */
-export function slugify(title: string, maxLength = 40): string {
+export function slugify(title: string, maxLength = 40, separator = '-'): string {
   const ascii = title.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-  const slug = ascii.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-  const cut = slug.slice(0, maxLength).replace(/-+$/g, '');
-  return cut.length > 0 ? cut : 'issue';
+  const words = ascii.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w !== '');
+  const cut = words.join(separator).slice(0, maxLength);
+  const trimmed = separator === '' ? cut : cut.replace(new RegExp(`${separator}+$`), '');
+  return trimmed.length > 0 ? trimmed : 'issue';
 }
 
+/**
+ * Convention AlloVoisins : `{prefix}{slug_snake_case}_{numero}`, par exemple `feature/stripe_coupons_517`
+ * pour IOS-517. Le numéro seul, jamais la clé complète ; snake_case, jamais de tiret dans le slug — sinon
+ * la branche ne ressemble plus à celles que l'équipe ouvre à la main et les conventions divergent en silence.
+ */
 export function branchName(prefix: string, issueNumber: number, title: string): string {
-  return `${prefix}issue-${issueNumber}-${slugify(title)}`;
+  return `${prefix}${slugify(title, 40, '_')}_${issueNumber}`;
 }
 
 /**

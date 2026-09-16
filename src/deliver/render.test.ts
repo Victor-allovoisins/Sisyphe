@@ -3,8 +3,7 @@ import { emptyFlags, type Job, type Phase } from '../store/types.js';
 import type { VerifyResult } from '../verify/verify.js';
 import {
   jobMarker, renderBlockedComment, renderConfigProblemComment, renderDoneComment,
-  renderProtectedPathsComment, renderSecretsComment,
-} from './comments.js';
+  renderProtectedPathsComment, renderSecretsComment, labelRelaunch } from './comments.js';
 import { renderPrBody } from './pr-body.js';
 import { clampForGitHub, sanitizeCodeSpan, sanitizeModelText } from './sanitize.js';
 
@@ -113,23 +112,37 @@ describe('sanitizeModelText', () => {
 });
 
 describe('comments', () => {
-  it('renderBlockedComment liste les questions et la consigne de relance', () => {
-    const c = renderBlockedComment({ verdict: 'needs_clarification', confidence: 0.4, summary: 'Flou.', change_type: 'feat', plan: [], files_likely_touched: [], questions: ['Quel écran ?', 'Quelle couleur ?'], reasons: [] }, 'sisyphe');
-    expect(c).toContain('needs_clarification');
+  it('renderBlockedComment affiche la note et les questions si needs_clarification, sans jargon de verdict', () => {
+    const c = renderBlockedComment(
+      { verdict: 'needs_clarification', confidence: 0.4, summary: 'Flou.', note: "Il manque un écran précis pour savoir où agir.", change_type: 'feat', plan: [], files_likely_touched: [], questions: ['Quel écran ?', 'Quelle couleur ?'], reasons: [] },
+      labelRelaunch('sisyphe'),
+    );
+    expect(c).not.toContain('needs_clarification');
+    expect(c).not.toContain('confiance');
+    expect(c).toContain('Il manque un écran précis');
     expect(c).toContain('- Quel écran ?');
     expect(c).toContain('`sisyphe:blocked`');
   });
+  it('renderBlockedComment ne liste pas de questions hors needs_clarification', () => {
+    const c = renderBlockedComment(
+      { verdict: 'out_of_scope', confidence: 0.7, summary: 'Backend.', note: "Ça se joue côté serveur, pas dans ce dépôt.", change_type: 'fix', plan: [], files_likely_touched: [], questions: [], reasons: ['hors périmètre iOS'] },
+      labelRelaunch('sisyphe'),
+    );
+    expect(c).toContain('Ça se joue côté serveur');
+    expect(c).not.toContain('Pour avancer');
+    expect(c).not.toContain('hors périmètre iOS');
+  });
   it('renderConfigProblemComment distingue fichier absent et fichier invalide', () => {
-    const missing = renderConfigProblemComment('missing', 'sisyphe.yml absent sur la branche main', 'sisyphe');
+    const missing = renderConfigProblemComment('missing', 'sisyphe.yml absent sur la branche main', labelRelaunch('sisyphe'));
     expect(missing).toContain('Ajoutez un fichier');
     expect(missing).toContain('baseBranch: main');
-    const invalid = renderConfigProblemComment('invalid', 'sisyphe.yml invalide :\n- commands.build : Invalid input', 'sisyphe');
+    const invalid = renderConfigProblemComment('invalid', 'sisyphe.yml invalide :\n- commands.build : Invalid input', labelRelaunch('sisyphe'));
     expect(invalid).toContain('Corrigez');
     expect(invalid).toContain('commands.build');
     expect(invalid).not.toContain('Ajoutez un fichier');
   });
   it('renderSecretsComment promet la suppression du worktree, pas une conservation 7 jours', () => {
-    const c = renderSecretsComment(['src/feature.txt (aws-access-token)'], 'sisyphe');
+    const c = renderSecretsComment(['src/feature.txt (aws-access-token)'], labelRelaunch('sisyphe'));
     expect(c).toContain('- src/feature.txt (aws-access-token)');
     expect(c).toContain("n'a rien poussé");
     expect(c).toContain('worktree est supprimé');
@@ -138,7 +151,7 @@ describe('comments', () => {
     expect(c).toContain('`sisyphe:failed`');
   });
   it('renderProtectedPathsComment liste les chemins, rien poussé et consigne de relance', () => {
-    const c = renderProtectedPathsComment(['secrets/key.txt', '.github/workflows/ci.yml'], 'sisyphe');
+    const c = renderProtectedPathsComment(['secrets/key.txt', '.github/workflows/ci.yml'], labelRelaunch('sisyphe'));
     expect(c).toContain('- secrets/key.txt');
     expect(c).toContain('- .github/workflows/ci.yml');
     expect(c).toContain("n'a rien poussé");

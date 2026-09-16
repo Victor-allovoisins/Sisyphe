@@ -5,7 +5,7 @@ import { runJob } from '../../src/jobs/pipeline.js';
 import { REPO, SISYPHE_YML, makeHarness, readyVerdict, repoRef, report, writeFeature } from '../helpers/harness.js';
 import { remoteBranchSha, remoteCommitParents, writeFiles } from '../helpers/git-fixture.js';
 
-const BRANCH = 'feature/issue-7-ajouter-feature-hello';
+const BRANCH = 'feature/ajouter_feature_hello_7';
 const issue7 = { repo: repoRef, number: 7 };
 const signal = () => new AbortController().signal;
 
@@ -34,7 +34,8 @@ describe('runJob', () => {
     expect(done.prNumber).toBe(pr.number);
 
     expect(h.source.labelsOf(issue7)).toEqual(['sisyphe', 'sisyphe:done']);
-    expect(h.source.commentsOf(issue7)[0]).toContain('pris cette issue');
+    expect(h.source.commentsOf(issue7)).toHaveLength(1);
+    expect(h.source.commentsOf(issue7)[0]).toContain('PR prête');
     expect(h.phases.listForJob(done.id).map((p) => p.name)).toEqual(['triage', 'implement', 'verify', 'deliver']);
     expect(existsSync(done.worktreePath!)).toBe(false);
 
@@ -286,13 +287,14 @@ describe('runJob', () => {
     expect(h.source.pulls[0].body).toContain('## Checklist repo');
   });
 
-  it('un triage sans JSON exploitable bloque avec un verdict synthétique', async () => {
+  it('un triage sans JSON exploitable bloque avec un verdict synthétique, sans détail technique dans le commentaire', async () => {
     const h = await makeHarness({ steps: [{ output: null, stopReason: 'max_turns' }] });
     const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
     const done = await runJob(job.id, h.deps, signal());
     expect(done.state).toBe('blocked');
     expect(done.verdict?.verdict).toBe('needs_clarification');
-    expect(h.source.commentsOf(issue7).at(-1)).toContain('max_turns');
+    expect(done.verdict?.reasons.at(-1)).toContain('max_turns');
+    expect(h.source.commentsOf(issue7).at(-1)).not.toContain('max_turns');
     expect(h.phases.listForJob(done.id).map((p) => p.outcome)).toEqual(['failure']);
   });
 

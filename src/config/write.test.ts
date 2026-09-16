@@ -56,6 +56,48 @@ describe('validateMachineConfigInput', () => {
     expect(config.dataDir).toBe('~/.sisyphe');
   });
 
+  it('conserve la section jira que la page ne renvoie pas : enregistrer un budget ne doit pas l’effacer', async () => {
+    const tokenPath = join(dir, 'jira-token.txt');
+    await writeFile(tokenPath, 'jeton');
+    const jira = {
+      site: 'allovoisins.atlassian.net',
+      email: 'bot@example.test',
+      apiTokenPath: tokenPath,
+      projects: [{ key: 'IOS', accountId: 'acc-sisyphe', repo: 'ILokYou/ILokYou-iOS' }],
+    };
+    const withJira = parseMachineConfig(stringify({ ...rawInput(), jira }));
+    // Le corps posté par la page n'a pas de clé `jira` du tout.
+    const config = expectOk(await validateMachineConfigInput(rawInput({ maxConcurrentJobs: 2 }), withJira));
+    expect(config.jira?.projects[0].key).toBe('IOS');
+    expect(config.jira?.projects[0].inProgressStatus).toBe('En développement');
+    expect(config.maxConcurrentJobs).toBe(2);
+  });
+
+  it('retire la section jira sur un null explicite, là où l’absence de clé la conserve', async () => {
+    const tokenPath = join(dir, 'jira-token.txt');
+    await writeFile(tokenPath, 'jeton');
+    const withJira = parseMachineConfig(stringify({
+      ...rawInput(),
+      jira: {
+        site: 'allovoisins.atlassian.net', email: 'bot@example.test', apiTokenPath: tokenPath,
+        projects: [{ key: 'IOS', accountId: 'acc', repo: 'ILokYou/ILokYou-iOS' }],
+      },
+    }));
+    const config = expectOk(await validateMachineConfigInput(rawInput({ jira: null }), withJira));
+    expect(config.jira).toBeUndefined();
+  });
+
+  it('refuse un jeton Jira introuvable', async () => {
+    const jira = {
+      site: 'allovoisins.atlassian.net',
+      email: 'bot@example.test',
+      apiTokenPath: join(dir, 'absent.txt'),
+      projects: [{ key: 'IOS', accountId: 'acc-sisyphe', repo: 'ILokYou/ILokYou-iOS' }],
+    };
+    const issues = expectIssues(await validateMachineConfigInput(rawInput({ jira }), current));
+    expect(issues.map((i) => i.path)).toContain('jira.apiTokenPath');
+  });
+
   it('remonte les messages de zod, chemin par chemin', async () => {
     const issues = expectIssues(
       await validateMachineConfigInput(

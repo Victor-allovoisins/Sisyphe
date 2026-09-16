@@ -5,13 +5,15 @@ import type { MachineConfig } from '../config/machine.js';
 import { worktreePath, type DataPaths } from '../config/paths.js';
 import { renderDoneComment, renderFailedComment, renderRestartComment } from '../deliver/comments.js';
 import type { Git } from '../git/git.js';
-import { issueRefOf, parseRepo, type IssueSource, type PullRef } from '../github/source.js';
+import { issueRefOf, parseRepo, type Forge, type IssueTracker, type PullRef } from '../github/source.js';
+import { relaunchFor } from './relaunch.js';
 import type { JobStore } from '../store/jobs.js';
 import { emptyFlags, type Job } from '../store/types.js';
 
 export interface ReconcileDeps {
   store: JobStore;
-  source: IssueSource;
+  source: IssueTracker;
+  forge: Forge;
   git: Git;
   paths: DataPaths;
   machine: MachineConfig;
@@ -37,7 +39,7 @@ export async function reconcile(d: ReconcileDeps): Promise<void> {
       let pr: PullRef | null = null;
       if (job.branch) {
         try {
-          pr = await d.source.findPullRequest(parseRepo(job.repo), job.branch);
+          pr = await d.forge.findPullRequest(parseRepo(job.repo), job.branch);
         } catch (err) {
           d.log.warn({ err, jobId: job.id }, 'réconciliation : findPullRequest a échoué, job laissé en delivering');
           continue;
@@ -82,7 +84,7 @@ async function requeueOrFail(job: Job, d: ReconcileDeps): Promise<void> {
   } else {
     const reason = `interrompu ${MAX_REQUEUES + 1} fois par un redémarrage du daemon`;
     d.store.transition(job.id, 'failed', { error: reason });
-    await d.source.comment(ref, renderFailedComment(job.id, reason, d.machine.triggerLabel)).catch(() => undefined);
+    await d.source.comment(ref, renderFailedComment(job.id, reason, relaunchFor(d.machine, job.repo))).catch(() => undefined);
     await d.source.setStatus(ref, 'failed').catch(() => undefined);
     d.log.warn({ jobId: job.id }, 'réconciliation : job abandonné');
   }

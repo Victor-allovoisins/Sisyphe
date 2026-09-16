@@ -37,7 +37,7 @@ export type HotReloadField = (typeof HOT_RELOAD_FIELDS)[number];
  */
 export const RESTART_REQUIRED_FIELDS = [
   'github.appId', 'github.installationId', 'github.privateKeyPath',
-  'repos', 'triggerLabel', 'sandbox', 'agentBackend', 'agentModels', 'dataDir',
+  'repos', 'triggerLabel', 'sandbox', 'agentBackend', 'agentModels', 'jira', 'dataDir',
 ] as const;
 export type RestartRequiredField = (typeof RESTART_REQUIRED_FIELDS)[number];
 

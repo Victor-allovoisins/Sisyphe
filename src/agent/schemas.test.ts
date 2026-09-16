@@ -13,6 +13,7 @@ describe('TriageVerdictSchema', () => {
       verdict: 'ready',
       confidence: 0.8,
       summary: 'Ajouter un bouton',
+      note: '',
       change_type: 'feat',
       plan: ['créer la vue', 'brancher le modèle'],
       files_likely_touched: ['Sources/A.swift'],
@@ -23,7 +24,7 @@ describe('TriageVerdictSchema', () => {
   });
 
   const valid = {
-    verdict: 'ready', confidence: 0.8, summary: 'Ajouter un bouton', change_type: 'feat',
+    verdict: 'ready', confidence: 0.8, summary: 'Ajouter un bouton', note: '', change_type: 'feat',
     plan: ['créer la vue'], files_likely_touched: ['Sources/A.swift'], questions: [], reasons: [],
   };
 
@@ -60,7 +61,7 @@ describe('JSON Schema', () => {
     const draft07 = 'http://json-schema.org/draft-07/schema#';
     expect(triageJsonSchema.$schema).toBe(draft07);
     expect(reportJsonSchema.$schema).toBe(draft07);
-    expect(triageJsonSchema.required).toEqual(['verdict', 'confidence', 'summary', 'change_type', 'plan', 'files_likely_touched', 'questions', 'reasons']);
+    expect(triageJsonSchema.required).toEqual(['verdict', 'confidence', 'summary', 'note', 'change_type', 'plan', 'files_likely_touched', 'questions', 'reasons']);
     expect(reportJsonSchema.required).toEqual(['summary', 'changes', 'decisions', 'tests_run', 'risks', 'follow_ups', 'confidence']);
     expect(triageJsonSchema.additionalProperties).toBe(false);
     expect(reportJsonSchema.additionalProperties).toBe(false);

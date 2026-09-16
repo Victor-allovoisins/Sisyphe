@@ -6,6 +6,11 @@ export const TriageVerdictSchema = z.object({
     .describe('ready : implémentable sans question ; needs_clarification : une information indispensable manque ; too_big : à découper ; out_of_scope : pas une tâche de code sur ce repo'),
   confidence: z.number().min(0).max(1).describe('Confiance dans le verdict, de 0 à 1'),
   summary: z.string().min(1).describe('Reformulation du besoin en une phrase'),
+  note: z
+    .string()
+    .describe(
+      "Si verdict != ready, message posté tel quel sur l'issue GitHub à l'intention de son auteur, pas forcément technique : 2 à 3 phrases directes disant ce qui bloque, l'hypothèse principale, et comment débloquer si besoin. Aucun jargon, aucun nom de fichier ou de fonction. Chaîne vide si verdict = ready.",
+    ),
   change_type: z.enum(['feat', 'fix', 'refactor', 'chore', 'docs']).describe('Type de changement, repris dans le message de commit'),
   plan: z.array(z.string()).describe("Étapes concrètes, exploitables par un autre agent qui n'a pas lu l'exploration"),
   files_likely_touched: z.array(z.string()).describe('Chemins relatifs probablement modifiés'),

@@ -8,15 +8,23 @@ export function jobMarker(jobId: string): string {
   return `<!-- sisyphe:job:${jobId} -->`;
 }
 
-function relaunch(trigger: string, status: 'blocked' | 'failed'): string {
-  return `Pour relancer : répondez dans cette issue si besoin, puis retirez le label \`${statusLabelName(trigger, status)}\` en laissant \`${trigger}\`.`;
+/**
+ * Comment reprendre la main dépend du traqueur, pas du message : sur GitHub on retire un label, sur Jira on
+ * réassigne le ticket. Passer le descriptif plutôt que le nom du label évite d'imprimer, sur un ticket Jira,
+ * une consigne qui ne veut rien dire pour son lecteur.
+ */
+export type Relaunch = { kind: 'label'; trigger: string } | { kind: 'assignee'; who: string };
+
+export const labelRelaunch = (trigger: string): Relaunch => ({ kind: 'label', trigger });
+
+function relaunch(r: Relaunch, status: 'blocked' | 'failed'): string {
+  if (r.kind === 'assignee') {
+    return `Pour relancer : répondez dans ce ticket si besoin, puis réassignez-le à \`${r.who}\`.`;
+  }
+  return `Pour relancer : répondez dans cette issue si besoin, puis retirez le label \`${statusLabelName(r.trigger, status)}\` en laissant \`${r.trigger}\`.`;
 }
 
-export function renderTakeoverComment(jobId: string): string {
-  return `🪨 Sisyphe a pris cette issue en charge.\n\n${jobMarker(jobId)}`;
-}
-
-export function renderConfigProblemComment(kind: RepoConfigErrorKind, message: string, trigger: string): string {
+export function renderConfigProblemComment(kind: RepoConfigErrorKind, message: string, trigger: Relaunch): string {
   if (kind === 'invalid') {
     return [
       `🪨 Sisyphe ne peut pas traiter cette issue : ${message}`,
@@ -39,26 +47,36 @@ export function renderConfigProblemComment(kind: RepoConfigErrorKind, message: s
   ].join('\n');
 }
 
-export function renderBlockedComment(verdict: TriageVerdict, trigger: string): string {
-  const lines = [
-    `🪨 Sisyphe ne démarre pas l'implémentation (verdict : **${verdict.verdict}**, confiance ${Math.round(verdict.confidence * 100)} %).`,
+/**
+ * Le ticket n'indique pas sur quoi brancher. Message à l'intention de son auteur, pas d'un développeur :
+ * il dit quoi renseigner, pas pourquoi git ne sait pas quoi faire.
+ */
+export function renderMissingVersionComment(reason: string, trigger: Relaunch): string {
+  return [
+    "🪨 Sisyphe ne sait pas sur quelle version corriger ce ticket.",
     '',
-    sanitizeModelText(verdict.summary),
+    reason.charAt(0).toUpperCase() + reason.slice(1) + '.',
     '',
-  ];
-  if (verdict.questions.length) lines.push('Questions :', ...verdict.questions.map((q) => `- ${sanitizeModelText(q)}`), '');
-  if (verdict.reasons.length) lines.push('Raisons :', ...verdict.reasons.map((r) => `- ${sanitizeModelText(r)}`), '');
+    relaunch(trigger, 'blocked'),
+  ].join('\n');
+}
+
+export function renderBlockedComment(verdict: TriageVerdict, trigger: Relaunch): string {
+  const lines = ['🪨 Sisyphe met cette issue en pause.', '', sanitizeModelText(verdict.note || verdict.summary, { multiline: true }), ''];
+  if (verdict.verdict === 'needs_clarification' && verdict.questions.length) {
+    lines.push('Pour avancer :', ...verdict.questions.map((q) => `- ${sanitizeModelText(q)}`), '');
+  }
   lines.push(relaunch(trigger, 'blocked'));
   return lines.join('\n');
 }
 
-export function renderNoChangesComment(summary: string, trigger: string): string {
+export function renderNoChangesComment(summary: string, trigger: Relaunch): string {
   return `🪨 L'agent n'a produit aucun changement.\n\n${sanitizeModelText(summary)}\n\n${relaunch(trigger, 'blocked')}`;
 }
 
 const WORKTREE_REMOVED = 'Le worktree est supprimé ; le dossier `jobs/<id>/` de la machine Sisyphe garde le matériel de post-mortem (transcripts, logs, diff).';
 
-export function renderSecretsComment(found: string[], trigger: string): string {
+export function renderSecretsComment(found: string[], trigger: Relaunch): string {
   return [
     "🪨 Sisyphe a détecté des secrets potentiels dans le diff et n'a rien poussé :",
     '',
@@ -68,7 +86,7 @@ export function renderSecretsComment(found: string[], trigger: string): string {
   ].join('\n');
 }
 
-export function renderProtectedPathsComment(found: string[], trigger: string): string {
+export function renderProtectedPathsComment(found: string[], trigger: Relaunch): string {
   return [
     "🪨 Sisyphe a détecté des chemins protégés modifiés dans le diff et n'a rien poussé :",
     '',
@@ -78,7 +96,7 @@ export function renderProtectedPathsComment(found: string[], trigger: string): s
   ].join('\n');
 }
 
-export function renderFailedComment(jobId: string, message: string, trigger: string): string {
+export function renderFailedComment(jobId: string, message: string, trigger: Relaunch): string {
   // La sortie de `commands.setup` et les noms de fichiers choisis par l'agent finissent ici : texte non fiable.
   return `🪨 Sisyphe a échoué : ${sanitizeModelText(message, { multiline: true })}\n\nJob \`${jobId}\`. ${relaunch(trigger, 'failed')}\n\n${jobMarker(jobId)}`;
 }
@@ -95,8 +113,10 @@ export function renderDoneComment(i: { jobId: string; prUrl: string; status: 'do
   return `${head}\n\nCoût estimé : $${i.costUsd.toFixed(2)} · Durée : ${fmtDuration(i.durationMs)} · Tentatives : ${i.attempts}\n\n${jobMarker(i.jobId)}`;
 }
 
-export function renderPermissionDeniedComment(login: string | null, trigger: string): string {
-  return `🪨 Label \`${trigger}\` ignoré : ${login ? `@${login}` : 'son auteur'} n'a pas le droit d'écriture sur ce repo.`;
+export function renderPermissionDeniedComment(login: string | null, trigger: Relaunch): string {
+  const who = login ? `@${login}` : 'son auteur';
+  if (trigger.kind === 'assignee') return `🪨 Assignation ignorée : ${who} n'a pas le droit de confier ce ticket à Sisyphe.`;
+  return `🪨 Label \`${trigger.trigger}\` ignoré : ${who} n'a pas le droit d'écriture sur ce repo.`;
 }
 
 export function renderRestartComment(): string {

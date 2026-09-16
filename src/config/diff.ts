@@ -45,8 +45,19 @@ const SAME_RESTART: Record<RestartRequiredField, Same> = {
   agentModels: (a, b) =>
     (a.agentModels?.triage ?? null) === (b.agentModels?.triage ?? null)
     && (a.agentModels?.implement ?? null) === (b.agentModels?.implement ?? null),
+  // Comparé sur une forme normalisée : le chemin du jeton passe par samePath comme la clé privée GitHub,
+  // le reste est structurel et se compare par valeur. Absent des deux côtés = identique.
+  jira: (a, b) => jiraKey(a) === jiraKey(b),
   dataDir: (a, b) => samePath(a.dataDir, b.dataDir),
 };
+
+/** Empreinte stable d'une section `jira`, chemin de jeton développé. `null` quand la section est absente. */
+function jiraKey(c: MachineConfig): string {
+  if (!c.jira) return 'null';
+  const projects = c.jira.projects.map((p) =>
+    [p.key, p.accountId, p.repo, p.candidateStatuses.join('|'), p.statusesInOrder.join('|'), p.inProgressStatus, p.doneStatus].join(':'));
+  return [c.jira.site, c.jira.email, expandHome(c.jira.apiTokenPath), ...projects].join('\n');
+}
 
 /**
  * Un comparateur par champ à chaud, sur les valeurs **brutes** : pour `dailyBudgetUsd`, `null` (aucun plafond,

@@ -77,6 +77,8 @@ Critères :
 - too_big : le travail dépasse ${max} fichiers ou mélange plusieurs sujets indépendants. Propose un découpage dans reasons.
 - out_of_scope : ce n'est pas une tâche de code sur ce repo.
 
+Si le verdict n'est pas ready, remplis aussi \`note\` : c'est ce message, et lui seul, qui sera posté sur l'issue. Écris-le pour son auteur, qui peut ne rien connaître au code — pas pour un développeur qui relira les logs.
+
 Réponds uniquement avec le JSON demandé ; le schéma décrit chaque champ. Le plan doit être une liste d'étapes concrètes, exploitables par un autre agent qui n'aura pas lu ton exploration.`;
 }
 
