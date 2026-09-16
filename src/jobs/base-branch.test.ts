@@ -55,10 +55,19 @@ describe('resolveBaseBranch', () => {
     expect(r).toEqual({ kind: 'ok', branch: 'develop', reason: 'version 9.0.0, pas encore de branche de release' });
   });
 
-  it('rend la main quand le ticket ne porte aucune version, au lieu de deviner', async () => {
-    const r = await resolveBaseBranch({ config, issue: issue(jira([])), branchExists: always });
-    expect(r.kind).toBe('blocked');
-    expect(r.kind === 'blocked' && r.reason).toContain('aucune version cible');
+  it('sans version, part du tronc : c’est un ticket de backlog, et c’est le cas le plus courant', async () => {
+    const seen: string[] = [];
+    const r = await resolveBaseBranch({
+      config,
+      issue: issue(jira([])),
+      branchExists: async (b) => {
+        seen.push(b);
+        return true;
+      },
+    });
+    expect(r).toEqual({ kind: 'ok', branch: 'develop', reason: 'ticket de backlog, aucune version visée' });
+    // Aucune branche de release à chercher : on n'interroge même pas le distant.
+    expect(seen).toEqual([]);
   });
 
   it('rend la main sur plusieurs versions : choisir à la place de l’équipe ouvrirait la PR au mauvais endroit', async () => {

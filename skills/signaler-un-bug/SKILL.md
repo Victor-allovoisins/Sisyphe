@@ -1,19 +1,19 @@
 ---
 name: signaler-un-bug
-description: Utiliser quand quelqu'un raconte un bug, une anomalie ou un problème rencontré sur AlloVoisins (app iPhone, app Android, site web) et qu'il faut en faire un ticket GitHub. Se déclenche sur « j'ai un bug », « ça ne marche pas », « il y a un souci sur l'app », « signaler un problème », « créer un ticket », « ça plante quand je… ».
+description: Utiliser quand quelqu'un raconte un bug, une anomalie ou un problème rencontré sur AlloVoisins (app iPhone, app Android, site web) et qu'il faut en faire un ticket Jira. Se déclenche sur « j'ai un bug », « ça ne marche pas », « il y a un souci sur l'app », « signaler un problème », « créer un ticket », « ça plante quand je… ».
 ---
 
 # Signaler un bug
 
 ## Le but
 
-Transformer le récit d'une personne non technique en une issue GitHub qu'un agent de correction peut traiter **sans jamais poser de question**.
+Transformer le récit d'une personne non technique en un ticket Jira qu'un agent de correction peut traiter **sans jamais poser de question**.
 
 Un robot (Sisyphe) relit chaque ticket et le classe : `ready`, `needs_clarification`, `too_big`, `out_of_scope`. Seul `ready` déclenche une correction. Tout ce qui suit sert à décrocher `ready` du premier coup.
 
 Trois contraintes gouvernent tout le reste. L'agent qui corrigera :
 
-- **ne voit que du texte.** Les captures d'écran, les pièces jointes et les liens ne lui parviennent pas. Une image jointe à l'issue est invisible pour lui.
+- **ne voit que du texte.** Les captures d'écran, les pièces jointes et les liens ne lui parviennent pas. Une image jointe au ticket est invisible pour lui.
 - **ne connaît que le code du dépôt.** Ni vos règles métier, ni vos comptes de test, ni le jargon interne.
 - **ne peut poser aucune question** pendant son travail. Ce qui manque au ticket manquera pour de bon.
 
@@ -102,7 +102,7 @@ L'agent ne les verra pas. Toi si.
 
 Quand la personne en envoie une, **transcris-la en mots** dans le ticket : le message d'erreur **mot pour mot**, les valeurs affichées, ce qui est vide ou grisé, ce qui devrait être là et ne l'est pas. Ne mets jamais « voir la capture » dans le corps du ticket — c'est un cul-de-sac pour l'agent.
 
-Joins quand même l'image à l'issue : elle sert aux humains qui reliront.
+Joins quand même l'image au ticket : elle sert aux humains qui reliront.
 
 ### 6. La relance unique
 
@@ -229,39 +229,54 @@ Relis ton propre corps de ticket et corrige-le toi-même, sans redemander à la 
 
 ### 10. Vérifier que c'est bien l'app iPhone
 
-**Pour l'instant, seule l'app iPhone est traitée automatiquement.** Dépôt : `ILokYou/ILokYou-iOS`.
+**Pour l'instant, seule l'app iPhone est traitée automatiquement.** Projet Jira : `IOS`.
 
 Si la personne décrit un problème sur **Android** ou sur le **site web**, ne crée pas de ticket. Dis-le franchement :
 
 > Pour l'instant on ne traite automatiquement que l'app iPhone. Ton signalement est clair, mais il faut le passer par le canal habituel — je te le mets au propre si tu veux le copier-coller.
 
-Puis affiche quand même le titre et le corps rédigés : le travail d'entretien n'est pas perdu, elle les colle où elle a l'habitude.
+Puis affiche quand même le titre et le corps rédigés : le travail d'entretien n'est pas perdu.
 
 Un doute sur la surface se lève en une question, jamais plus : « c'était sur ton iPhone ou sur ton ordinateur ? »
 
-Note enfin que la cause d'un bug vu dans l'app peut être côté serveur — ce n'est pas ton problème. Décris le symptôme tel qu'il a été vu, crée le ticket sur `ILokYou/ILokYou-iOS`, et laisse le triage trancher. S'il constate que la cause est ailleurs, il le dira en commentaire.
+La cause d'un bug vu dans l'app peut être côté serveur — ce n'est pas ton problème. Décris le symptôme tel qu'il a été vu et laisse le triage trancher. Si la personne a vu **le même symptôme aussi sur le site ou sur Android**, ajoute-le dans « Où » : c'est de l'or pour le diagnostic.
 
-Une seule exception à signaler : si la personne dit avoir vu **le même symptôme aussi sur le site ou sur Android**, ajoute cette ligne dans « Où », elle vaut de l'or pour le diagnostic :
+### 11. Choisir le type de ticket
 
-```
-Constaté aussi sur : site web (même symptôme).
-```
+Le type se déduit de la réponse déjà donnée au point 5 de l'entretien — jamais en posant une question de plus.
 
-### 11. Créer l'issue
+| Où la personne a vu le bug | Type |
+|---|---|
+| Sur l'app installée depuis l'App Store | `Bug PROD` |
+| Sur TestFlight, une recette, une version de test | `Bug PREPROD` |
+| Sur une fonctionnalité encore en cours de développement | `Recette US` |
 
-Montre le titre et le corps, demande « je crée ? », attends le oui.
+**Ne renseigne pas la version.** La grande majorité de ces tickets vont au backlog, et un ticket de backlog n'a pas de version cible : Sisyphe partira du tronc, ce qui est le bon comportement. C'est à l'équipe de poser une version le jour où elle planifie le ticket dans une release.
 
-Puis crée l'issue sur `ILokYou/ILokYou-iOS` avec le label **`sisyphe`**. C'est ce label qui déclenche le traitement : sans lui, il ne se passe rien.
+Deux exceptions, et seulement si la personne l'a dit d'elle-même :
 
-Si la création échoue (droits manquants sur le dépôt), ne perds pas le travail : affiche le titre et le corps dans un bloc à copier, et dis à la personne de les coller sur GitHub en ajoutant le label `sisyphe` elle-même.
+- elle signale un bug **qui bloque une release en cours de recette** → renseigne cette version-là ;
+- elle rapporte un bug **sur une fonctionnalité du sprint en cours** (`Recette US`) → renseigne la version du sprint.
 
-### 12. Dire où la suite se passera
+Dans le doute, laisse vide. Une version fausse envoie le correctif sur la mauvaise branche ; une version absente ne coûte rien.
 
-Cette personne t'a parlé dans un chat. Elle n'ira pas d'elle-même relire un fil GitHub. Termine toujours par :
+### 12. Créer le ticket
 
-> C'est créé : <lien>. Si l'agent a besoin d'une précision, il écrira en commentaire sur ce ticket et tu recevras une notification GitHub. Reviens me voir avec sa question, on y répondra ensemble.
+Montre le récapitulatif — titre, type, version si tu en as mis une, corps — et demande « je crée ? ». Attends le oui.
 
-Sans cette phrase, une demande de précision reste sans réponse et le ticket meurt.
+Puis crée le ticket dans le projet `IOS` avec le type retenu, et **assigne-le au compte `sisyphe-ios`**. C'est l'assignation qui déclenche le traitement : sans elle, le ticket dort.
+
+Laisse le statut par défaut (`Nouveau`). Ne le fais pas avancer toi-même : c'est Sisyphe qui déplacera le ticket dans le board au fil de son travail.
+
+Si la création échoue, ne perds pas le travail : affiche le titre et le corps dans un bloc à copier, et dis à la personne de créer le ticket à la main en assignant `sisyphe-ios`.
+
+### 13. Dire où la suite se passera
+
+Cette personne t'a parlé dans un chat. Elle n'ira pas d'elle-même relire un ticket. Termine toujours par :
+
+> C'est créé : <lien>. Sisyphe va le prendre en charge, tu verras le ticket avancer dans le board. S'il a besoin d'une précision, il te le **réassignera** avec un commentaire — c'est ta notification. Reviens me voir avec sa question, on y répondra ensemble, et il suffira de le réassigner à `sisyphe-ios` pour qu'il reprenne.
+
+Cette phrase est la seule chose qui empêche un ticket rendu de mourir : personne ne surveille une réassignation qu'on ne lui a pas annoncée.
 
 ## Erreurs fréquentes
 
@@ -273,7 +288,8 @@ Sans cette phrase, une demande de précision reste sans réponse et le ticket me
 | Ajouter « ça vient sûrement de… » | Envoie l'agent sur une fausse piste et lui fait perdre sa tentative | Décrire le symptôme, rien d'autre |
 | Enchaîner un troisième tour de questions | La personne décroche et repart créer ses tickets à la main | Écrire ce qui manque dans « Ce qu'on n'a pas pu déterminer » |
 | Grouper plusieurs bugs | Classé `too_big`, rien n'est corrigé | Un ticket par bug |
-| Oublier le label `sisyphe` | Le ticket dort indéfiniment | Toujours poser le label |
+| Renseigner une version « pour bien faire » | Envoie le correctif sur la mauvaise branche | Laisser vide : le backlog est le cas normal |
+| Oublier d'assigner à `sisyphe-ios` | Le ticket dort indéfiniment : c'est l'assignation qui déclenche | Toujours assigner |
 | Résumer un message d'erreur | Le texte exact est souvent la seule piste de recherche | Le citer mot pour mot |
 
 ## Signaux d'alerte — reprends l'étape correspondante

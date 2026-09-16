@@ -45,10 +45,22 @@ describe('branche de base depuis le ticket', () => {
     expect(h.source.pulls[0].base).toBe('main');
   });
 
-  it('rend la main, sans rien pousser, quand le ticket ne porte aucune version', async () => {
+  it('traite normalement un ticket de backlog, sans version : c’est le cas le plus courant', async () => {
     const h = await makeHarness({
       steps: steps(),
       issues: [{ number: 7, title: 'Ajouter feature hello', tracker: ticket([]) }],
+    });
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    const done = await runJob(job.id, h.deps, signal());
+
+    expect(done.state).toBe('done');
+    expect(h.source.pulls[0].base).toBe('main');
+  });
+
+  it('rend la main, sans rien pousser, quand le ticket vise plusieurs versions', async () => {
+    const h = await makeHarness({
+      steps: steps(),
+      issues: [{ number: 7, title: 'Ajouter feature hello', tracker: ticket(['8.42.0', '8.43.0']) }],
     });
     const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
     const done = await runJob(job.id, h.deps, signal());
@@ -57,7 +69,7 @@ describe('branche de base depuis le ticket', () => {
     expect(h.source.pulls).toHaveLength(0);
     const comment = h.source.commentsOf(issue7).join('\n');
     expect(comment).toContain('ne sait pas sur quelle version');
-    expect(comment).toContain('aucune version cible');
+    expect(comment).toContain('8.42.0, 8.43.0');
     // Le message est pour l'auteur du ticket : aucun terme de plomberie.
     expect(comment).not.toContain('fixVersions');
     expect(comment).not.toContain('baseBranch');

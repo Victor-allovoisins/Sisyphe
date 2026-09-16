@@ -1,15 +1,16 @@
 # signaler-un-bug
 
-Skill d'entrée de Sisyphe, destiné aux personnes non techniques. Il mène un court entretien sur un bug rencontré, puis crée l'issue GitHub avec le label `sisyphe`.
+Skill d'entrée de Sisyphe, destiné aux personnes non techniques. Il mène un court entretien sur un bug rencontré, puis crée le ticket Jira et l'assigne au compte dédié — c'est l'assignation qui déclenche le traitement.
 
-**Périmètre actuel : l'app iPhone seule** (`ILokYou/ILokYou-iOS`). Un signalement sur Android ou sur le site web est rédigé proprement mais pas créé — la personne le copie vers le canal habituel. Pour ouvrir le skill à d'autres dépôts, éditer l'étape 10 de `SKILL.md`.
+**Périmètre actuel : l'app iPhone seule** (projet Jira `IOS`). Un signalement sur Android ou sur le site web est rédigé proprement mais pas créé — la personne le copie vers le canal habituel. Pour ouvrir le skill à d'autres projets, éditer les étapes 10 et 11 de `SKILL.md`.
 
-Il est conçu pour tourner sur **claude.ai / l'app Desktop**, avec le connecteur GitHub actif — pas dans Claude Code : les personnes visées n'ont ni terminal ni clone du dépôt.
+Il est conçu pour tourner sur **claude.ai / l'app Desktop**, avec le connecteur Atlassian actif — pas dans Claude Code : les personnes visées n'ont ni terminal ni clone du dépôt. Le connecteur GitHub de claude.ai ne conviendrait pas : il est en lecture seule, toute création d'issue y échoue en 403.
 
 ## Avant la mise en service
 
-1. Vérifier que le connecteur GitHub de claude.ai peut **créer des issues et poser des labels** sur `ILokYou/ILokYou-iOS`, pour chaque personne concernée.
-2. Confirmer que `sisyphe.yml` est bien commité à la racine de `develop` (la branche par défaut du dépôt iOS) — sans lui, le label ne déclenche rien. Modèle : `examples/sisyphe.ios.yml`.
+1. Vérifier que le connecteur Atlassian de claude.ai peut **créer un ticket et l'assigner** dans le projet `IOS`, pour chaque personne concernée.
+2. Créer le compte Jira dédié `sisyphe-ios` et le renseigner dans la config machine de Sisyphe (`sisyphe setup`).
+3. Confirmer que `sisyphe.yml` est bien commité à la racine de `develop` (la branche par défaut du dépôt iOS). Modèle : `examples/sisyphe.ios.yml`.
 
 ## Installation sur claude.ai
 
@@ -22,3 +23,4 @@ Le skill est écrit à rebours du triage de Sisyphe (`src/agent/prompts.ts`, `sr
 - **Les captures d'écran sont invisibles au triage.** `renderIssueBlock` n'émet que le titre, le corps et les commentaires : aucune image, aucune pièce jointe. Le skill transcrit donc les captures en mots.
 - **Aucun lien n'est ouvrable.** Une règle métier doit être citée mot pour mot dans le corps, jamais référencée par une URL Notion.
 - **Un bug par ticket.** `limits.maxFilesEstimate` (15 sur iOS) fait basculer en `too_big` tout ticket qui mélange des sujets indépendants.
+- **Pas de version cible.** La plupart de ces tickets vont au backlog ; Sisyphe part alors du tronc. Une version renseignée à tort enverrait le correctif sur une branche de release.

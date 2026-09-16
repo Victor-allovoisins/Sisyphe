@@ -10,8 +10,9 @@ import type { Issue } from '../github/source.js';
  * version cible du ticket, ce que fait un développeur : un correctif destiné à une release déjà ouverte part
  * de cette release, sinon du tronc.
  *
- * Quand le ticket ne porte pas de version, on ne devine pas : on rend la main. C'est une information qu'un
- * humain doit fournir, et se tromper de base coûte une PR ouverte au mauvais endroit.
+ * Un ticket **sans version est un ticket de backlog**, et c'est le cas le plus courant : il part du tronc,
+ * sans rien demander à personne. Seul un ticket qui vise **plusieurs** versions est rendu — là il y a
+ * vraiment un choix à faire, et se tromper coûte une PR ouverte au mauvais endroit.
  */
 export type BaseBranchResolution =
   | { kind: 'ok'; branch: string; reason: string }
@@ -33,8 +34,11 @@ export async function resolveBaseBranch(opts: {
   if (!issue.tracker) return { kind: 'ok', branch: config.baseBranch, reason: 'branche de base du dépôt' };
 
   const versions = issue.tracker.fixVersions;
+  // Le cas le plus fréquent : ticket de backlog, aucune version visée. On part du tronc, comme un développeur
+  // à qui on confie un ticket de backlog — et surtout on ne le rend pas, sans quoi la majorité des tickets
+  // reviendrait aussitôt à son auteur sans qu'aucun travail n'ait eu lieu.
   if (versions.length === 0) {
-    return { kind: 'blocked', reason: "le ticket n'indique aucune version cible (champ « Versions corrigées »)" };
+    return { kind: 'ok', branch: config.baseBranch, reason: 'ticket de backlog, aucune version visée' };
   }
   if (versions.length > 1) {
     return { kind: 'blocked', reason: `le ticket vise plusieurs versions (${versions.join(', ')}), on ne peut pas choisir à sa place` };
