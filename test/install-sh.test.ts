@@ -259,6 +259,47 @@ describe('install.sh', () => {
     expect(await readLog(log)).toContain('sisyphe|2|setup --reinstall-service');
   });
 
+  it('daemon en marche : la mise à jour le redémarre sur la nouvelle version', async () => {
+    const dir = await tempDir('sisyphe-inst-clone-');
+    const script = join(dir, 'install.sh');
+    await copyFile(SCRIPT, script);
+    await chmod(script, 0o755);
+    const home = await tempDir('sisyphe-inst-home-');
+    await mkdir(join(home, '.sisyphe'), { recursive: true });
+    await writeFile(join(home, '.sisyphe', 'config.yml'), 'repos: []\n');
+    const log = join(await tempDir('sisyphe-inst-log-'), 'exec.log');
+    // Le faux `sisyphe` répond « running : true » au statut : le script doit en déduire un redémarrage.
+    const fakes = { ...tracingFakes(log), sisyphe: `${trace('sisyphe', log)}\ncase "$*" in "service status") echo "running : true" ;; esac` };
+
+    const r = await runInstall({ os: 'darwin', fakes, script, home, dryRun: false });
+
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain('redémarrage sur la nouvelle version');
+    const entries = await readLog(log);
+    expect(entries).toContain('sisyphe|2|service stop');
+    expect(entries).toContain('sisyphe|2|service start');
+    // Le rebuild précède le redémarrage, sans quoi le daemon repartirait sur l ancien dist.
+    expect(entries.indexOf('npm|2|run build')).toBeLessThan(entries.indexOf('sisyphe|2|service stop'));
+  });
+
+  it('daemon arrêté : la mise à jour ne le démarre pas', async () => {
+    const dir = await tempDir('sisyphe-inst-clone-');
+    const script = join(dir, 'install.sh');
+    await copyFile(SCRIPT, script);
+    await chmod(script, 0o755);
+    const home = await tempDir('sisyphe-inst-home-');
+    await mkdir(join(home, '.sisyphe'), { recursive: true });
+    await writeFile(join(home, '.sisyphe', 'config.yml'), 'repos: []\n');
+    const log = join(await tempDir('sisyphe-inst-log-'), 'exec.log');
+    const fakes = { ...tracingFakes(log), sisyphe: `${trace('sisyphe', log)}\ncase "$*" in "service status") echo "running : false" ;; esac` };
+
+    const r = await runInstall({ os: 'darwin', fakes, script, home, dryRun: false });
+
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain('rien à redémarrer');
+    expect(await readLog(log)).not.toContain('sisyphe|2|service start');
+  });
+
   it('--no-setup et --no-pull sont respectés', async () => {
     const fakes: Fakes = { ...allPresent, git: 'case "$1" in remote) echo origin ;; esac' };
     const r = await runInstall({ os: 'darwin', fakes, args: ['--no-setup', '--no-pull'] });
@@ -411,6 +452,8 @@ describe('install.sh', () => {
     expect(await readLog(log)).toEqual([
       'node|1|-v',
       'npm|2|prefix -g',
+      // Relevé avant le build : après, « sisyphe » pointerait sur un dist en cours de réécriture.
+      'sisyphe|2|service status',
       'git|2|rev-parse --is-inside-work-tree',
       'git|1|remote',
       'git|2|status --porcelain',
@@ -419,6 +462,7 @@ describe('install.sh', () => {
       'npm|2|run build',
       'npm|1|link',
       'sisyphe|1|setup',
+      // Pas de stop/start : le faux `sisyphe service status` ne dit pas « running : true ».
       'claude|3|auth status --json',
     ]);
   });
@@ -452,6 +496,6 @@ describe('install.sh', () => {
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toContain('mise à jour impossible');
     // Le build a bien eu lieu malgré l'échec du pull.
-    expect(await readLog(log)).toEqual(['node|1|-v', 'npm|2|prefix -g', 'npm|1|ci', 'npm|2|run build', 'npm|1|link', 'claude|3|auth status --json']);
+    expect(await readLog(log)).toEqual(['node|1|-v', 'npm|2|prefix -g', 'sisyphe|2|service status', 'npm|1|ci', 'npm|2|run build', 'npm|1|link', 'claude|3|auth status --json']);
   });
 });

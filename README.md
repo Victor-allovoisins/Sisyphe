@@ -15,11 +15,11 @@ Une App GitHub `sisyphe[bot]`, permissions Contents (read & write), Issues (read
 ## Installation
 
 ```bash
-git clone git@github.com:ILokYou/sisyphe.git ~/sisyphe
+git clone git@github.com:Victor-allovoisins/Sisyphe.git ~/sisyphe
 ~/sisyphe/install.sh
 ```
 
-Le repo est privé : le clone suppose une clé SSH enregistrée sur GitHub (`ssh -T git@github.com` doit répondre) et un compte membre de l'organisation `ILokYou` avec accès au repo.
+Le clone suppose une clé SSH enregistrée sur GitHub (`ssh -T git@github.com` doit répondre) et, si le dépôt est passé en privé, un accès en lecture dessus.
 
 `install.sh` (POSIX `sh`, macOS et Ubuntu) installe ce qui manque — `git`, Node ≥ 24, `gitleaks`, la CLI Claude Code —, compile le clone, pose le lien global `sisyphe`, puis lance `sisyphe setup`. Options : `--dry-run` (affiche chaque commande sans rien exécuter), `--no-setup`, `--no-pull`. Le script s'arrête à la première erreur en nommant l'étape fautive, et revérifie après coup chaque outil qu'il vient d'installer.
 
@@ -58,7 +58,21 @@ Relancer le même script :
 ~/sisyphe/install.sh
 ```
 
-Il fait `git pull --ff-only` (seulement si le clone a un dépôt distant et un arbre de travail propre ; un pull impossible — branche sans suivi distant, historique divergent — ne fait pas échouer l'installation, le build se fait sur l'état local), rebuild, et ne rejoue pas l'entretien de `sisyphe setup` quand la config existe déjà : il lance `sisyphe setup --reinstall-service`, qui ne demande rien, ne démarre rien, et réécrit l'unité de service au cas où elle aurait changé d'une version à l'autre. `sisyphe doctor` signale un agent launchd resté à une version antérieure.
+Une seule commande suffit : le script met à jour, recompile **et redémarre le daemon**. Il n'y a rien à faire après.
+
+Dans l'ordre, il :
+
+1. relève si le daemon tourne, avant tout le reste — après le build, la commande `sisyphe` pointerait sur un `dist/` en cours de réécriture ;
+2. fait `git pull --ff-only`, seulement si le clone a un dépôt distant et un arbre de travail propre. Un pull impossible — branche sans suivi distant, historique divergent — ne fait pas échouer l'installation : le build se fait sur l'état local, en le disant ;
+3. recompile et repose le lien global ;
+4. ne rejoue pas l'entretien de `sisyphe setup` quand la config existe déjà. Il lance `sisyphe setup --reinstall-service`, qui ne demande rien et réécrit l'unité de service au cas où elle aurait changé d'une version à l'autre ;
+5. **redémarre le service s'il tournait**, et seulement dans ce cas : une mise à jour ne démarre pas un daemon qu'on avait laissé arrêté.
+
+Le redémarrage est indispensable et facile à oublier : le daemon exécute `dist/`, qu'un rebuild ne change pas pour un processus déjà lancé. Un `git pull` seul ne met rien à jour.
+
+Un job en cours au moment du redémarrage n'est pas perdu : la réconciliation le remet en file au démarrage suivant, jusqu'à deux fois, après quoi il passe en échec avec un commentaire sur le ticket. `sisyphe status` dit ce qui tourne avant de lancer la mise à jour.
+
+`sisyphe doctor` signale un agent launchd resté à une version antérieure.
 
 ## Service
 
