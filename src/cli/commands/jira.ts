@@ -124,7 +124,7 @@ function assignTarget(rest: string[]): 'back' | 'bot' {
   const back = rest.includes('--back');
   const bot = rest.includes('--bot');
   if (back === bot) {
-    throw new Error('Drapeau manquant pour assign : --back (rendre le ticket) ou --bot (l’assigner à Sisyphe).');
+    throw new Error('assign : préciser --back (rendre le ticket) ou --bot (l’assigner à Sisyphe) — exactement un des deux.');
   }
   return bot ? 'bot' : 'back';
 }
