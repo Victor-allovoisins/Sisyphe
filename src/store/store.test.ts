@@ -8,6 +8,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { SCHEMA_VERSION, applyMigrations, openDatabase, sqlList } from './db.js';
 import { JobStore } from './jobs.js';
 import { PhaseStore } from './phases.js';
+import { PHASE_NAMES } from './types.js';
 import { JOB_STATES, TERMINAL_STATES } from './types.js';
 
 function setup() {
@@ -146,6 +147,15 @@ describe('PhaseStore', () => {
     expect(phases.costSince('2999-01-01T00:00:00Z')).toBe(0);
   });
 
+  it('accepte chaque nom de PHASE_NAMES et refuse les autres', () => {
+    const { db, jobs, phases } = setup();
+    const job = jobs.create({ repo: 'a/b', issueNumber: 1, issueTitle: 't' });
+    for (const name of PHASE_NAMES) expect(phases.start({ jobId: job.id, name, attempt: 1 }).name).toBe(name);
+    expect(() =>
+      db.prepare('INSERT INTO phases (job_id, name, attempt, started_at) VALUES (?, ?, ?, ?)').run(job.id, 'bogus', 1, 'now'),
+    ).toThrow(/CHECK/);
+  });
+
   it('costSince inclut la borne et exclut les phases en cours', () => {
     const { jobs, phases } = setup();
     const job = jobs.create({ repo: 'a/b', issueNumber: 1, issueTitle: 't' });
@@ -167,13 +177,13 @@ describe('openDatabase', () => {
     a.close();
     const b = openDatabase(file);
     expect(new JobStore(b).listActive()).toHaveLength(1);
-    expect((b.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(2);
+    expect((b.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION);
     expect((b.prepare('PRAGMA journal_mode').get() as { journal_mode: string }).journal_mode).toBe('wal');
     b.close();
     await rm(dir, { recursive: true, force: true });
   });
 
-  it('migre une base existante en version 1 vers la version 2 sans toucher aux jobs/phases', async () => {
+  it('migre une base existante en version 1 jusqu’à la dernière sans toucher aux jobs/phases', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'sisyphe-db-'));
     const file = join(dir, 'sisyphe.db');
     // Fabrique une base v1 authentique : ouvre en v2, puis redescend artificiellement à v1
@@ -186,9 +196,11 @@ describe('openDatabase', () => {
     a.close();
 
     const b = openDatabase(file);
-    expect((b.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(2);
+    expect((b.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION);
     expect(new JobStore(b).get(job.id)?.issueTitle).toBe('t');
     expect(new PhaseStore(b).listForJob(job.id).map((p) => p.id)).toEqual([phase.id]);
+    // La table `phases` a été reconstruite : la phase `jira`, refusée par le CHECK d'origine, passe.
+    expect(new PhaseStore(b).start({ jobId: job.id, name: 'jira', attempt: 1 }).name).toBe('jira');
     expect(b.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'actions'").get()).toBeTruthy();
     expect(new ActionStore(b).record({ action: 'retry', source: 'ui', outcome: 'ok' }).outcome).toBe('ok');
     b.close();

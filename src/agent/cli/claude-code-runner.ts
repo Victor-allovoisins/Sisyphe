@@ -3,6 +3,7 @@ import { stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { zeroUsage } from '../../store/types.js';
+import { agentPluginPath } from '../plugin-path.js';
 import type { AgentResult, AgentRunOptions, AgentRunner } from '../runner.js';
 import { summarizeResult } from '../sdk-runner.js';
 import { callSlug, runCliProcess } from './process.js';
@@ -72,6 +73,10 @@ export function buildCliArgs(o: AgentRunOptions, files: { appendPath: string; se
   if (o.model !== undefined) args.push('--model', o.model);
   args.push('--max-turns', String(o.maxTurns));
   args.push('--max-budget-usd', String(o.maxBudgetUsd));
+  // La CLI n'a pas d'équivalent de l'option `skills` du SDK (vérifié : ni --skills, ni --allowed-skills).
+  // Elle n'en a pas besoin ici : `--setting-sources ''` coupe toute autre source, donc seuls les skills de
+  // ce plugin existent pour l'agent.
+  if (o.skills?.length) args.push('--plugin-dir', agentPluginPath());
   args.push('--append-system-prompt-file', files.appendPath);
   if (o.outputSchema) args.push('--json-schema', JSON.stringify(o.outputSchema));
   if (o.resumeSessionId) args.push('--resume', o.resumeSessionId);

@@ -1,5 +1,6 @@
 import type { RepoConfig } from '../config/repo.js';
 import type { Issue } from '../github/source.js';
+import type { JobState } from '../store/types.js';
 import { tail } from '../util/text.js';
 import type { TriageVerdict } from './schemas.js';
 
@@ -114,4 +115,44 @@ ${neutralize(failureTail)}
 </sortie>
 
 Corrige le problème, relance les commandes de vérification (build, test, lint si défini), puis renvoie un rapport JSON complet mis à jour, avec le même schéma que précédemment.`;
+}
+
+/**
+ * Ce que la phase `jira` a besoin de savoir du job, et rien de plus : elle ne voit ni le dépôt ni le diff.
+ * Le type vit ici, et non auprès de `jiraOutcomeOf` dans `jobs/jira-sync.ts`, pour que le prompt n'ait rien
+ * à importer de `jobs/` : la dépendance ne va que dans un sens, de `jobs/` vers `agent/`.
+ */
+export interface JiraOutcome {
+  key: string;
+  state: JobState;
+  verificationFailed: boolean;
+  prUrl: string | null;
+  attempts: number;
+  costUsd: number;
+  duration: string;
+  targetHint: string;
+  reason: string | null;
+  flags: string[];
+}
+
+/**
+ * Prompt de la phase `jira`. Le contenu du ticket n'est **pas** rappelé ici : l'agent le lit lui-même avec
+ * `sisyphe jira show`, ce qui évite d'injecter du texte de tiers dans un prompt dont le rôle est d'agir.
+ */
+export function jiraSyncPrompt(o: JiraOutcome): string {
+  const lines = [
+    `Tu es en phase JIRA, la dernière du job. Ticket : ${o.key}. Applique le skill sisyphe-jira.`,
+    '',
+    'Résultat du job :',
+    `- issue : ${o.state}`,
+    `- vérification : ${o.verificationFailed ? 'échouée après toutes les tentatives' : 'passée'}`,
+    `- pull request : ${o.prUrl ?? 'aucune'}`,
+    `- tentatives : ${o.attempts}`,
+    `- coût : $${o.costUsd.toFixed(2)} · durée : ${o.duration}`,
+    `- statut de relecture configuré pour ce projet : « ${o.targetHint} »`,
+  ];
+  if (o.reason) lines.push(`- ce qui s'est passé : ${o.reason}`);
+  if (o.flags.length) lines.push(`- signalements : ${o.flags.join(', ')}`);
+  lines.push('', 'Termine par le rapport JSON demandé ; le schéma décrit chaque champ.');
+  return lines.join('\n');
 }

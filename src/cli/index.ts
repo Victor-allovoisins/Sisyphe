@@ -13,7 +13,7 @@ import { uiCommand } from './commands/ui.js';
 import { DEFAULT_UI_PORT } from '../ui/server.js';
 
 /** Les seules valeurs que produit réellement le pipeline (voir jobs/pipeline.ts, verify/verify.ts) : pas de phase `deliver` (elle n'écrit pas de fichier dédié dans le jobDir). */
-const PHASES = ['triage', 'implement', 'setup', 'verify'] as const;
+const PHASES = ['triage', 'implement', 'setup', 'verify', 'jira'] as const;
 
 const program = new Command('sisyphe')
   .description('Transforme des issues GitHub en pull requests avec un agent Claude')
@@ -25,7 +25,7 @@ program
   .command('logs')
   .description("Transcript et logs d'un job")
   .argument('<jobId>', 'id complet ou préfixe')
-  .addOption(new Option('--phase <name>', 'triage | implement | setup | verify').choices(PHASES))
+  .addOption(new Option('--phase <name>', 'triage | implement | setup | verify | jira').choices(PHASES))
   .option('--raw', 'fichiers bruts')
   .action(logsCommand);
 program

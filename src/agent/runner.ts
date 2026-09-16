@@ -21,6 +21,8 @@ export interface AgentRunOptions {
   pathGuard?: { worktreePath: string; protectedPatterns: string[] };
   /** Garde-fou Bash : `true` n'autorise que `sisyphe jira …`. Utilisé par la phase `jira`, qui n'a rien d'autre à lancer. */
   bashGuard?: boolean;
+  /** Skills du plugin livré avec Sisyphe à rendre visibles pour ce run. Absent : aucun skill. */
+  skills?: string[];
   /** Environnement du processus agent (agentEnv : daemon épuré + SISYPHE_* + clé API). */
   env: Record<string, string>;
   timeoutMs: number;

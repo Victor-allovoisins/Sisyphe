@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { zeroUsage } from '../store/types.js';
 import type { AgentRunOptions } from './runner.js';
+import { agentPluginPath } from './plugin-path.js';
 import { SdkAgentRunner, buildOptions, summarizeResult, type QueryFn } from './sdk-runner.js';
 
 const base = {
@@ -115,6 +116,17 @@ describe('buildOptions', () => {
       () => undefined,
     );
     expect((both.hooks?.PreToolUse ?? []).map((m) => m.matcher)).toEqual(['Edit|Write', 'Bash']);
+  });
+
+  it('charge le plugin de Sisyphe quand des skills sont demandés, et rien sinon', () => {
+    const withSkills = buildOptions(runOptions({ skills: ['sisyphe:sisyphe-jira'] }), { sandbox: false }, new AbortController(), () => undefined);
+    expect(withSkills.plugins).toEqual([{ type: 'local', path: agentPluginPath() }]);
+    expect(withSkills.skills).toEqual(['sisyphe:sisyphe-jira']);
+
+    const plain = buildOptions(runOptions(), { sandbox: false }, new AbortController(), () => undefined);
+    expect(plain.plugins).toBeUndefined();
+    expect(plain.skills).toBeUndefined();
+    expect(buildOptions(runOptions({ skills: [] }), { sandbox: false }, new AbortController(), () => undefined).plugins).toBeUndefined();
   });
 });
 

@@ -35,9 +35,23 @@ export const ImplementationReportSchema = z.object({
 });
 export type ImplementationReport = z.infer<typeof ImplementationReportSchema>;
 
+export const JiraSyncReportSchema = z.object({
+  status: z.string().describe("Statut Jira dans lequel le ticket a été laissé ; chaîne vide si aucune transition n'a eu lieu"),
+  /**
+   * Le texte, pas un booléen : le garde-fou Bash interdit toute redirection, donc un corps sur plusieurs
+   * lignes ne peut pas passer par la ligne de commande. L'agent l'écrit ici, le pipeline le poste. Vide =
+   * rien à dire, et le pipeline posera son message de secours.
+   */
+  comment: z.string().describe('Le commentaire à poster sur le ticket, en markdown ; chaîne vide pour ne rien poster'),
+  handedBack: z.boolean().describe("Le ticket a-t-il été rendu à la personne qui l'avait confié à Sisyphe"),
+  note: z.string().describe("Ce qui n'a pas pu être fait, en une phrase ; chaîne vide si tout s'est bien passé"),
+});
+export type JiraSyncReport = z.infer<typeof JiraSyncReportSchema>;
+
 // Le SDK valide en draft-07 : Zod 4 cible 2020-12 par défaut, d'où l'option.
 export const triageJsonSchema = z.toJSONSchema(TriageVerdictSchema, { target: 'draft-07' });
 export const reportJsonSchema = z.toJSONSchema(ImplementationReportSchema, { target: 'draft-07' });
+export const jiraSyncJsonSchema = z.toJSONSchema(JiraSyncReportSchema, { target: 'draft-07' });
 
 /** Rapport de secours quand l'agent n'a pas produit de JSON conforme. */
 export function fallbackReport(reason: string): ImplementationReport {

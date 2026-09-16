@@ -2,6 +2,7 @@ import { query as sdkQuery, type Options, type SDKResultMessage } from '@anthrop
 import { appendFile } from 'node:fs/promises';
 import { zeroUsage, type AgentUsage } from '../store/types.js';
 import { bashGuardHook, pathGuardHook } from './hooks.js';
+import { agentPluginPath } from './plugin-path.js';
 import type { AgentResult, AgentRunOptions, AgentRunner, AgentStopReason } from './runner.js';
 
 /**
@@ -48,6 +49,8 @@ export function buildOptions(o: AgentRunOptions, cfg: SdkRunnerConfig, controlle
     maxBudgetUsd: o.maxBudgetUsd,
     outputFormat: o.outputSchema ? { type: 'json_schema', schema: o.outputSchema } : undefined,
     resume: o.resumeSessionId,
+    plugins: o.skills?.length ? [{ type: 'local', path: agentPluginPath() }] : undefined,
+    skills: o.skills,
     hooks: buildHooks(o),
     abortController: controller,
     env: o.env,

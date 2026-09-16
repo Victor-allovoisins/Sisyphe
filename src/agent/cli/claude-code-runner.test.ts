@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { ClaudeCodeAgentRunner } from './claude-code-runner.js';
+import { ClaudeCodeAgentRunner, buildCliArgs } from './claude-code-runner.js';
+import { agentPluginPath } from '../plugin-path.js';
 import type { AgentRunOptions } from '../runner.js';
 
 const FAKE_CLAUDE = fileURLToPath(new URL('../../../test/fakes/fake-claude.sh', import.meta.url));
@@ -182,6 +183,19 @@ describe('ClaudeCodeAgentRunner : arguments', () => {
       hooks: { PreToolUse: Array<{ matcher: string }> };
     };
     expect(settings.hooks.PreToolUse.map((e) => e.matcher)).toEqual(['Edit|Write']);
+  });
+
+  it('avec des skills : --plugin-dir pointe sur le plugin livré avec Sisyphe ; sans, le drapeau disparaît', () => {
+    const base: AgentRunOptions = {
+      cwd: '/jobs/job-1', systemPromptAppend: 'append', prompt: 'p', maxTurns: 3, maxBudgetUsd: 1,
+      allowedTools: ['Bash'], disallowedTools: [], env: {}, timeoutMs: 1000,
+      signal: new AbortController().signal, transcriptPath: '/t.jsonl',
+    };
+    const files = { appendPath: '/tmp/append.md' };
+    const withSkills = buildCliArgs({ ...base, skills: ['sisyphe:sisyphe-jira'] }, files);
+    expect(valueOf(withSkills, '--plugin-dir')).toBe(agentPluginPath());
+    expect(buildCliArgs(base, files)).not.toContain('--plugin-dir');
+    expect(buildCliArgs({ ...base, skills: [] }, files)).not.toContain('--plugin-dir');
   });
 });
 
