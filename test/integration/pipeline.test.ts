@@ -47,6 +47,15 @@ describe('runJob', () => {
     expect(h.agent.calls[1].prompt).toContain('1. créer src/feature.txt');
   });
 
+  it('sous suivi GitHub, aucune phase jira : le chemin scripté reste en place', async () => {
+    const h = await makeHarness({ steps: [{ output: readyVerdict }, { output: report('Créé'), sideEffect: writeFeature('hello\n') }] });
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    const done = await runJob(job.id, h.deps, signal());
+
+    expect(done.state).toBe('done');
+    expect(h.deps.phases.listForJob(job.id).map((p) => p.name)).not.toContain('jira');
+  });
+
   it('agentBackend codex : le runner reçoit le modèle surchargé par phase ; la phase garde le modèle sisyphe.yml', async () => {
     const h = await makeHarness({
       steps: [{ output: readyVerdict }, { output: report('Créé'), sideEffect: writeFeature('hello\n') }],

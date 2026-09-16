@@ -1,10 +1,9 @@
 import type { ImplementationReport } from '../agent/schemas.js';
 import type { RepoConfig } from '../config/repo.js';
 import { SISYPHE_AUTHOR, type Git } from '../git/git.js';
-import { issueRefOf, parseRepo, type Forge, type Issue, type IssueTracker, type PullRef } from '../github/source.js';
+import { parseRepo, type Forge, type Issue, type PullRef } from '../github/source.js';
 import type { Job, Phase } from '../store/types.js';
 import type { VerifyResult } from '../verify/verify.js';
-import { renderDoneComment } from './comments.js';
 import { renderPrBody } from './pr-body.js';
 
 export interface DeliverInput {
@@ -14,7 +13,6 @@ export interface DeliverInput {
   report: ImplementationReport;
   verify: VerifyResult;
   phases: Phase[];
-  source: IssueTracker;
   forge: Forge;
   git: Git;
   worktreePath: string;
@@ -38,8 +36,6 @@ export interface DeliverResult {
   prUrl: string;
   commitSha: string;
   draft: boolean;
-  /** Échecs non bloquants survenus après la création de la PR (label, commentaire) : la PR existe, le job est livré. */
-  warnings: string[];
 }
 
 const MAX_SUBJECT = 200;
@@ -73,13 +69,14 @@ export function shouldBeDraft(job: Job, verify: VerifyResult, config: RepoConfig
 }
 
 /**
- * Commite l'arbre vérifié, pousse, crée ou met à jour la PR, puis met à jour l'issue.
- * Tout ce qui précède la PR lève (rien de durable n'existe encore) ; une fois la PR créée, les mises à jour
- * de l'issue sont en best-effort et remontées dans `warnings`, pour ne jamais marquer en échec un job livré.
+ * Commite l'arbre vérifié, pousse, crée ou met à jour la PR. Ne touche plus au ticket : statut et
+ * commentaire de fin sont le travail de `finish()` dans le pipeline, qui les tient pour *toutes* les
+ * sorties du job — la livraison n'en est qu'une, et n'a aucune raison d'en connaître le protocole.
+ * Tout ici lève : rien de durable n'existe avant la PR, et rien ne reste à faire après elle.
  * Non idempotent : chaque appel produit un nouveau commit (horodatage) et un force-push.
  */
 export async function deliver(i: DeliverInput): Promise<DeliverResult> {
-  const { job, config, source, forge, baseBranch } = i;
+  const { job, config, forge, baseBranch } = i;
   if (!job.branch || !job.baseSha) throw new Error('Job sans branche ou base : livraison impossible');
   if (!i.verify.treeSha) throw new Error('Aucun arbre vérifié : livraison impossible');
   // Seul point qui pousse : le garde anti-secrets est appliqué ici, quel que soit le chemin pris en amont.
@@ -105,19 +102,5 @@ export async function deliver(i: DeliverInput): Promise<DeliverResult> {
     pr = await forge.openPullRequest({ repo, title, head: job.branch, base: baseBranch, body, draft, labels: config.pr.labels, reviewers });
   }
 
-  const warnings: string[] = [];
-  const status = job.flags.verificationFailed ? 'failed' : 'done';
-  const issueRef = issueRefOf(job);
-  const bestEffort = async (what: string, fn: () => Promise<void>) => {
-    try {
-      await fn();
-    } catch (err) {
-      warnings.push(`${what} : ${err instanceof Error ? err.message : String(err)}`);
-    }
-  };
-  await bestEffort('label de statut', () => source.setStatus(issueRef, status));
-  await bestEffort('commentaire de fin', () =>
-    source.comment(issueRef, renderDoneComment({ jobId: job.id, prUrl: pr.url, status, costUsd: job.costUsd, durationMs: i.durationMs, attempts: job.attempt })),
-  );
-  return { prNumber: pr.number, prUrl: pr.url, commitSha, draft, warnings };
+  return { prNumber: pr.number, prUrl: pr.url, commitSha, draft };
 }

@@ -12,13 +12,13 @@ import { phaseModel, type MachineConfig } from '../config/machine.js';
 import { jobDir as jobDirFor, repoCachePath, type DataPaths } from '../config/paths.js';
 import { REPO_CONFIG_FILENAME, RepoConfigError, parseRepoConfig, type RepoConfig } from '../config/repo.js';
 import {
-  renderBlockedComment, renderCancelledComment, renderConfigProblemComment,
+  renderBlockedComment, renderCancelledComment, renderConfigProblemComment, renderDoneComment,
   renderMissingVersionComment, renderFailedComment,
   renderNoChangesComment, renderProtectedPathsComment, renderSecretsComment,
 } from '../deliver/comments.js';
 import { deliver } from '../deliver/deliver.js';
 import type { Git } from '../git/git.js';
-import { issueRefOf, type Forge, type IssueTracker } from '../github/source.js';
+import { issueRefOf, type Forge, type Issue, type IssueTracker, type StatusLabel } from '../github/source.js';
 import { browseUrl } from '../jira/links.js';
 import type { ActionStore } from '../store/actions.js';
 import type { JobPatch, JobStore } from '../store/jobs.js';
@@ -28,6 +28,7 @@ import { minutes } from '../util/time.js';
 import { agentEnv, repoEnv, runRepoCommand } from '../verify/commands.js';
 import { runVerification, type ScanFn, type VerifyResult } from '../verify/verify.js';
 import { resolveBaseBranch } from './base-branch.js';
+import { jiraOutcomeOf, runJiraPhase } from './jira-sync.js';
 import { relaunchFor } from './relaunch.js';
 import { branchName } from './slug.js';
 
@@ -67,6 +68,19 @@ const IMPLEMENT_MAX_TURNS = 200;
 export const SHUTDOWN = 'shutdown';
 export const CANCELLED = 'cancelled';
 
+/** Les backends qui savent charger un plugin local. Les autres gardent le chemin scripté. */
+function supportsSkills(backend: MachineConfig['agentBackend']): boolean {
+  return backend === 'sdk' || backend === 'claude-code';
+}
+
+/** Le statut que le chemin scripté posait pour chaque issue. */
+function statusFor(state: JobState): StatusLabel | null {
+  if (state === 'done') return 'done';
+  if (state === 'failed') return 'failed';
+  if (state === 'blocked') return 'blocked';
+  return null;
+}
+
 export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSignal): Promise<Job> {
   const { store, phases, source, forge } = deps;
   const initial = store.get(jobId);
@@ -78,10 +92,6 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
   const dir = jobDirFor(deps.paths, job.id);
   const startedAt = Date.now();
   const elapsed = () => Date.now() - startedAt;
-  const finish = (state: JobState, patch: JobPatch = {}) => {
-    const current = store.get(job.id) ?? job;
-    return store.transition(job.id, state, { ...patch, durationMs: (current.durationMs ?? 0) + elapsed() });
-  };
   const record = (res: AgentResult<unknown>) => {
     job = store.update(job.id, {
       costUsd: job.costUsd + res.costUsd,
@@ -122,13 +132,97 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
     await deps.git.removeWorktree(job.repo, worktreePath, branch ?? undefined).catch((err) => log.warn({ err }, 'worktree non supprimé'));
   };
 
+  // Hors du `try` : la clôture s'en sert depuis les sorties les plus précoces comme depuis le `catch`.
+  let issue: Issue | null = null;
+  /**
+   * L'environnement de la phase `jira` : le daemon épuré, et rien du dépôt. Elle n'a ni worktree ni branche
+   * à nommer — `SISYPHE_BRANCH` vide plutôt qu'une branche qui n'existe pas encore sur les sorties précoces.
+   */
+  const jiraEnv = agentEnv(
+    deps.env,
+    { cacheDir: repoCachePath(deps.paths, job.repo), issueNumber: job.issueNumber, branch: '' },
+    deps.machine.agentBackend,
+  );
+
+  /** Ce que le scripté postait avant, réutilisé par le filet quand l'agent n'a rien dit. */
+  const scriptedComment = (state: JobState, finished: Job): string => {
+    if (state === 'cancelled') return renderCancelledComment(finished.id);
+    if (finished.prUrl) {
+      return renderDoneComment({
+        jobId: finished.id, prUrl: finished.prUrl, status: state === 'done' ? 'done' : 'failed',
+        costUsd: finished.costUsd, durationMs: finished.durationMs, attempts: finished.attempt,
+      });
+    }
+    return renderFailedComment(finished.id, (finished.error ?? '').slice(0, 500), trigger);
+  };
+
+  /**
+   * Phase `jira` puis filet. Deux invariants, et rien d'autre :
+   * 1. un job non livré ne laisse jamais le ticket assigné au compte dédié ;
+   * 2. un job terminé laisse toujours un commentaire.
+   * Les deux sont vérifiés contre Jira, pas contre ce que l'agent affirme : c'est le seul état qui compte.
+   *
+   * `comment` est le texte que la sortie avait rédigé pour elle-même (verdict de triage, secrets, chemins
+   * protégés…) : lui seul dit *pourquoi* le job s'arrête là, et le message générique ne le remplace pas.
+   */
+  const closeTicket = async (finished: Job, state: JobState, comment?: string): Promise<void> => {
+    const scripted = comment ?? scriptedComment(state, finished);
+    const key = issue?.tracker?.key;
+    const project = deps.machine.jira?.projects.find((p) => p.repo === job.repo);
+    if (!key || !project || !supportsSkills(deps.machine.agentBackend)) {
+      // Chemin historique : suivi GitHub, ou backend sans skills.
+      await source.comment(issueRef, scripted).catch(() => undefined);
+      await source.setStatus(issueRef, statusFor(state)).catch(() => undefined);
+      return;
+    }
+    // Pas de modèle imposé : `config` (le sisyphe.yml du dépôt) n'existe pas sur les sorties les plus
+    // précoces — une config illisible est justement l'une d'elles. Chaque backend applique son défaut.
+    const { report, result } = await runPhase('jira', finished.attempt, null, () =>
+      runJiraPhase(
+        { agent: deps.agent, env: jiraEnv, transcriptPath: join(dir, `transcript-jira-${finished.attempt}.jsonl`), cwd: dir, timeoutMs: minutes(5), signal },
+        finished,
+        jiraOutcomeOf(finished, state, project.doneStatus, key),
+      ),
+      (out) => ({ outcome: out.report.note ? 'failure' : 'success', costUsd: out.result.costUsd, usage: out.result.usage, numTurns: out.result.numTurns, stopReason: out.result.stopReason }),
+    );
+    // Le coût suit le job comme celui des autres phases : le plafond quotidien le compte.
+    record(result);
+    if (state !== 'done' && !report.handedBack) {
+      const still = await source.canTrigger(issueRef).catch(() => ({ ok: false, login: null }));
+      if (still.ok) await source.removeTriggerLabel(issueRef).catch((err) => log.warn({ err }, 'ticket non rendu'));
+    }
+    // L'agent rédige, le pipeline poste : c'est le seul chemin, et il garantit qu'un job terminé laisse
+    // toujours une trace — texte de l'agent s'il en a écrit un, message scripté sinon.
+    const body = report.comment.trim() || scripted;
+    await source.comment(issueRef, body).catch((err) => log.warn({ err }, 'commentaire de fin non posté'));
+  };
+
+  /**
+   * Le point de sortie unique du job. Toute issue passe par ici : c'est ce qui garantit qu'un ticket est
+   * toujours clos, quel que soit le chemin pris — y compris les sorties anticipées du triage.
+   *
+   * Sous suivi GitHub, ou sur un backend agent sans skills, on garde le chemin scripté d'avant.
+   */
+  const finish = async (state: JobState, patch: JobPatch = {}, comment?: string): Promise<Job> => {
+    const current = store.get(job.id) ?? job;
+    const finished = store.transition(job.id, state, { ...patch, durationMs: (current.durationMs ?? 0) + elapsed() });
+    await closeTicket(finished, state, comment).catch((err) => log.warn({ err }, 'clôture du ticket incomplète'));
+    // Relu après la clôture : la phase `jira` a pu imputer son coût au job entre-temps.
+    return store.get(job.id) ?? finished;
+  };
+
   try {
-    signal.throwIfAborted();
     // Synchrone, avant tout await : le daemon s'appuie dessus pour ne pas redémarrer le même job.
     job = store.transition(job.id, 'triaging');
+    // Avant la première sortie possible, `throwIfAborted` compris : toute sortie passe par `finish`, qui
+    // fait tourner la phase `jira` dans `dir`. Une annulation au tout début l'y trouverait sinon absent.
     await mkdir(dir, { recursive: true });
+    signal.throwIfAborted();
     await source.setStatus(issueRef, 'in-progress');
-    const issue = await source.getIssue(issueRef);
+    issue = await source.getIssue(issueRef);
+    // Constante, comme `wtPath` plus bas : le `let` sert à la clôture, qui lit le ticket depuis le `catch`,
+    // mais son rétrécissement à `Issue` ne survit ni aux `await` qui suivent ni aux closures.
+    const loaded = issue;
 
     // Git et configuration du repo : on ne rafraîchit que les branches de base, jamais celles des jobs.
     const fetchUrl = await forge.getAuthenticatedRemoteUrl(issueRef.repo);
@@ -142,21 +236,17 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
       config = parseRepoConfig(configText);
     } catch (err) {
       if (!(err instanceof RepoConfigError)) throw err;
-      await source.comment(issueRef, renderConfigProblemComment(err.kind, err.message, trigger));
-      await source.setStatus(issueRef, 'blocked');
-      return finish('blocked', { error: err.message });
+      return finish('blocked', { error: err.message }, renderConfigProblemComment(err.kind, err.message, trigger));
     }
 
     // Avec Jira, la branche de base dépend de la version visée par le ticket, pas seulement du `sisyphe.yml`.
     const base = await resolveBaseBranch({
       config,
-      issue,
+      issue: loaded,
       branchExists: (b) => deps.git.remoteBranchExists(fetchUrl, b),
     });
     if (base.kind === 'blocked') {
-      await source.comment(issueRef, renderMissingVersionComment(base.reason, trigger));
-      await source.setStatus(issueRef, 'blocked');
-      return finish('blocked', { error: base.reason });
+      return finish('blocked', { error: base.reason }, renderMissingVersionComment(base.reason, trigger));
     }
     const baseBranch = base.branch;
     deps.log.info({ jobId: job.id, baseBranch, raison: base.reason }, 'branche de base retenue');
@@ -170,6 +260,8 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
     job = store.update(job.id, { branch, baseSha: wt.baseSha, worktreePath: wtPath });
     const envExtra = { cacheDir: repoCachePath(deps.paths, job.repo), issueNumber: job.issueNumber, branch };
     const env = repoEnv(deps.env, envExtra);
+    // Les phases de code travaillent dans le worktree : elles reçoivent les variables du dépôt, dont la
+    // phase `jira` (voir `jiraEnv` plus haut) n'a rien à faire.
     const agentEnvVars = agentEnv(deps.env, envExtra, deps.machine.agentBackend);
     await mkdir(env.SISYPHE_CACHE_DIR, { recursive: true });
     if (config.commands.setup) {
@@ -193,7 +285,7 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
       () =>
         deps.agent.run<TriageVerdict>({
           cwd: wtPath, model: phaseModel(deps.machine, 'triage', config.models.triage), phase: 'triage', systemPromptAppend: appendix,
-          prompt: triagePrompt(issue, config), outputSchema: triageJsonSchema,
+          prompt: triagePrompt(loaded, config), outputSchema: triageJsonSchema,
           maxTurns: TRIAGE_MAX_TURNS, maxBudgetUsd: config.budget.triageUsd,
           allowedTools: TRIAGE_TOOLS, disallowedTools: TRIAGE_DENY,
           pathGuard: { worktreePath: wtPath, protectedPatterns: config.protectedPaths },
@@ -217,10 +309,8 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
         };
     job = store.update(job.id, { verdict });
     if (verdict.verdict !== 'ready') {
-      await source.comment(issueRef, renderBlockedComment(verdict, trigger));
-      await source.setStatus(issueRef, 'blocked');
       await cleanup();
-      return finish('blocked', { error: `triage : ${verdict.verdict}` });
+      return finish('blocked', { error: `triage : ${verdict.verdict}` }, renderBlockedComment(verdict, trigger));
     }
 
     // Implémentation et vérification
@@ -232,7 +322,7 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
     for (let attempt = 1; attempt <= config.limits.maxAttempts; attempt++) {
       signal.throwIfAborted();
       job = store.update(job.id, { attempt });
-      const prompt = verify?.failedStep ? retryPrompt(verify.failedStep, verify.failureTail) : implementPrompt(issue, verdict, config);
+      const prompt = verify?.failedStep ? retryPrompt(verify.failedStep, verify.failureTail) : implementPrompt(loaded, verdict, config);
       const resume = sessionId;
       const ires = await runPhase(
         'implement',
@@ -274,22 +364,16 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
       job = store.update(job.id, { flags });
 
       if (verify.noChanges) {
-        await source.comment(issueRef, renderNoChangesComment(report.summary, trigger));
-        await source.setStatus(issueRef, 'blocked');
         await cleanup();
-        return finish('blocked', { error: 'aucun changement produit' });
+        return finish('blocked', { error: 'aucun changement produit' }, renderNoChangesComment(report.summary, trigger));
       }
       if (verify.flags.secretsFound.length > 0) {
-        await source.comment(issueRef, renderSecretsComment(verify.flags.secretsFound, trigger));
-        await source.setStatus(issueRef, 'failed');
         await cleanup();
-        return finish('failed', { error: 'secrets détectés dans le diff' });
+        return finish('failed', { error: 'secrets détectés dans le diff' }, renderSecretsComment(verify.flags.secretsFound, trigger));
       }
       if (verify.flags.protectedPathsTouched.length > 0) {
-        await source.comment(issueRef, renderProtectedPathsComment(verify.flags.protectedPathsTouched, trigger));
-        await source.setStatus(issueRef, 'failed');
         await cleanup();
-        return finish('failed', { error: 'chemins protégés modifiés dans le diff' });
+        return finish('failed', { error: 'chemins protégés modifiés dans le diff' }, renderProtectedPathsComment(verify.flags.protectedPathsTouched, trigger));
       }
       if (verify.ok) break;
       log.warn({ attempt, step: verify.failedStep }, 'vérification échouée');
@@ -316,19 +400,18 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
         const pushUrl = await forge.getAuthenticatedRemoteUrl(issueRef.repo);
         // durationMs ici = durée de ce seul run (depuis startedAt, ligne ~71) ; job.durationMs, lui, cumule
         // les runs précédents d'un job requeué (voir finish() ci-dessus) — deux grandeurs distinctes.
-        const ticket = issue.tracker && deps.machine.jira
-          ? { key: issue.tracker.key, url: browseUrl(deps.machine.jira.site, issue.tracker.key) }
+        const ticket = loaded.tracker && deps.machine.jira
+          ? { key: loaded.tracker.key, url: browseUrl(deps.machine.jira.site, loaded.tracker.key) }
           : null;
         return deliver({
-          job, issue, config, report, verify: verified, phases: phases.listForJob(job.id), ticket,
-          source, forge, git: deps.git, worktreePath: wtPath, pushUrl, prTemplate, baseBranch, durationMs: elapsed(),
+          job, issue: loaded, config, report, verify: verified, phases: phases.listForJob(job.id), ticket,
+          forge, git: deps.git, worktreePath: wtPath, pushUrl, prTemplate, baseBranch, durationMs: elapsed(),
         });
       },
       () => ({ outcome: 'success' }),
     );
     // La PR existe : on la persiste avant tout nettoyage, pour qu'un incident ensuite n'en perde pas la trace.
     job = store.update(job.id, { prNumber: delivered.prNumber, prUrl: delivered.prUrl, prState: 'open' });
-    if (delivered.warnings.length) log.warn({ warnings: delivered.warnings }, 'livraison : mises à jour de l’issue partielles');
     const final: JobState = job.flags.verificationFailed ? 'failed' : 'done';
     // Même en échec : le post-mortem se fait sur `jobs/<id>/` (transcripts, logs, diff) et sur la PR, pas sur le clone.
     await cleanup();
@@ -341,8 +424,6 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
       if (signal.reason === CANCELLED) {
         log.info({ err }, 'job annulé');
         await cleanup();
-        await source.comment(issueRef, renderCancelledComment(job.id)).catch(() => undefined);
-        await source.setStatus(issueRef, null).catch(() => undefined);
         return finish('cancelled', { error: 'annulé' });
       }
       log.info({ reason: signal.reason, err }, 'arrêt du daemon ou abort inconnu : job laissé pour la réconciliation');
@@ -350,10 +431,9 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
     }
     const message = err instanceof Error ? err.message : String(err);
     log.error({ err }, 'job en échec');
-    await source.comment(issueRef, renderFailedComment(job.id, message.slice(0, 500), trigger)).catch(() => undefined);
-    await source.setStatus(issueRef, 'failed').catch(() => undefined);
-    // Après le commentaire et le statut : le nettoyage lance deux sous-processus git et un rm -rf sans
-    // délai de garde, et un blocage là ne doit pas retarder ce que l'opérateur voit.
+    // Avant la clôture, désormais, et non plus après : `finish` y fait tourner un tour d'agent, et le
+    // worktree n'a pas à rester sur le disque pendant ce temps. Le nettoyage ne lève jamais (voir `cleanup`),
+    // donc il ne peut toujours pas retarder indéfiniment ce que l'opérateur voit.
     await cleanup();
     return finish('failed', { error: message });
   }

@@ -3,7 +3,7 @@ import { JIRA_STATUSES_DEFAULT } from '../../src/config/machine.js';
 import { JiraIssueTracker } from '../../src/jira/client.js';
 import { runJob } from '../../src/jobs/pipeline.js';
 import { remoteBranchSha, remoteCommitMessage } from '../helpers/git-fixture.js';
-import { REPO, makeHarness, readyVerdict, report, writeFeature } from '../helpers/harness.js';
+import { REPO, makeHarness, readyVerdict, repoRef, report, writeFeature } from '../helpers/harness.js';
 
 /**
  * Le pipeline complet avec un vrai `JiraIssueTracker` en source, branché sur un Jira factice.
@@ -16,6 +16,12 @@ import { REPO, makeHarness, readyVerdict, report, writeFeature } from '../helper
 
 const ACCOUNT = 'acc-sisyphe-ios';
 const ORDER: string[] = [...JIRA_STATUSES_DEFAULT];
+const ISSUE_7 = { repo: repoRef, number: 7 };
+
+/** Ce que la phase `jira` rend quand elle a fait son travail : elle a transitionné et rédigé son texte. */
+const jiraOk = { status: 'En relecture', comment: '🪨 PR prête : https://example.test/pr/1', handedBack: false, note: '' };
+/** Ce qu'elle rend quand elle n'a rien pu faire : c'est le cas que le filet doit rattraper. */
+const jiraMuet = { status: '', comment: '', handedBack: false, note: 'coincé' };
 
 /** Jira factice : un statut, un assigné, et un graphe de transitions qui suit le workflow réel. */
 function fakeJira(start = 'Nouveau') {
@@ -116,7 +122,14 @@ async function harnessOn(jiraTracker: JiraIssueTracker, steps: Parameters<typeof
 describe('pipeline sur Jira', () => {
   it('fait avancer le ticket jusqu’à « En relecture » et ouvre la PR sur la release', async () => {
     const j = fakeJira();
-    const h = await harnessOn(j.tracker, [{ output: readyVerdict }, { output: report('Créé'), sideEffect: writeFeature('hello\n') }], ['release/8.42.0']);
+    const h = await harnessOn(j.tracker, [
+      { output: readyVerdict },
+      { output: report('Créé'), sideEffect: writeFeature('hello\n') },
+      // La phase `jira` : c'est elle, désormais, qui pose le ticket en relecture. Le pas passe par le vrai
+      // tracker plutôt que d'écrire `j.state.status`, pour que la marche de proche en proche reste jouée —
+      // c'est elle que ce test prouve, et une écriture directe la contournerait.
+      { output: jiraOk, sideEffect: async () => { await j.tracker.setStatus(ISSUE_7, 'done'); } },
+    ], ['release/8.42.0']);
     const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
     const done = await runJob(job.id, h.deps, signal());
 
@@ -141,7 +154,8 @@ describe('pipeline sur Jira', () => {
   it('rend la main, sans quitter la colonne de travail, quand le triage bloque', async () => {
     const j = fakeJira();
     const blocked = { ...readyVerdict, verdict: 'needs_clarification', note: 'Il manque un écran.', questions: ['Quel écran ?'] };
-    const h = await harnessOn(j.tracker, [{ output: blocked }]);
+    // La phase `jira` ne dit rien : c'est le filet qui rend la main et qui poste le message scripté.
+    const h = await harnessOn(j.tracker, [{ output: blocked }, { output: jiraMuet }]);
     const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
     const done = await runJob(job.id, h.deps, signal());
 
@@ -160,6 +174,10 @@ describe('pipeline sur Jira', () => {
     const h = await harnessOn(j.tracker, [
       { output: readyVerdict },
       { output: report('v1'), sideEffect: async () => controller.abort('cancelled') },
+      // En production la phase `jira` ne tourne pas ici : son signal est déjà abattu, le runner refuse. Le
+      // runner scripté, lui, ignore le signal ; ce pas tient donc la place du rapport vide que `runJiraPhase`
+      // rend dans ce cas, et c'est bien le filet qui doit rendre le ticket.
+      { output: jiraMuet },
     ]);
     const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
     const left = await runJob(job.id, h.deps, controller.signal);
@@ -168,5 +186,47 @@ describe('pipeline sur Jira', () => {
     // Sans remise de la main, le ticket resterait « En développement » et assigné au bot : hors des statuts
     // candidats, donc jamais repris, et assigné à un compte qui ne le traitera plus.
     expect(j.state.assignee).toBe('acc-victor');
+  });
+
+  it('ouvre une phase jira à la fin du job', async () => {
+    const j = fakeJira();
+    const h = await harnessOn(j.tracker, [
+      { output: readyVerdict },
+      { output: report('Créé'), sideEffect: writeFeature('hello\n') },
+      { output: jiraOk, sideEffect: async () => { j.state.status = 'En relecture'; } },
+    ], ['release/8.42.0']);
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    await runJob(job.id, h.deps, signal());
+
+    expect(h.deps.phases.listForJob(job.id).map((p) => p.name)).toContain('jira');
+    expect(j.state.status).toBe('En relecture');
+  });
+
+  it('rend le ticket lui-même quand la phase jira ne l’a pas fait', async () => {
+    const j = fakeJira();
+    const blocked = { ...readyVerdict, verdict: 'needs_clarification', note: 'Il manque un écran.', questions: ['Quel écran ?'] };
+    const h = await harnessOn(j.tracker, [{ output: blocked }, { output: jiraMuet }]);
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    await runJob(job.id, h.deps, signal());
+
+    // Invariant 1 : un job non livré ne laisse jamais le ticket assigné au compte dédié.
+    expect(j.state.assignee).toBe('acc-victor');
+    // Invariant 2 : un job terminé laisse toujours une trace.
+    expect(j.state.comments.join('\n')).toContain('🪨');
+  });
+
+  it('poste le texte rédigé par la phase jira, et lui seul', async () => {
+    const j = fakeJira();
+    const h = await harnessOn(j.tracker, [
+      { output: readyVerdict },
+      { output: report('Créé'), sideEffect: writeFeature('hello\n') },
+      { output: jiraOk },
+    ], ['release/8.42.0']);
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    await runJob(job.id, h.deps, signal());
+
+    // Un seul commentaire, et c'est celui de l'agent : le message scripté ne doit pas s'y ajouter.
+    expect(j.state.comments).toHaveLength(1);
+    expect(j.state.comments[0]).toContain('https://example.test/pr/1');
   });
 });
