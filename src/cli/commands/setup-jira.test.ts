@@ -57,7 +57,7 @@ describe('askJira', () => {
 
   it('construit la section et résout l’accountId depuis une adresse', async () => {
     const lookup = found(1);
-    const s = scripted(['o', 'allovoisins.atlassian.net', 'bot@example.test', tokenPath, 'ios', 'bot@example.test']);
+    const s = scripted(['o', 'allovoisins.atlassian.net', 'bot@example.test', tokenPath, 'bot@example.test', 'ios']);
     const jira = await askJira({ ...s, repos: ['ILokYou/ILokYou-iOS'], dataDir: dir, lookup });
 
     expect(jira?.site).toBe('allovoisins.atlassian.net');
@@ -70,13 +70,13 @@ describe('askJira', () => {
   });
 
   it('fait choisir quand plusieurs comptes répondent', async () => {
-    const s = scripted(['o', 'allovoisins.atlassian.net', 'bot@example.test', tokenPath, 'IOS', 'sisyphe', '2']);
+    const s = scripted(['o', 'allovoisins.atlassian.net', 'bot@example.test', tokenPath, 'robot', '2', 'IOS']);
     const jira = await askJira({ ...s, repos: ['ILokYou/ILokYou-iOS'], dataDir: dir, lookup: found(3) });
     expect(jira?.projects[0].accountId).toBe('acc-2');
   });
 
   it('laisse un dépôt sur les issues GitHub quand aucun projet n’est donné', async () => {
-    const s = scripted(['o', 'allovoisins.atlassian.net', 'bot@example.test', tokenPath, '', '']);
+    const s = scripted(['o', 'allovoisins.atlassian.net', 'bot@example.test', tokenPath, 'robot', '', '']);
     const jira = await askJira({ ...s, repos: ['ILokYou/a', 'ILokYou/b'], dataDir: dir, lookup: found(1) });
     expect(jira).toBeUndefined();
   });
@@ -85,14 +85,14 @@ describe('askJira', () => {
     const lookup = vi.fn(async () => {
       throw new Error('ECONNREFUSED');
     });
-    const s = scripted(['o', 'allovoisins.atlassian.net', 'bot@example.test', tokenPath, 'IOS', 'sisyphe', 'acc-saisi']);
+    const s = scripted(['o', 'allovoisins.atlassian.net', 'bot@example.test', tokenPath, 'robot', 'acc-saisi', 'IOS']);
     const jira = await askJira({ ...s, repos: ['ILokYou/ILokYou-iOS'], dataDir: dir, lookup });
     expect(jira?.projects[0].accountId).toBe('acc-saisi');
   });
 
   it('écrit le jeton collé quand le fichier n’existe pas, en 0600', async () => {
     const missing = join(dir, 'pas-encore', 'jira-token.txt');
-    const s = scripted(['o', 'allovoisins.atlassian.net', 'bot@example.test', missing, 'jeton-collé', 'IOS', 'robot']);
+    const s = scripted(['o', 'allovoisins.atlassian.net', 'bot@example.test', missing, 'jeton-collé', 'robot', 'IOS']);
     const jira = await askJira({ ...s, repos: ['ILokYou/ILokYou-iOS'], dataDir: dir, lookup: found(1) });
 
     expect(jira?.apiTokenPath).toBe(missing);
@@ -104,7 +104,7 @@ describe('askJira', () => {
   });
 
   it('reprend un jeton déjà en place sans rien demander', async () => {
-    const s = scripted(['o', 'allovoisins.atlassian.net', 'bot@example.test', tokenPath, 'IOS', 'robot']);
+    const s = scripted(['o', 'allovoisins.atlassian.net', 'bot@example.test', tokenPath, 'robot', 'IOS']);
     const lookup = found(1);
     await askJira({ ...s, repos: ['ILokYou/ILokYou-iOS'], dataDir: dir, lookup });
 

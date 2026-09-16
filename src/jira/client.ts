@@ -385,15 +385,32 @@ export async function searchAccounts(
   query: string,
 ): Promise<{ accountId: string; displayName: string; emailAddress?: string }[]> {
   const doFetch = cfg.fetchImpl ?? fetch;
-  const res = await doFetch(`https://${cfg.site}/rest/api/3/user/search?query=${encodeURIComponent(query)}&maxResults=10`, {
-    headers: {
-      Authorization: `Basic ${Buffer.from(`${cfg.email}:${cfg.apiToken}`).toString('base64')}`,
-      Accept: 'application/json',
-    },
-  });
-  if (!res.ok) throw new JiraHttpError(res.status, 'GET', '/rest/api/3/user/search', await res.text().catch(() => ''));
-  const users = (await res.json()) as { accountId?: string; displayName?: string; emailAddress?: string }[];
-  return users
-    .filter((u): u is { accountId: string; displayName?: string; emailAddress?: string } => typeof u.accountId === 'string')
-    .map((u) => ({ accountId: u.accountId, displayName: u.displayName ?? u.accountId, emailAddress: u.emailAddress }));
+  const auth = `Basic ${Buffer.from(`${cfg.email}:${cfg.apiToken}`).toString('base64')}`;
+  const get = async (path: string): Promise<unknown> => {
+    const res = await doFetch(`https://${cfg.site}${path}`, { headers: { Authorization: auth, Accept: 'application/json' } });
+    if (!res.ok) throw new JiraHttpError(res.status, 'GET', path, await res.text().catch(() => ''));
+    return res.json();
+  };
+  const q = encodeURIComponent(query);
+
+  const found = (await get(`/rest/api/3/user/search?query=${q}&maxResults=10`)) as Account[];
+  const direct = keep(found);
+  if (direct.length > 0) return direct;
+
+  // `user/search` n'apparie une adresse que si le profil la rend visible, ce qui n'est pas le réglage par
+  // défaut de Jira Cloud : chercher le compte par son adresse y renvoie alors une liste vide, sans erreur.
+  // Le sélecteur d'utilisateurs, lui, apparie le nom affiché — c'est notre seconde chance, pas un doublon.
+  const picked = (await get(`/rest/api/3/user/picker?query=${q}&maxResults=10`)) as { users?: Account[] };
+  return keep(picked.users ?? []);
 }
+
+interface Account {
+  accountId?: string;
+  displayName?: string;
+  emailAddress?: string;
+}
+
+const keep = (users: Account[]): { accountId: string; displayName: string; emailAddress?: string }[] =>
+  users
+    .filter((u): u is Account & { accountId: string } => typeof u.accountId === 'string')
+    .map((u) => ({ accountId: u.accountId, displayName: u.displayName ?? u.accountId, emailAddress: u.emailAddress }));

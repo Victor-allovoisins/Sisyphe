@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { JIRA_STATUSES_DEFAULT } from '../config/machine.js';
 import { parseRepo, type IssueRef } from '../github/source.js';
-import { JiraIssueTracker, jqlQuote, numberFromKey, type JiraProject } from './client.js';
+import { JiraIssueTracker, jqlQuote, numberFromKey, searchAccounts, type JiraProject } from './client.js';
 
 const REPO = parseRepo('ILokYou/ILokYou-iOS');
 const REF: IssueRef = { repo: REPO, number: 885 };
@@ -76,6 +76,39 @@ describe('helpers', () => {
   it('jqlQuote échappe les guillemets, pour qu’un statut ne puisse pas casser la requête', () => {
     expect(jqlQuote('En développement')).toBe('"En développement"');
     expect(jqlQuote('a"b')).toBe('"a\\"b"');
+  });
+});
+
+describe('searchAccounts', () => {
+  /** Jira miniature : deux endpoints, chacun avec sa propre réponse. */
+  function accountFetch(bySearch: unknown, byPicker: unknown) {
+    const paths: string[] = [];
+    const fetchImpl = (async (url: string | URL) => {
+      const u = new URL(String(url));
+      paths.push(u.pathname);
+      const body = u.pathname.endsWith('/user/search') ? bySearch : byPicker;
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as unknown as typeof fetch;
+    return { paths, cfg: { site: 'acme.atlassian.net', email: 'a@b.test', apiToken: 'jeton', fetchImpl } };
+  }
+
+  it('se contente de user/search quand il répond', async () => {
+    const h = accountFetch([{ accountId: 'acc-1', displayName: 'Robot', emailAddress: 'r@x.test' }], { users: [] });
+    const found = await searchAccounts(h.cfg, 'robot');
+    expect(found).toEqual([{ accountId: 'acc-1', displayName: 'Robot', emailAddress: 'r@x.test' }]);
+    expect(h.paths).toEqual(['/rest/api/3/user/search']);
+  });
+
+  it('bascule sur le sélecteur quand la recherche ne rend rien : une adresse masquée n’y est pas appariée', async () => {
+    const h = accountFetch([], { users: [{ accountId: 'acc-2', displayName: 'Agent IA' }] });
+    const found = await searchAccounts(h.cfg, 'ia+jira@x.test');
+    expect(found).toEqual([{ accountId: 'acc-2', displayName: 'Agent IA', emailAddress: undefined }]);
+    expect(h.paths).toEqual(['/rest/api/3/user/search', '/rest/api/3/user/picker']);
+  });
+
+  it('rend une liste vide quand les deux échouent, sans lever', async () => {
+    const h = accountFetch([], { users: [] });
+    expect(await searchAccounts(h.cfg, 'inconnu')).toEqual([]);
   });
 });
 

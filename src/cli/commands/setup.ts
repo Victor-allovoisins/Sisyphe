@@ -156,12 +156,16 @@ export async function askJira(d: AskJiraDeps): Promise<MachineConfig['jira'] | u
   const apiToken = await ensureTokenFile(apiTokenPath, d);
   const lookup = d.lookup ?? searchAccounts;
 
+  // Demandé une seule fois : c'est la clé de projet qui route vers le dépôt, pas l'assigné. Nommer le dépôt
+  // à chaque compte laissait croire qu'il en faut un par dépôt, et faisait reposer la même question autant
+  // de fois qu'il y a de dépôts.
+  const accountId = await resolveAccount({ site, email, apiToken }, d, already?.projects[0]?.accountId, lookup);
+
   const projects: NonNullable<MachineConfig['jira']>['projects'] = [];
   for (const repo of d.repos) {
     const prev = already?.projects.find((p) => p.repo === repo);
     const key = await d.ask(`Projet Jira pour ${repo} (vide = rester sur les issues GitHub)`, prev?.key);
     if (!key) continue;
-    const accountId = await resolveAccount({ site, email, apiToken }, d, repo, prev?.accountId, lookup);
     projects.push({
       key: key.toUpperCase(),
       accountId,
@@ -212,16 +216,15 @@ async function ensureTokenFile(tokenPath: string, d: AskJiraDeps): Promise<strin
   }
 }
 
-/** Le compte auquel on assignera les tickets de ce dépôt, résolu depuis une adresse ou un nom. */
+/** Le compte auquel Sisyphe se verra assigner ses tickets, résolu depuis une adresse ou un nom. */
 async function resolveAccount(
   cfg: { site: string; email: string; apiToken: string },
   d: AskJiraDeps,
-  repo: string,
   previous: string | undefined,
   lookup: typeof searchAccounts,
 ): Promise<string> {
   for (;;) {
-    const query = await d.ask(`Compte Sisyphe pour ${repo} (adresse ou nom)`, previous);
+    const query = await d.ask('Compte Jira auquel assigner les tickets pour Sisyphe (adresse ou nom)', previous);
     if (!query) continue;
     let found: Awaited<ReturnType<typeof searchAccounts>>;
     try {
@@ -234,7 +237,10 @@ async function resolveAccount(
       continue;
     }
     if (found.length === 0) {
-      console.log(`Aucun compte ne correspond à « ${query} ».`);
+      // Sans cette sortie, une recherche infructueuse boucle indéfiniment et bloque toute l'installation.
+      console.log(`Aucun compte ne correspond à « ${query} ». Le compte doit être visible depuis le vôtre.`);
+      const manual = await d.ask('accountId Jira (laisser vide pour réessayer une recherche)', previous);
+      if (manual) return manual;
       continue;
     }
     if (found.length === 1) {

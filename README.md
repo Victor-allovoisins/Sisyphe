@@ -119,7 +119,7 @@ jira:
       doneStatus: En relecture
 ```
 
-`sisyphe setup` construit cette section par questions et résout l'`accountId` depuis une adresse — personne ne le connaît par cœur. Un dépôt sans projet Jira reste sur les issues GitHub : la bascule se fait dépôt par dépôt.
+`sisyphe setup` construit cette section par questions. Il demande le **compte une seule fois** — c'est la clé de projet qui route vers le dépôt, pas l'assigné — et résout son `accountId` depuis une adresse ou un nom d'affichage, que personne ne connaît par cœur. La clé attendue est celle qui préfixe les tickets (`IOS` pour `IOS-885`), pas le nom du projet. Un dépôt sans projet Jira reste sur les issues GitHub : la bascule se fait dépôt par dépôt.
 
 Ce qui change, côté usage :
 
