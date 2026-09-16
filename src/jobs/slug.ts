@@ -11,9 +11,9 @@ export function slugify(title: string, maxLength = 40, separator = '-'): string 
 }
 
 /**
- * `{prefix}{slug_snake_case}_{numero}`, par exemple `feature/stripe_coupons_517` pour le ticket 517.
- * Le numéro seul, jamais la clé complète ; snake_case, jamais de tiret dans le slug — sinon la branche ne
- * ressemble plus à celles que l'équipe ouvre à la main et les conventions divergent en silence.
+ * Convention AlloVoisins : `{prefix}{slug_snake_case}_{numero}`, par exemple `feature/stripe_coupons_517`
+ * pour IOS-517. Le numéro seul, jamais la clé complète ; snake_case, jamais de tiret dans le slug — sinon
+ * la branche ne ressemble plus à celles que l'équipe ouvre à la main et les conventions divergent en silence.
  */
 export function branchName(prefix: string, issueNumber: number, title: string): string {
   return `${prefix}${slugify(title, 40, '_')}_${issueNumber}`;

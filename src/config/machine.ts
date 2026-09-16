@@ -13,6 +13,13 @@ const REPO_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/;
 export const AGENT_BACKENDS = ['sdk', 'claude-code', 'codex', 'opencode'] as const;
 export type AgentBackend = (typeof AGENT_BACKENDS)[number];
 
+/**
+ * Workflow AlloVoisins, dans l'ordre. « En relecture » précède « Developpement fini » : la première veut dire
+ * PR ouverte, la seconde PR fusionnée. Source : av-tools, `skills/av-shared/reference/jira-<plateforme>.yml`,
+ * identique sur IOS, BACK et ANDROID.
+ */
+export const JIRA_STATUSES_DEFAULT = ['Nouveau', 'En analyse', 'A développer', 'En développement', 'En relecture', 'Developpement fini'] as const;
+
 export const MachineConfigSchema = z.strictObject({
   github: z.strictObject({
     appId: z.number().int().positive(),
@@ -57,22 +64,17 @@ export const MachineConfigSchema = z.strictObject({
             /** accountId du compte dédié (sisyphe-ios) : lui assigner un ticket déclenche le traitement. */
             accountId: z.string().min(1),
             repo: z.string().regex(REPO_PATTERN, 'format attendu : owner/repo'),
-            /**
-             * Les statuts décrivent le workflow de *votre* projet : aucun défaut, parce qu'il n'en existe
-             * pas de raisonnable. `sisyphe setup` les propose d'après ce que Jira déclare, et l'onglet
-             * Réglages les édite. Un défaut gravé ici imposerait le vocabulaire d'une équipe à toutes.
-             */
             /** Un ticket qui nous est assigné et qui est dans un de ces statuts devient un job. */
-            candidateStatuses: z.array(z.string().min(1)).min(1),
+            candidateStatuses: z.array(z.string().min(1)).min(1).default(['Nouveau', 'En analyse']),
             /** L'ordre du workflow : une transition ne saute jamais une étape, elle les enchaîne. */
-            statusesInOrder: z.array(z.string().min(1)).min(2),
+            statusesInOrder: z.array(z.string().min(1)).min(2).default([...JIRA_STATUSES_DEFAULT]),
             /** Où Sisyphe pose le ticket pendant qu'il travaille. */
-            inProgressStatus: z.string().min(1),
+            inProgressStatus: z.string().min(1).default('En développement'),
             /**
-             * Où il le pose une fois la PR ouverte. Le statut « en relecture » de votre workflow, pas celui
-             * qui veut dire terminé : un développeur ne déclare pas son propre travail fini, il le soumet.
+             * Où il le pose une fois la PR ouverte. « En relecture », pas « Developpement fini » : un
+             * développeur ne déclare pas son propre travail terminé, il le soumet à relecture.
              */
-            doneStatus: z.string().min(1),
+            doneStatus: z.string().min(1).default('En relecture'),
           }),
         )
         .min(1)

@@ -14,7 +14,7 @@ describe('labels', () => {
 
 describe('parseRepo', () => {
   it('découpe owner/name', () => {
-    expect(parseRepo('acme/demo')).toEqual({ owner: 'acme', name: 'demo', full: 'acme/demo' });
+    expect(parseRepo('ILokYou/ILokYou-iOS')).toEqual({ owner: 'ILokYou', name: 'ILokYou-iOS', full: 'ILokYou/ILokYou-iOS' });
     expect(() => parseRepo('nope')).toThrow();
     expect(issueRefOf({ repo: 'a/b', issueNumber: 3 })).toEqual({ repo: { owner: 'a', name: 'b', full: 'a/b' }, number: 3 });
   });

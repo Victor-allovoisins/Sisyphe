@@ -25,7 +25,7 @@ describe('slugify', () => {
 });
 
 describe('branchName', () => {
-  it('suit la convention Acme : slug snake_case puis numéro', () => {
+  it('suit la convention AlloVoisins : slug snake_case puis numéro', () => {
     expect(branchName('feature/', 42, 'Fix crash au login')).toBe('feature/fix_crash_au_login_42');
   });
   it("reprend l'exemple de la référence av-tools", () => {

@@ -79,20 +79,18 @@ Par défaut, Sisyphe lit des issues GitHub. Une section `jira` dans la config ma
 
 ```yaml
 jira:
-  site: votre-site.atlassian.net
-  email: bot@votre-domaine.tld          # compte porteur du jeton, signataire des commentaires
+  site: allovoisins.atlassian.net
+  email: ia+jira@allovoisins.com         # compte porteur du jeton, signataire des commentaires
   apiTokenPath: ~/.sisyphe/jira-token.txt
   projects:
-    - key: PROJ
-      accountId: 712020:...             # le compte dédié ; sisyphe setup le résout depuis une adresse
-      repo: owner/repo
-      candidateStatuses: [À faire, En analyse]
-      statusesInOrder: [À faire, En analyse, Prêt, En cours, En revue, Terminé]
-      inProgressStatus: En cours
-      doneStatus: En revue
+    - key: IOS
+      accountId: 712020:4963213c-f4db-4741-a1d7-ae8a7084ebdc   # « Agent IA »
+      repo: ILokYou/ILokYou-iOS
+      candidateStatuses: [Nouveau, En analyse]
+      statusesInOrder: [Nouveau, En analyse, A développer, En développement, En relecture, Developpement fini]
+      inProgressStatus: En développement
+      doneStatus: En relecture
 ```
-
-Les statuts n'ont **aucun défaut** : ils décrivent le workflow de votre projet, et Sisyphe n'en impose aucun. `sisyphe setup` lit ceux que Jira déclare et vous les donne à ranger — l'API ne les rend pas dans un ordre exploitable, et seul un humain sait lequel précède l'autre.
 
 `sisyphe setup` construit cette section par questions et résout l'`accountId` depuis une adresse — personne ne le connaît par cœur. Un dépôt sans projet Jira reste sur les issues GitHub : la bascule se fait dépôt par dépôt.
 

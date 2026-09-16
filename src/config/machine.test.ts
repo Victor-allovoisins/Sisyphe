@@ -11,7 +11,7 @@ github:
   installationId: 34
   privateKeyPath: ~/.sisyphe/app.pem
 repos:
-  - acme/demo
+  - ILokYou/ILokYou-iOS
 `;
 
 describe('parseMachineConfig', () => {
@@ -60,11 +60,11 @@ describe('parseMachineConfig', () => {
   });
 
   it('refuse un repo mal formé', () => {
-    expect(() => parseMachineConfig(minimal.replace('acme/demo', 'pasdeslash'))).toThrow(MachineConfigError);
+    expect(() => parseMachineConfig(minimal.replace('ILokYou/ILokYou-iOS', 'pasdeslash'))).toThrow(MachineConfigError);
   });
 
   it('refuse une liste de repos vide', () => {
-    expect(() => parseMachineConfig(minimal.replace('  - acme/demo', '  []'))).toThrow(MachineConfigError);
+    expect(() => parseMachineConfig(minimal.replace('  - ILokYou/ILokYou-iOS', '  []'))).toThrow(MachineConfigError);
   });
 
   it('refuse une clé inconnue', () => {
@@ -72,8 +72,8 @@ describe('parseMachineConfig', () => {
   });
 
   it('refuse des repos en double, un owner avec underscore et une concurrence excessive', () => {
-    expect(() => parseMachineConfig(minimal.replace('  - acme/demo', '  - a/b\n  - a/b'))).toThrow(/double/);
-    expect(() => parseMachineConfig(minimal.replace('acme/demo', 'my_org/repo'))).toThrow(/owner\/repo/);
+    expect(() => parseMachineConfig(minimal.replace('  - ILokYou/ILokYou-iOS', '  - a/b\n  - a/b'))).toThrow(/double/);
+    expect(() => parseMachineConfig(minimal.replace('ILokYou/ILokYou-iOS', 'my_org/repo'))).toThrow(/owner\/repo/);
     expect(() => parseMachineConfig(`${minimal}maxConcurrentJobs: 100\n`)).toThrow(/maxConcurrentJobs/);
     expect(() => parseMachineConfig(`${minimal}triggerLabel: "a b"\n`)).toThrow(/triggerLabel/);
   });
@@ -139,7 +139,7 @@ describe('loadMachineConfig', () => {
     const file = join(dir, 'config.yml');
     await writeFile(file, minimal);
     const c = await loadMachineConfig(file);
-    expect(c.repos).toEqual(['acme/demo']);
+    expect(c.repos).toEqual(['ILokYou/ILokYou-iOS']);
     await rm(dir, { recursive: true, force: true });
   });
 
