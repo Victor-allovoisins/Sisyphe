@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { parseRepo, type IssueRef } from '../../github/source.js';
-import { runJiraVerb, type JiraCli } from './jira.js';
+import { parseJiraArgv, runJiraVerb, type JiraCli } from './jira.js';
 
 const ref: IssueRef = { repo: parseRepo('acme/ios'), number: 886 };
 
@@ -55,5 +55,34 @@ describe('runJiraVerb', () => {
     const get = vi.fn(async () => ({ values: [] }));
     await runJiraVerb(fake({ get }), { verb: 'get', path: '/rest/api/3/issue/IOS-886/changelog' });
     expect(get).toHaveBeenCalledWith('/rest/api/3/issue/IOS-886/changelog');
+  });
+});
+
+describe('parseJiraArgv', () => {
+  it('assign sans drapeau lève une erreur qui nomme les deux choix', () => {
+    expect(() => parseJiraArgv(['assign', 'IOS-886'])).toThrow(/--back/);
+    expect(() => parseJiraArgv(['assign', 'IOS-886'])).toThrow(/--bot/);
+  });
+
+  it('assign avec les deux drapeaux lève aussi : un choix ambigu n’est pas un choix', () => {
+    expect(() => parseJiraArgv(['assign', 'IOS-886', '--back', '--bot'])).toThrow(/--back/);
+  });
+
+  it('assign --back / --bot produisent la cible attendue', () => {
+    expect(parseJiraArgv(['assign', 'IOS-886', '--back'])).toEqual({ verb: 'assign', key: 'IOS-886', to: 'back' });
+    expect(parseJiraArgv(['assign', 'IOS-886', '--bot'])).toEqual({ verb: 'assign', key: 'IOS-886', to: 'bot' });
+  });
+
+  it('comment reçoit le corps déjà lu, sans toucher à stdin', () => {
+    expect(parseJiraArgv(['comment', 'IOS-886'], { body: 'texte' })).toEqual({ verb: 'comment', key: 'IOS-886', body: 'texte' });
+  });
+
+  it('transition exige la clé et la cible', () => {
+    expect(parseJiraArgv(['transition', 'IOS-886', 'En relecture'])).toEqual({ verb: 'transition', key: 'IOS-886', target: 'En relecture' });
+    expect(() => parseJiraArgv(['transition', 'IOS-886'])).toThrow(/statut cible/);
+  });
+
+  it('un verbe inconnu liste les verbes valides', () => {
+    expect(() => parseJiraArgv(['bricoler'])).toThrow(/show, transitions, transition, comment, assign, get/);
   });
 });

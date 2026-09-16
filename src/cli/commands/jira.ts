@@ -76,40 +76,65 @@ export async function runJiraVerb(client: JiraCli, v: JiraVerb): Promise<string>
   }
 }
 
+/**
+ * Lit stdin en entier. Sans redirection, itérer sur `process.stdin` ne se termine jamais : un humain qui tape
+ * `sisyphe jira comment IOS-886` dans un terminal resterait bloqué sans indication. L'agent, lui, redirige
+ * toujours, donc ne voit jamais cette garde.
+ */
 async function readStdin(): Promise<string> {
+  if (process.stdin.isTTY) {
+    throw new Error(
+      "Aucune entrée standard à lire (terminal interactif) : rediriger le corps du commentaire, par exemple `sisyphe jira comment IOS-886 < corps.md` ou `sisyphe jira comment IOS-886 <<'EOF'`.",
+    );
+  }
   process.stdin.setEncoding('utf8');
   let data = '';
   for await (const chunk of process.stdin) data += chunk;
   return data;
 }
 
+/**
+ * Analyse pure des arguments de la commande, séparée de `jiraCommand` pour être testable sans passer par
+ * `createApp` ni par stdin : le corps d'un `comment` est fourni par l'appelant (déjà lu), pas lu ici.
+ */
+export function parseJiraArgv(argv: string[], opts: { body?: string } = {}): JiraVerb {
+  const [verb, ...rest] = argv;
+  switch (verb) {
+    case 'show':
+    case 'transitions':
+      return { verb, key: required(rest[0], 'clé de ticket') };
+    case 'transition':
+      return { verb, key: required(rest[0], 'clé de ticket'), target: required(rest[1], 'statut cible') };
+    case 'comment':
+      return { verb, key: required(rest[0], 'clé de ticket'), body: opts.body ?? '' };
+    case 'assign':
+      return { verb, key: required(rest[0], 'clé de ticket'), to: assignTarget(rest) };
+    case 'get':
+      return { verb, path: required(rest[0], 'chemin API') };
+    default:
+      throw new Error(`Verbe inconnu : ${verb ?? '(aucun)'} (attendu show, transitions, transition, comment, assign, get)`);
+  }
+}
+
+/**
+ * `assign` sans drapeau ne doit pas se résoudre en silence vers l'un des deux choix : rendre le ticket est
+ * l'action la moins réversible (voir `removeTriggerLabel`), elle ne doit jamais arriver par oubli de drapeau.
+ */
+function assignTarget(rest: string[]): 'back' | 'bot' {
+  const back = rest.includes('--back');
+  const bot = rest.includes('--bot');
+  if (back === bot) {
+    throw new Error('Drapeau manquant pour assign : --back (rendre le ticket) ou --bot (l’assigner à Sisyphe).');
+  }
+  return bot ? 'bot' : 'back';
+}
+
 /** Point d'entrée CLI : construit le vrai client, exécute, imprime. Le jeton ne quitte jamais `~/.sisyphe`. */
 export async function jiraCommand(argv: string[]): Promise<void> {
   const app = await createApp({ needsAgent: false });
   if (!app.jira) throw new Error('Aucune section `jira` dans la configuration machine : commande indisponible.');
-  const [verb, ...rest] = argv;
-  let parsed: JiraVerb;
-  switch (verb) {
-    case 'show':
-    case 'transitions':
-      parsed = { verb, key: required(rest[0], 'clé de ticket') };
-      break;
-    case 'transition':
-      parsed = { verb, key: required(rest[0], 'clé de ticket'), target: required(rest[1], 'statut cible') };
-      break;
-    case 'comment':
-      parsed = { verb, key: required(rest[0], 'clé de ticket'), body: await readStdin() };
-      break;
-    case 'assign':
-      parsed = { verb, key: required(rest[0], 'clé de ticket'), to: rest.includes('--bot') ? 'bot' : 'back' };
-      break;
-    case 'get':
-      parsed = { verb, path: required(rest[0], 'chemin API') };
-      break;
-    default:
-      throw new Error(`Verbe inconnu : ${verb ?? '(aucun)'} (attendu show, transitions, transition, comment, assign, get)`);
-  }
-  console.log(await runJiraVerb(app.jira, parsed));
+  const body = argv[0] === 'comment' ? await readStdin() : undefined;
+  console.log(await runJiraVerb(app.jira, parseJiraArgv(argv, { body })));
 }
 
 function required(value: string | undefined, what: string): string {
