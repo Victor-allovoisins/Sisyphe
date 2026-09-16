@@ -2,6 +2,7 @@
 import { Command, Option } from 'commander';
 import { cancelCommand } from './commands/cancel.js';
 import { doctorCommand } from './commands/doctor.js';
+import { jiraCommand } from './commands/jira.js';
 import { logsCommand } from './commands/logs.js';
 import { reportCommand } from './commands/report.js';
 import { serviceCommand } from './commands/service.js';
@@ -44,6 +45,12 @@ program
   .description("Annule un job actif : via le daemon s'il tourne, sinon en retirant le label trigger")
   .argument('<jobId>')
   .action(cancelCommand);
+program
+  .command('jira')
+  .description('Lit et pilote un ticket Jira : show, transitions, transition, comment, assign, get')
+  .argument('<args...>', 'verbe et ses arguments')
+  .allowUnknownOption()
+  .action((args: string[]) => jiraCommand(args));
 program.command('doctor').description("Vérifie l'installation").action(doctorCommand);
 program
   .command('setup')
