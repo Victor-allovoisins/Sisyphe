@@ -298,6 +298,17 @@ export const PAGE_HTML = `<!doctype html>
         <label class="field">Clé privée (chemin)<input type="text" id="set-key-path"></label>
         <label class="field">Dossier de données<input type="text" id="set-data-dir" disabled></label>
       </div>
+      <div id="set-jira-block" hidden>
+        <h2 class="section-title">Jira</h2>
+        <div class="settings-grid">
+          <label class="field">Site<input type="text" id="set-jira-site" placeholder="xxx.atlassian.net"></label>
+          <label class="field">Compte porteur du jeton<input type="text" id="set-jira-email" placeholder="adresse"></label>
+          <label class="field">Jeton API (chemin)<input type="text" id="set-jira-token"></label>
+        </div>
+        <p class="hint muted">Seul le chemin est manipulé ici : le jeton lui-même n'est ni lu, ni affiché, ni transmis à la page.</p>
+        <ul class="plain" id="set-jira-projects"></ul>
+        <p class="hint muted">Projets et statuts se changent par <code>sisyphe setup</code>.</p>
+      </div>
       <h2 class="section-title">Dépôts surveillés</h2>
       <ul class="plain" id="set-repos"></ul>
       <div class="filters">
@@ -1227,7 +1238,10 @@ export const PAGE_HTML = `<!doctype html>
     agentBackend: 'set-backend',
     'agentModels.triage': 'set-model-triage',
     'agentModels.implement': 'set-model-implement',
-    dataDir: 'set-data-dir'
+    dataDir: 'set-data-dir',
+    'jira.site': 'set-jira-site',
+    'jira.email': 'set-jira-email',
+    'jira.apiTokenPath': 'set-jira-token'
   };
   var CHECK_ICON = { ok: '✅', warn: '⚠️', fail: '❌' };
   var CHECK_CLASS = { ok: 's-done', warn: 's-blocked', fail: 's-failed' };
@@ -1235,7 +1249,7 @@ export const PAGE_HTML = `<!doctype html>
   var REPO_CHECK_SUFFIX = ' · sisyphe.yml';
 
   /** État du formulaire : dernière config enregistrée (chaîne comparable) et liste de dépôts en cours d'édition. */
-  var settings = { loaded: false, loading: false, baseline: null, repos: [], notice: null, lastReadOnly: null };
+  var settings = { loaded: false, loading: false, baseline: null, repos: [], jira: null, notice: null, lastReadOnly: null };
 
   function numberValue(id) {
     var v = byId(id).value.trim();
@@ -1262,6 +1276,17 @@ export const PAGE_HTML = `<!doctype html>
       // Reposté tel quel : le serveur refuse une modification, et l'omettre ferait retomber le schéma sur sa valeur par défaut.
       dataDir: byId('set-data-dir').value
     };
+    // La section Jira n'est éditable que sur ses trois scalaires ; les projets repartent tels qu'ils ont été
+    // chargés. Il faut la réémettre entière : le schéma exige projects, et l'omettre ferait reporter
+    // l'ancienne section par le serveur, donc perdre la saisie.
+    if (settings.jira) {
+      config.jira = {
+        site: byId('set-jira-site').value.trim(),
+        email: byId('set-jira-email').value.trim(),
+        apiTokenPath: byId('set-jira-token').value.trim(),
+        projects: settings.jira.projects
+      };
+    }
     // Les deux champs vides : aucune clé agentModels envoyée, le serveur garde ses défauts. Sinon seules les surcharges saisies partent.
     if (triage || implement) {
       config.agentModels = {};
@@ -1314,7 +1339,24 @@ export const PAGE_HTML = `<!doctype html>
     setField('set-model-implement', models.implement);
     setField('set-data-dir', dataDir);
     settings.repos = config.repos.slice();
+    settings.jira = config.jira || null;
+    byId('set-jira-block').hidden = !settings.jira;
+    if (settings.jira) {
+      setField('set-jira-site', settings.jira.site);
+      setField('set-jira-email', settings.jira.email);
+      setField('set-jira-token', settings.jira.apiTokenPath);
+      renderJiraProjects();
+    }
     renderReposEditor();
+  }
+
+  /** Les projets en lecture seule : leur édition passe par sisyphe setup, qui résout aussi les accountId. */
+  function renderJiraProjects() {
+    var list = byId('set-jira-projects');
+    clear(list);
+    (settings.jira.projects || []).forEach(function (p) {
+      list.appendChild(el('li', null, p.key + ' → ' + p.repo + ' · ' + p.inProgressStatus + ' → ' + p.doneStatus));
+    });
   }
 
   function updateSaveState() {
@@ -1346,7 +1388,8 @@ export const PAGE_HTML = `<!doctype html>
   function applySettingsReadOnly() {
     var disabled = ui.readOnly;
     ['set-poll', 'set-concurrent', 'set-budget', 'set-backend', 'set-sandbox', 'set-model-triage',
-      'set-model-implement', 'set-app-id', 'set-installation', 'set-label', 'set-key-path'].forEach(function (id) {
+      'set-model-implement', 'set-app-id', 'set-installation', 'set-label', 'set-key-path',
+      'set-jira-site', 'set-jira-email', 'set-jira-token'].forEach(function (id) {
       byId(id).disabled = disabled;
     });
     byId('set-data-dir').disabled = true;

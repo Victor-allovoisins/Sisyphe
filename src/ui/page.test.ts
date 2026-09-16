@@ -35,6 +35,17 @@ describe('PAGE_HTML', () => {
     expect(PAGE_HTML).toContain("'/api/report?since='");
   });
 
+  it('expose un bloc Jira qui ne manipule que le chemin du jeton, jamais sa valeur', () => {
+    expect(PAGE_HTML).toContain('id="set-jira-site"');
+    expect(PAGE_HTML).toContain('id="set-jira-email"');
+    expect(PAGE_HTML).toContain('id="set-jira-token"');
+    expect(PAGE_HTML).toContain('Jeton API (chemin)');
+    // Le bloc est masqué tant qu'aucune section jira n'est configurée.
+    expect(PAGE_HTML).toContain('id="set-jira-block" hidden');
+    // Les projets repartent tels quels : sans eux le schéma refuserait la section, et la saisie serait perdue.
+    expect(PAGE_HTML).toContain('projects: settings.jira.projects');
+  });
+
   it('ajoute un quatrième onglet Réglages, avec son formulaire groupé', () => {
     expect(PAGE_HTML).toContain('data-tab="settings"');
     expect(PAGE_HTML).toContain('id="view-settings"');
