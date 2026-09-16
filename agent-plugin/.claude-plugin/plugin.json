@@ -1,0 +1,6 @@
+{
+  "name": "sisyphe",
+  "version": "0.1.0",
+  "description": "Skills livrés avec Sisyphe pour son agent autonome.",
+  "author": { "name": "Sisyphe" }
+}
