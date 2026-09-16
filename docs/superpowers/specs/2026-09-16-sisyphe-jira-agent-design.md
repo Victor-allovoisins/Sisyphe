@@ -114,6 +114,10 @@ Le chargement d'un plugin local par le SDK, avec `settingSources: []`. C'est le 
 
 À vérifier par un essai court avant d'écrire le reste : un plugin minimal, un skill qui ne fait qu'une chose, et la confirmation que l'agent l'invoque. Même vérification sur le backend `claude-code`, où le chargement passe par `--plugin-dir`.
 
+**Sonde du 2026-09-16 : les deux backends chargent bien un plugin local sous isolement.** Plugin jetable (`.claude-plugin/plugin.json` + `skills/probe-skill/SKILL.md`), lancé depuis un répertoire vide hors du dépôt. Côté SDK (0.3.263, `settingSources: []`, `plugins: [{ type: 'local', path }]`, `skills: ['probe:probe-skill']`), le message `init` liste le plugin et le skill, l'agent émet `Skill{skill:'probe:probe-skill'}` et répond `MARMOTTE` ; inchangé en ajoutant `managedSettings: { strictPluginOnlyCustomization: ['hooks','mcp'] }`, c'est-à-dire dans les conditions exactes de Sisyphe. Côté CLI (`claude -p --setting-sources '' --strict-mcp-config --plugin-dir <dir>`), même `init`, même invocation, même réponse. La §3.4 tient donc en l'état.
+
+Deux précisions pour la suite. La forme vérifiée du nom de skill est la forme qualifiée `<plugin>:<skill>` ; la §3.4 écrit `skills: ['sisyphe-jira']`, à requalifier du nom du plugin. Et la restriction des skills : côté SDK l'option `skills` filtre bien ce que le modèle voit — avec `skills: ['probe:probe-skill']` l'agent déclare `dataviz` inexistant — mais le champ `skills` du message `init` liste les skills découverts sans tenir compte du filtre, identique avec et sans l'option : ne pas s'en servir comme preuve. Côté CLI il n'existe pas de drapeau équivalent (`--disable-slash-commands` coupe tout, rien ne restreint au cas par cas), en revanche la syntaxe de permissions d'outil atteint bien un skill nommé : `--disallowedTools 'Skill(probe:probe-skill)'` a fait refuser l'invocation, refus visible dans `permission_denials`.
+
 ## 6. Tests
 
 - **`transitions.ts`** : inchangé, déjà couvert. Le skill reprend son algorithme, il ne le remplace pas.
