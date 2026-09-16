@@ -1,6 +1,43 @@
 import { describe, expect, it } from 'vitest';
 import { PAGE_HTML } from './page.js';
 
+const JIRA = { site: 'acme.atlassian.net', keys: { 'acme/demo': 'DEMO' } };
+
+/** Corps d'une fonction du script embarqué, bornes comprises, par comptage d'accolades. */
+function fnSource(name: string): string {
+  const start = PAGE_HTML.indexOf('function ' + name + '(');
+  if (start < 0) throw new Error(`fonction introuvable dans la page : ${name}`);
+  let depth = 0;
+  for (let i = PAGE_HTML.indexOf('{', start); i < PAGE_HTML.length; i++) {
+    if (PAGE_HTML[i] === '{') depth++;
+    else if (PAGE_HTML[i] === '}' && --depth === 0) return PAGE_HTML.slice(start, i + 1);
+  }
+  throw new Error(`fonction non terminée : ${name}`);
+}
+
+function constSource(name: string): string {
+  const m = new RegExp('var ' + name + ' = .*;').exec(PAGE_HTML);
+  if (!m) throw new Error(`constante introuvable dans la page : ${name}`);
+  return m[0];
+}
+
+interface FakeNode { tag: string; text: string; href?: string; target?: string; rel?: string }
+
+/**
+ * Les gardes de lien sont le point sensible de la page : on les extrait du HTML et on les exécute
+ * pour de vrai. Un test qui se contenterait de chercher `'https://github.com/'` dans la chaîne
+ * resterait vert le jour où la validation du site Jira disparaîtrait.
+ */
+function guards(jira: unknown): { issueLink(repo: string, number: number): FakeNode } {
+  const source = [
+    ...['REPO_RE', 'JIRA_SITE_RE', 'JIRA_KEY_RE'].map(constSource),
+    ...['safeLink', 'ghLink', 'jiraKey', 'issueLabel', 'issueLink'].map(fnSource),
+    'return { issueLink: issueLink };',
+  ].join('\n');
+  const el = (tag: string, _cls: string | null, text: string): FakeNode => ({ tag, text });
+  return Function('ui', 'el', source)({ jira }, el);
+}
+
 describe('PAGE_HTML', () => {
   it('est une page HTML complète et autonome', () => {
     expect(PAGE_HTML.startsWith('<!doctype html>')).toBe(true);
@@ -22,8 +59,22 @@ describe('PAGE_HTML', () => {
     expect(PAGE_HTML).toContain('createElement');
   });
 
-  it('ne fabrique un lien que vers https://github.com/', () => {
-    expect(PAGE_HTML).toContain("'https://github.com/'");
+  it('ne fabrique un lien que vers GitHub ou le site Jira configuré', () => {
+    expect(guards(null).issueLink('acme/demo', 42)).toMatchObject({ tag: 'a', text: 'acme/demo#42', href: 'https://github.com/acme/demo/issues/42', target: '_blank', rel: 'noopener noreferrer' });
+    expect(guards(JIRA).issueLink('acme/demo', 42)).toMatchObject({ tag: 'a', text: 'DEMO-42', href: 'https://acme.atlassian.net/browse/DEMO-42' });
+    // Dépôt hors des projets Jira : la configuration peut être mixte, ses tickets restent sur GitHub.
+    expect(guards(JIRA).issueLink('acme/other', 7).href).toBe('https://github.com/acme/other/issues/7');
+  });
+
+  it('ne suit pas un site Jira qui déplacerait l’origine du lien', () => {
+    // Le site arrive par le snapshot : `@` ou `/` y suffirait à pointer ailleurs qu’Atlassian.
+    for (const site of ['acme.atlassian.net@evil.example', 'evil.example', 'acme.atlassian.net/../evil']) {
+      const link = guards({ site, keys: { 'acme/demo': 'DEMO' } }).issueLink('acme/demo', 42);
+      expect(link.href).toBe('https://github.com/acme/demo/issues/42');
+    }
+    // Même exigence sur la clé de projet, qui compose l’URL elle aussi.
+    expect(guards({ site: 'acme.atlassian.net', keys: { 'acme/demo': '../evil' } }).issueLink('acme/demo', 42).href)
+      .toBe('https://github.com/acme/demo/issues/42');
   });
 
   it('expose les trois onglets, le flux SSE et les routes JSON', () => {

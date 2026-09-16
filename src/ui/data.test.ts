@@ -73,6 +73,8 @@ async function makeUi(
   opts: {
     service?: UiService; control?: UiControl; readOnly?: boolean; now?: () => Date;
     dailyBudgetUsd?: number | null | 'absent'; agentBackend?: AgentBackend;
+    /** Section `jira` couvrant `acme/demo` seul : `acme/other` reste sur GitHub, c'est le cas mixte. */
+    jira?: boolean;
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), 'sisyphe-ui-'));
@@ -83,8 +85,11 @@ async function makeUi(
   const actions = new ActionStore(db);
   const budget = opts.dailyBudgetUsd === undefined ? 20 : opts.dailyBudgetUsd;
   const budgetLine = budget === 'absent' ? '' : `dailyBudgetUsd: ${budget}\n`;
+  const jiraLine = opts.jira
+    ? 'jira:\n  site: acme.atlassian.net\n  email: bot@acme.io\n  apiTokenPath: /dev/null\n  projects:\n    - key: DEMO\n      accountId: acc-1\n      repo: acme/demo\n'
+    : '';
   const machine = parseMachineConfig(
-    `github:\n  appId: 1\n  installationId: 1\n  privateKeyPath: /dev/null\nrepos:\n  - acme/demo\n  - acme/other\ndataDir: ${root}\nagentBackend: ${opts.agentBackend ?? 'sdk'}\n${budgetLine}`,
+    `github:\n  appId: 1\n  installationId: 1\n  privateKeyPath: /dev/null\nrepos:\n  - acme/demo\n  - acme/other\ndataDir: ${root}\nagentBackend: ${opts.agentBackend ?? 'sdk'}\n${budgetLine}${jiraLine}`,
   );
   const data = createUiData({
     store,
@@ -205,6 +210,14 @@ describe('overview', () => {
     expect(o.counts).toEqual({ active: 2, queued: 1, done: 2, blocked: 1, failed: 1, cancelled: 1 });
     expect(o.backend).toBe('sdk');
     expect(o.repos).toEqual(['acme/demo', 'acme/other']);
+    // Sans section `jira`, les tickets restent sur GitHub et la page n'a rien à réécrire.
+    expect(o.jira).toBeNull();
+  });
+
+  it('jira porte le site et la clé de projet de chaque dépôt suivi sur Jira', async () => {
+    const ui = await makeUi({ jira: true });
+
+    expect((await ui.data.overview()).jira).toEqual({ site: 'acme.atlassian.net', keys: { 'acme/demo': 'DEMO' } });
   });
 
   it('active porte la dernière phase ouverte, le temps écoulé et les 30 dernières lignes du transcript', async () => {
@@ -340,6 +353,24 @@ describe('jobDetail', () => {
     await mkdir(dir, { recursive: true });
     return { ui, dir };
   }
+
+  it('issueUrl pointe sur le ticket Jira du projet qui sert ce dépôt', async () => {
+    const ui = await makeUi({ jira: true });
+    insertJob(ui.db, { id: 'abcdef01', repo: 'acme/demo', issueNumber: 42, state: 'blocked' });
+
+    const detail = await ui.data.jobDetail('abcdef01');
+
+    expect(detail?.issueUrl).toBe('https://acme.atlassian.net/browse/DEMO-42');
+  });
+
+  it('issueUrl reste sur GitHub pour un dépôt sans projet Jira', async () => {
+    const ui = await makeUi({ jira: true });
+    insertJob(ui.db, { id: 'abcdef02', repo: 'acme/other', issueNumber: 7, state: 'done' });
+
+    const detail = await ui.data.jobDetail('abcdef02');
+
+    expect(detail?.issueUrl).toBe('https://github.com/acme/other/issues/7');
+  });
 
   it('joint les actions du job, dans l’ordre où elles ont eu lieu, et seulement les siennes', async () => {
     const { ui } = await seedDetail();

@@ -5,7 +5,9 @@
  * 1. la chaîne est **statique** — aucune interpolation côté serveur (aucun `${`), les données
  *    arrivent uniquement par l'API JSON ;
  * 2. le script ne construit jamais de HTML : `createElement` + `textContent` exclusivement, et un
- *    lien n'est fabriqué qu'après vérification du préfixe `https://github.com/`.
+ *    lien n'est fabriqué qu'après vérification de son préfixe — `https://github.com/`, ou la base
+ *    `https://<site>/browse/` du Jira configuré, dont le site est re-validé à chaque appel parce
+ *    qu'il arrive par le snapshot (un `site` portant `@` ou `/` déplacerait l'origine du lien).
  *
  * Corollaire de (1) : le JS embarqué n'utilise ni littéral de gabarit ni `${}` — les chaînes sont
  * concaténées avec `+`.
@@ -363,6 +365,9 @@ export const PAGE_HTML = `<!doctype html>
     done: 's-done', blocked: 's-blocked', failed: 's-failed', cancelled: 's-cancelled'
   };
   var REPO_RE = /^[A-Za-z0-9][A-Za-z0-9-]*\\/[A-Za-z0-9._-]+$/;
+  // Mêmes formes que le schéma de configuration : ce qui arrive par le snapshot est re-validé avant de servir d'URL.
+  var JIRA_SITE_RE = /^[a-z0-9-]+\\.atlassian\\.net$/;
+  var JIRA_KEY_RE = /^[A-Z][A-Z0-9_]*$/;
   /** États sur lesquels Relancer a un sens ; partout ailleurs c'est Annuler, ou rien pour un job terminé. */
   var RETRYABLE = { failed: true, blocked: true, cancelled: true };
   var TERMINAL = { done: true, blocked: true, failed: true, cancelled: true };
@@ -375,7 +380,7 @@ export const PAGE_HTML = `<!doctype html>
    * chargés par des routes qui ne portent pas ces champs. readOnly vaut vrai tant qu'aucun snapshot
    * n'est arrivé — une instance --read-only ne doit jamais laisser clignoter un bouton.
    */
-  var ui = { readOnly: true, reachable: false, paused: null, serviceRunning: false, repos: [], pendingRestart: [] };
+  var ui = { readOnly: true, reachable: false, paused: null, serviceRunning: false, repos: [], jira: null, pendingRestart: [] };
   /** Échéance d'un appel d'action : au-dessus des 30 s que le serveur s'accorde pour attendre un démarrage. */
   var ACTION_TIMEOUT_MS = 45000;
   /** Toasts empilés au plus ; au-delà les plus anciens quitteraient l'écran. */
@@ -418,9 +423,9 @@ export const PAGE_HTML = `<!doctype html>
     return d.toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
   }
 
-  /** Un lien n'existe que si l'URL vient bien de GitHub ; sinon le texte reste du texte. */
-  function ghLink(url, label) {
-    if (typeof url !== 'string' || url.indexOf('https://github.com/') !== 0) return el('span', 'muted', label);
+  /** Le texte reste du texte tant que l'URL ne commence pas exactement par la base donnee ; sans base, jamais de lien. */
+  function safeLink(url, label, base) {
+    if (typeof base !== 'string' || typeof url !== 'string' || url.indexOf(base) !== 0) return el('span', 'muted', label);
     var a = el('a', null, label);
     a.href = url;
     a.target = '_blank';
@@ -428,9 +433,31 @@ export const PAGE_HTML = `<!doctype html>
     return a;
   }
 
+  /** Les PR restent sur GitHub quel que soit le suivi des tickets. */
+  function ghLink(url, label) {
+    return safeLink(url, label, 'https://github.com/');
+  }
+
+  /** Clé de projet Jira servant ce dépôt, ou null : tickets GitHub, site invalide, ou dépôt sans projet. */
+  function jiraKey(repo) {
+    var j = ui.jira;
+    if (!j || !JIRA_SITE_RE.test(String(j.site)) || !j.keys) return null;
+    var key = Object.prototype.hasOwnProperty.call(j.keys, repo) ? j.keys[repo] : null;
+    return typeof key === 'string' && JIRA_KEY_RE.test(key) ? key : null;
+  }
+
+  /** Comment se nomme le ticket : IOS-885 sous Jira, owner/repo#885 sur GitHub. */
+  function issueLabel(repo, number) {
+    var key = jiraKey(repo);
+    return key ? key + '-' + String(number) : String(repo) + '#' + String(number);
+  }
+
   function issueLink(repo, number) {
-    var label = String(repo) + '#' + String(number);
-    if (!REPO_RE.test(String(repo)) || !isFinite(Number(number))) return el('span', 'muted', label);
+    var label = issueLabel(repo, number);
+    if (!isFinite(Number(number))) return el('span', 'muted', label);
+    var key = jiraKey(repo);
+    if (key) return safeLink('https://' + ui.jira.site + '/browse/' + key + '-' + Number(number), label, 'https://' + ui.jira.site + '/browse/');
+    if (!REPO_RE.test(String(repo))) return el('span', 'muted', label);
     return ghLink('https://github.com/' + repo + '/issues/' + Number(number), label);
   }
 
@@ -592,7 +619,7 @@ export const PAGE_HTML = `<!doctype html>
     button.type = 'button';
     button.setAttribute('data-action', kind);
     button.setAttribute('data-job', job.id);
-    var label = job.repo + '#' + job.issueNumber;
+    var label = issueLabel(job.repo, job.issueNumber);
     var question = isCancel ? 'Annuler le job ' + label + ' ?' : 'Relancer le job ' + label + ' ?';
     button.addEventListener('click', function (event) {
       // Les lignes du tableau ouvrent le détail au clic : sans cela, annuler ouvrirait aussi le panneau.
@@ -838,6 +865,7 @@ export const PAGE_HTML = `<!doctype html>
     ui.paused = o.daemon ? o.daemon.paused : null;
     ui.serviceRunning = !!svc.running || !!(o.daemon && o.daemon.running);
     ui.repos = o.repos || [];
+    ui.jira = o.jira || null;
     ui.pendingRestart = (o.daemon && o.daemon.pendingRestart) || [];
     syncSysbar();
     renderSystem(o);
@@ -1035,7 +1063,7 @@ export const PAGE_HTML = `<!doctype html>
     var head = el('div', 'detail-head');
     var stateBadge = badge(job.state);
     head.appendChild(stateBadge);
-    head.appendChild(ghLink(detail.issueUrl, job.repo + '#' + job.issueNumber));
+    head.appendChild(issueLink(job.repo, job.issueNumber));
     if (job.prNumber) head.appendChild(ghLink(job.prUrl, 'PR #' + job.prNumber));
     head.appendChild(el('span', 'muted', job.id));
     detailJobId = job.id;

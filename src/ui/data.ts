@@ -96,6 +96,16 @@ export interface ActiveJob extends Job {
   feed: string[];
 }
 
+/**
+ * De quoi fabriquer côté page le libellé et le lien d'un ticket. `null` tant que le suivi reste sur les
+ * issues GitHub. Un dépôt absent de `keys` n'a pas de projet Jira : ses tickets restent sur GitHub.
+ */
+export interface JiraLinks {
+  site: string;
+  /** dépôt `owner/repo` → clé de projet Jira. */
+  keys: Record<string, string>;
+}
+
 export interface Overview {
   now: string;
   /** `paused` vient de la socket de contrôle : `null` quand le daemon ne répond pas. */
@@ -108,6 +118,8 @@ export interface Overview {
   budget: { spentTodayUsd: number; dailyBudgetUsd: number | null; ratio: number };
   backend: AgentBackend;
   repos: string[];
+  /** `null` : les tickets sont sur GitHub. Sinon, de quoi pointer vers Jira. */
+  jira: JiraLinks | null;
   counts: Counts;
   active: ActiveJob[];
 }
@@ -246,6 +258,25 @@ async function newestTranscript(dir: string, files: string[]): Promise<{ file: s
   return withTime[withTime.length - 1];
 }
 
+/** Le suivi des tickets tel que la page doit le voir : `null` quand aucun projet Jira n'est configuré. */
+export function jiraLinksOf(machine: Pick<MachineConfig, 'jira'>): JiraLinks | null {
+  if (!machine.jira) return null;
+  const keys: Record<string, string> = {};
+  for (const p of machine.jira.projects) keys[p.repo] = p.key;
+  return { site: machine.jira.site, keys };
+}
+
+/**
+ * Lien vers le ticket. La clé Jira est reconstruite `PROJET-numéro`, exactement comme
+ * `JiraIssueTracker.key` (voir son commentaire : le store ne porte que le numéro). Un dépôt sans projet
+ * Jira — configuration mixte — garde son lien GitHub.
+ */
+export function issueUrlOf(links: JiraLinks | null, repo: string, issueNumber: number): string {
+  const key = links?.keys[repo];
+  if (links && key) return `https://${links.site}/browse/${key}-${issueNumber}`;
+  return `https://github.com/${repo}/issues/${issueNumber}`;
+}
+
 export function createUiData(deps: UiDataDeps): UiData {
   const { store, phases, paths, machine } = deps;
   const now = deps.now ?? (() => new Date());
@@ -326,6 +357,7 @@ export function createUiData(deps: UiDataDeps): UiData {
       budget: { spentTodayUsd, dailyBudgetUsd: cap ?? null, ratio: cap === undefined ? 0 : spentTodayUsd / cap },
       backend: machine.agentBackend,
       repos: machine.repos,
+      jira: jiraLinksOf(machine),
       counts: {
         active: activeJobs.length,
         queued: byState.queued,
@@ -383,7 +415,7 @@ export function createUiData(deps: UiDataDeps): UiData {
     return {
       job,
       phases: phases.listForJob(job.id),
-      issueUrl: `https://github.com/${job.repo}/issues/${job.issueNumber}`,
+      issueUrl: issueUrlOf(jiraLinksOf(machine), job.repo, job.issueNumber),
       files,
       transcript,
       verify,
