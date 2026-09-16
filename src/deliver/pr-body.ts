@@ -3,6 +3,7 @@ import type { Job, Phase } from '../store/types.js';
 import { fmtDuration } from '../util/time.js';
 import type { VerifyResult, VerifyStep } from '../verify/verify.js';
 import { jobMarker } from './comments.js';
+import type { TicketRef } from './deliver.js';
 import { sanitizeCodeSpan, sanitizeModelText } from './sanitize.js';
 
 export interface PrBodyInput {
@@ -14,6 +15,7 @@ export interface PrBodyInput {
   prTemplate: string | null;
   costUsd: number;
   durationMs: number;
+  ticket: TicketRef | null;
 }
 
 const bullets = (items: string[]) => items.map((i) => `- ${i}`);
@@ -42,7 +44,9 @@ export function sanitizeReport(r: ImplementationReport): ImplementationReport {
 export function renderPrBody(i: PrBodyInput): string {
   const { job, verify } = i;
   const report = sanitizeReport(i.report);
-  const lines: string[] = ['## Résumé', '', report.summary, ''];
+  // Le lien du ticket ouvre le corps : c'est la première chose qu'un relecteur cherche, et l'app
+  // GitHub for Jira n'en a pas besoin — elle travaille sur le commit et le titre.
+  const lines: string[] = i.ticket ? [`Ticket: [${i.ticket.key}](${i.ticket.url})`, '', '## Résumé', '', report.summary, ''] : ['## Résumé', '', report.summary, ''];
 
   if (report.changes.length) lines.push('## Changements', '', ...report.changes.map((c) => `- \`${c.file}\` : ${c.what}`), '');
   if (report.decisions.length) lines.push('## Décisions', '', ...bullets(report.decisions), '');
@@ -74,6 +78,7 @@ export function renderPrBody(i: PrBodyInput): string {
   // Template du repo, lu sur la branche de base (pas dans le worktree modifié par l'agent) : contenu de confiance, inséré tel quel.
   if (i.prTemplate?.trim()) lines.push('---', '', i.prTemplate.trim(), '');
   // Toujours en dernier : clampForGitHub préserve la fin du corps.
-  lines.push(`Closes #${job.issueNumber}`, '', jobMarker(job.id));
+  if (!i.ticket) lines.push(`Closes #${job.issueNumber}`, '');
+  lines.push(jobMarker(job.id));
   return lines.join('\n');
 }

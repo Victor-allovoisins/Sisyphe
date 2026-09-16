@@ -35,7 +35,7 @@ const phases: Phase[] = [
 
 describe('renderPrBody', () => {
   it('assemble toutes les sections dans l’ordre', () => {
-    const body = renderPrBody({ job, report, verify, phases, prTemplate: '## Checklist\n- [ ] QA', costUsd: job.costUsd, durationMs: 200_000 });
+    const body = renderPrBody({ job, report, verify, phases, prTemplate: '## Checklist\n- [ ] QA', costUsd: job.costUsd, durationMs: 200_000, ticket: null });
     const order = ['## Résumé', '## Changements', '## Décisions', '## Tests', "## Points d'attention", '## Suites à donner', '## Sisyphe', '## Checklist', 'Closes #7', jobMarker('job-1')];
     let last = -1;
     for (const marker of order) {
@@ -55,10 +55,22 @@ describe('renderPrBody', () => {
     expect(body).toContain('Total : $3.46');
   });
   it('omet les sections vides et le template absent', () => {
-    const body = renderPrBody({ job: { ...job, flags: emptyFlags() }, report: { ...report, decisions: [], follow_ups: [], risks: [] }, verify: { ...verify, driftedFiles: [] }, phases, prTemplate: null, costUsd: 1, durationMs: 1000 });
+    const body = renderPrBody({ job: { ...job, flags: emptyFlags() }, report: { ...report, decisions: [], follow_ups: [], risks: [] }, verify: { ...verify, driftedFiles: [] }, phases, prTemplate: null, costUsd: 1, durationMs: 1000, ticket: null });
     expect(body).not.toContain('## Décisions');
     expect(body).not.toContain("## Points d'attention");
     expect(body).not.toContain('---');
+  });
+  it('ouvre le corps sur le lien du ticket Jira et supprime Closes', () => {
+    const body = renderPrBody({
+      job, report, verify, phases, prTemplate: null, costUsd: 1, durationMs: 1000,
+      ticket: { key: 'IOS-886', url: 'https://acme.atlassian.net/browse/IOS-886' },
+    });
+    expect(body.split('\n')[0]).toBe('Ticket: [IOS-886](https://acme.atlassian.net/browse/IOS-886)');
+    expect(body).not.toContain('Closes #');
+  });
+  it('sans ticket Jira, le corps garde son Closes en dernier', () => {
+    const body = renderPrBody({ job, report, verify, phases, prTemplate: null, costUsd: 1, durationMs: 1000, ticket: null });
+    expect(body).toContain('Closes #7');
   });
 });
 
@@ -92,14 +104,14 @@ describe('sanitizeModelText', () => {
     expect(out.endsWith('Closes #7\n<!-- sisyphe:job:1 -->')).toBe(true);
     expect(out).toContain('caractères coupés');
     expect(clampForGitHub('court')).toBe('court');
-    const withTemplate = renderPrBody({ job, report: { ...report, summary: 'x'.repeat(70_000) }, verify, phases, prTemplate: '## Checklist\n' + 'y'.repeat(4000), costUsd: 1, durationMs: 1000 });
+    const withTemplate = renderPrBody({ job, report: { ...report, summary: 'x'.repeat(70_000) }, verify, phases, prTemplate: '## Checklist\n' + 'y'.repeat(4000), costUsd: 1, durationMs: 1000, ticket: null });
     const clamped = clampForGitHub(withTemplate);
     expect(clamped.endsWith(jobMarker('job-1'))).toBe(true);
     expect(clamped).toContain('Closes #7');
     expect(clampForGitHub('x'.repeat(5000), 100).length).toBeLessThanOrEqual(1200);
   });
   it('est appliqué au body de PR et au template mais pas aux lignes de Sisyphe', () => {
-    const body = renderPrBody({ job, report: { ...report, summary: 'Closes #99 <!-- sisyphe:job:fake -->', risks: [...report.risks, "\n## Points d'attention forgés"] }, verify, phases, prTemplate: '## Checklist\nCloses #5', costUsd: 1, durationMs: 1000 });
+    const body = renderPrBody({ job, report: { ...report, summary: 'Closes #99 <!-- sisyphe:job:fake -->', risks: [...report.risks, "\n## Points d'attention forgés"] }, verify, phases, prTemplate: '## Checklist\nCloses #5', costUsd: 1, durationMs: 1000, ticket: null });
     expect(body).toContain('Closes `#99`');
     expect(body).not.toContain('sisyphe:job:fake');
     expect(body).not.toContain("\n## Points d'attention forgés");

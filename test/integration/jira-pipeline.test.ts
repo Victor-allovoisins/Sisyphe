@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { JIRA_STATUSES_DEFAULT } from '../../src/config/machine.js';
 import { JiraIssueTracker } from '../../src/jira/client.js';
 import { runJob } from '../../src/jobs/pipeline.js';
+import { remoteBranchSha, remoteCommitMessage } from '../helpers/git-fixture.js';
 import { REPO, makeHarness, readyVerdict, report, writeFeature } from '../helpers/harness.js';
 
 /**
@@ -124,6 +125,17 @@ describe('pipeline sur Jira', () => {
     expect(j.state.status).toBe('En relecture');
     expect(j.state.assignee).toBe(ACCOUNT);
     expect(h.source.pulls[0].base).toBe('release/8.42.0');
+    // Le câblage `deliver({ ticket })` du pipeline : sans lui, `ticket` resterait `null` en silence même
+    // avec un vrai JiraIssueTracker, et l'app GitHub for Jira ne retrouverait jamais le ticket.
+    expect(h.source.pulls[0].title).toContain('IOS-7');
+    expect(h.source.pulls[0].body).toContain('Ticket: [IOS-7](https://allovoisins.atlassian.net/browse/IOS-7)');
+    expect(h.source.pulls[0].body).not.toContain('Closes #');
+    // Le commit poussé est l'autre moitié du repérage par l'app GitHub for Jira ; sans la clé dedans,
+    // ni `Closes` (qui fermerait une issue GitHub sans rapport sous suivi Jira).
+    const sha = await remoteBranchSha(h.remotePath, done.branch!);
+    const commit = await remoteCommitMessage(h.remotePath, sha!);
+    expect(commit).toContain('IOS-7');
+    expect(commit).not.toContain('Closes');
   });
 
   it('rend la main, sans quitter la colonne de travail, quand le triage bloque', async () => {

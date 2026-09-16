@@ -19,6 +19,7 @@ import {
 import { deliver } from '../deliver/deliver.js';
 import type { Git } from '../git/git.js';
 import { issueRefOf, type Forge, type IssueTracker } from '../github/source.js';
+import { browseUrl } from '../jira/links.js';
 import type { ActionStore } from '../store/actions.js';
 import type { JobPatch, JobStore } from '../store/jobs.js';
 import type { PhaseFinish, PhaseStore } from '../store/phases.js';
@@ -315,8 +316,11 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
         const pushUrl = await forge.getAuthenticatedRemoteUrl(issueRef.repo);
         // durationMs ici = durée de ce seul run (depuis startedAt, ligne ~71) ; job.durationMs, lui, cumule
         // les runs précédents d'un job requeué (voir finish() ci-dessus) — deux grandeurs distinctes.
+        const ticket = issue.tracker && deps.machine.jira
+          ? { key: issue.tracker.key, url: browseUrl(deps.machine.jira.site, issue.tracker.key) }
+          : null;
         return deliver({
-          job, issue, config, report, verify: verified, phases: phases.listForJob(job.id),
+          job, issue, config, report, verify: verified, phases: phases.listForJob(job.id), ticket,
           source, forge, git: deps.git, worktreePath: wtPath, pushUrl, prTemplate, baseBranch, durationMs: elapsed(),
         });
       },

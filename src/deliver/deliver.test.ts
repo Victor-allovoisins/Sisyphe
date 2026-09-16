@@ -53,13 +53,13 @@ describe('deliver', () => {
   }
 
   const run = (job: ReturnType<typeof makeJob>, v: VerifyResult = verify, cfg: RepoConfig = config) =>
-    deliver({ job, issue: { repo, number: 7, title: 'Titre', body: '', author: 'alice', state: 'open', labels: [], comments: [] }, config: cfg, report, verify: v, phases: [], source, forge: source, git, worktreePath, baseBranch: cfg.baseBranch, pushUrl: remotePath, prTemplate: null, durationMs: 5000 });
+    deliver({ job, issue: { repo, number: 7, title: 'Titre', body: '', author: 'alice', state: 'open', labels: [], comments: [] }, config: cfg, report, verify: v, phases: [], source, forge: source, git, worktreePath, baseBranch: cfg.baseBranch, pushUrl: remotePath, prTemplate: null, durationMs: 5000, ticket: null });
 
   it('pousse un commit squashé et ouvre la PR', async () => {
     const job = makeJob();
     const r = await run(job);
     expect(await remoteBranchSha(remotePath, 'feature/issue-7-x')).toBe(r.commitSha);
-    expect(await remoteCommitMessage(remotePath, r.commitSha)).toBe(commitMessage(job));
+    expect(await remoteCommitMessage(remotePath, r.commitSha)).toBe(commitMessage(job, null));
     expect(await remoteCommitParents(remotePath, r.commitSha)).toEqual([baseSha]);
     expect(r.warnings).toEqual([]);
     expect(source.pulls).toHaveLength(1);
@@ -94,12 +94,26 @@ describe('deliver', () => {
     const job = makeJob();
     expect(shouldBeDraft(job, { ...verify, flags: { ...verify.flags, largeDiff: true } }, config)).toBe(true);
     expect(shouldBeDraft(job, verify, config)).toBe(false);
-    expect(commitMessage(job)).toMatch(/^fix\(#7\): Titre\n\nCloses #7\n\nCo-Authored-By: Sisyphe/);
+    expect(commitMessage(job, null)).toMatch(/^fix\(#7\): Titre\n\nCloses #7\n\nCo-Authored-By: Sisyphe/);
     const messy = { ...job, issueTitle: `Crash\n\nau login\t${'x'.repeat(300)}` };
-    expect(commitMessage(messy).split('\n')[0].length).toBeLessThanOrEqual(220);
-    expect(commitMessage(messy).split('\n')[0]).not.toContain('\t');
-    expect(prTitle(messy).startsWith('[#7] Crash au login')).toBe(true);
+    expect(commitMessage(messy, null).split('\n')[0].length).toBeLessThanOrEqual(220);
+    expect(commitMessage(messy, null).split('\n')[0]).not.toContain('\t');
+    expect(prTitle(messy, null).startsWith('[#7] Crash au login')).toBe(true);
     expect(cleanTitle('   ')).toBe('Sans titre');
+  });
+
+  it('porte la clé Jira dans le commit et le titre de PR, sans Closes', () => {
+    const job = makeJob();
+    const ticket = { key: 'IOS-886', url: 'https://acme.atlassian.net/browse/IOS-886' };
+    expect(commitMessage(job, ticket)).toMatch(/^fix\(IOS-886\): Titre\n\nCo-Authored-By: Sisyphe/);
+    expect(commitMessage(job, ticket)).not.toContain('Closes');
+    expect(prTitle(job, ticket)).toBe('fix(IOS-886): Titre');
+  });
+
+  it('sans ticket Jira, le nommage GitHub ne bouge pas', () => {
+    const job = makeJob();
+    expect(commitMessage(job, null)).toMatch(/^fix\(#7\): Titre\n\nCloses #7\n\nCo-Authored-By: Sisyphe/);
+    expect(prTitle(job, null)).toBe('[#7] Titre');
   });
 
   it('refuse de livrer un diff avec secrets, et sans arbre vérifié', async () => {

@@ -24,6 +24,13 @@ export interface DeliverInput {
   /** Template de PR lu sur la branche de base par le pipeline (contenu du repo, de confiance). */
   prTemplate: string | null;
   durationMs: number;
+  ticket: TicketRef | null;
+}
+
+/** Le ticket tel que la livraison doit le nommer. `null` : suivi GitHub, le nommage historique s'applique. */
+export interface TicketRef {
+  key: string;
+  url: string;
 }
 
 export interface DeliverResult {
@@ -43,12 +50,20 @@ export function cleanTitle(title: string): string {
   return oneLine.length > MAX_SUBJECT ? `${oneLine.slice(0, MAX_SUBJECT - 1)}…` : oneLine;
 }
 
-export function commitMessage(job: Job): string {
+export function commitMessage(job: Job, ticket: TicketRef | null): string {
   const type = job.verdict?.change_type ?? 'chore';
-  return `${type}(#${job.issueNumber}): ${cleanTitle(job.issueTitle)}\n\nCloses #${job.issueNumber}\n\nCo-Authored-By: ${SISYPHE_AUTHOR.name} <${SISYPHE_AUTHOR.email}>`;
+  const author = `Co-Authored-By: ${SISYPHE_AUTHOR.name} <${SISYPHE_AUTHOR.email}>`;
+  // La clé dans le sujet suffit à l'app GitHub for Jira : c'est ainsi qu'elle relie le commit au ticket.
+  // Pas de `Closes` sous Jira — le numéro y désignerait une issue GitHub sans rapport, qu'une fusion sur la
+  // branche par défaut fermerait pour de bon.
+  if (ticket) return `${type}(${ticket.key}): ${cleanTitle(job.issueTitle)}\n\n${author}`;
+  return `${type}(#${job.issueNumber}): ${cleanTitle(job.issueTitle)}\n\nCloses #${job.issueNumber}\n\n${author}`;
 }
 
-export function prTitle(job: Job): string {
+export function prTitle(job: Job, ticket: TicketRef | null): string {
+  const type = job.verdict?.change_type ?? 'chore';
+  // Convention av-tools : `type(KEY): description`, pour qu'une PR de Sisyphe ne se distingue pas d'une autre.
+  if (ticket) return `${type}(${ticket.key}): ${cleanTitle(job.issueTitle)}`;
   return `[#${job.issueNumber}] ${cleanTitle(job.issueTitle)}`;
 }
 
@@ -72,12 +87,12 @@ export async function deliver(i: DeliverInput): Promise<DeliverResult> {
   const repo = parseRepo(job.repo);
 
   // On commite l'arbre exact que la vérification a inspecté, pas l'état du worktree après build/test.
-  const commitSha = await i.git.commitTree(i.worktreePath, job.branch, i.verify.treeSha, job.baseSha, commitMessage(job));
+  const commitSha = await i.git.commitTree(i.worktreePath, job.branch, i.verify.treeSha, job.baseSha, commitMessage(job, i.ticket));
   await i.git.push(i.worktreePath, i.pushUrl, job.branch, commitSha);
 
   const draft = shouldBeDraft(job, i.verify, config);
-  const title = prTitle(job);
-  const body = renderPrBody({ job, report: i.report, verify: i.verify, phases: i.phases, prTemplate: i.prTemplate, costUsd: job.costUsd, durationMs: i.durationMs });
+  const title = prTitle(job, i.ticket);
+  const body = renderPrBody({ job, report: i.report, verify: i.verify, phases: i.phases, prTemplate: i.prTemplate, costUsd: job.costUsd, durationMs: i.durationMs, ticket: i.ticket });
 
   const existing = await forge.findPullRequest(repo, job.branch);
   let pr: PullRef;
