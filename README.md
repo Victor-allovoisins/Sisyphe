@@ -80,11 +80,11 @@ Par défaut, Sisyphe lit des issues GitHub. Une section `jira` dans la config ma
 ```yaml
 jira:
   site: allovoisins.atlassian.net
-  email: bot@allovoisins.com        # compte porteur du jeton, signataire des commentaires
+  email: ia+jira@allovoisins.com         # compte porteur du jeton, signataire des commentaires
   apiTokenPath: ~/.sisyphe/jira-token.txt
   projects:
     - key: IOS
-      accountId: 5f8a...            # le compte dédié, ex. sisyphe-ios
+      accountId: 712020:4963213c-f4db-4741-a1d7-ae8a7084ebdc   # « Agent IA »
       repo: ILokYou/ILokYou-iOS
       candidateStatuses: [Nouveau, En analyse]
       statusesInOrder: [Nouveau, En analyse, A développer, En développement, En relecture, Developpement fini]
@@ -97,6 +97,8 @@ jira:
 Ce qui change, côté usage :
 
 - **Le déclencheur est l'assignation**, pas un label. On confie un ticket à Sisyphe en le lui assignant, sur un des `candidateStatuses`. Pouvoir assigner un ticket du projet *est* l'autorisation : il n'y a pas de contrôle de droits séparé.
+- **Un même compte peut servir plusieurs projets** : c'est la clé de projet qui route vers le dépôt, pas l'assigné. Mettre le même `accountId` sur `IOS` et sur un autre projet est donc légitime.
+- **Le porteur du jeton (`email`) et l'assigné (`accountId`) doivent être le même compte**, sans quoi Sisyphe commenterait sous une identité et travaillerait sous une autre.
 - **Sisyphe fait avancer le ticket dans votre workflow**, de proche en proche — jamais en sautant une colonne, jamais au-delà de 5 transitions. Il ne ferme pas un ticket : il le pose sur `doneStatus` (« En relecture ») quand la PR est ouverte, comme le ferait un développeur.
 - **Bloqué ou en échec, il rend la main** : le ticket est réassigné à la personne qui le lui avait confié, avec un commentaire. Il cesse d'être candidat sans changer de colonne, et le redevient dès qu'on le lui réassigne. C'est le seul signal de reprise.
 - **La branche de base vient du ticket.** La `fixVersion` désigne une branche de release (`releaseBranchPattern`, `release/{version}` par défaut) ; si elle n'est pas encore coupée, Sisyphe part du `baseBranch` du `sisyphe.yml`. Un ticket **sans version est un ticket de backlog** — le cas le plus courant — et part du tronc. Seul un ticket visant plusieurs versions est rendu : là il y a vraiment un choix à faire.

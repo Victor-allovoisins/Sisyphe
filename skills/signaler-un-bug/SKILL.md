@@ -264,17 +264,17 @@ Dans le doute, laisse vide. Une version fausse envoie le correctif sur la mauvai
 
 Montre le récapitulatif — titre, type, version si tu en as mis une, corps — et demande « je crée ? ». Attends le oui.
 
-Puis crée le ticket dans le projet `IOS` avec le type retenu, et **assigne-le au compte `sisyphe-ios`**. C'est l'assignation qui déclenche le traitement : sans elle, le ticket dort.
+Puis crée le ticket dans le projet `IOS` avec le type retenu, et **assigne-le au compte « Agent IA » (`ia+jira@allovoisins.com`)**. C'est l'assignation qui déclenche le traitement : sans elle, le ticket dort.
 
 Laisse le statut par défaut (`Nouveau`). Ne le fais pas avancer toi-même : c'est Sisyphe qui déplacera le ticket dans le board au fil de son travail.
 
-Si la création échoue, ne perds pas le travail : affiche le titre et le corps dans un bloc à copier, et dis à la personne de créer le ticket à la main en assignant `sisyphe-ios`.
+Si la création échoue, ne perds pas le travail : affiche le titre et le corps dans un bloc à copier, et dis à la personne de créer le ticket à la main en l'assignant à « Agent IA ».
 
 ### 13. Dire où la suite se passera
 
 Cette personne t'a parlé dans un chat. Elle n'ira pas d'elle-même relire un ticket. Termine toujours par :
 
-> C'est créé : <lien>. Sisyphe va le prendre en charge, tu verras le ticket avancer dans le board. S'il a besoin d'une précision, il te le **réassignera** avec un commentaire — c'est ta notification. Reviens me voir avec sa question, on y répondra ensemble, et il suffira de le réassigner à `sisyphe-ios` pour qu'il reprenne.
+> C'est créé : <lien>. Sisyphe va le prendre en charge, tu verras le ticket avancer dans le board. S'il a besoin d'une précision, il te le **réassignera** avec un commentaire — c'est ta notification. Reviens me voir avec sa question, on y répondra ensemble, et il suffira de le réassigner à « Agent IA » pour qu'il reprenne.
 
 Cette phrase est la seule chose qui empêche un ticket rendu de mourir : personne ne surveille une réassignation qu'on ne lui a pas annoncée.
 
@@ -289,7 +289,7 @@ Cette phrase est la seule chose qui empêche un ticket rendu de mourir : personn
 | Enchaîner un troisième tour de questions | La personne décroche et repart créer ses tickets à la main | Écrire ce qui manque dans « Ce qu'on n'a pas pu déterminer » |
 | Grouper plusieurs bugs | Classé `too_big`, rien n'est corrigé | Un ticket par bug |
 | Renseigner une version « pour bien faire » | Envoie le correctif sur la mauvaise branche | Laisser vide : le backlog est le cas normal |
-| Oublier d'assigner à `sisyphe-ios` | Le ticket dort indéfiniment : c'est l'assignation qui déclenche | Toujours assigner |
+| Oublier d'assigner à « Agent IA » | Le ticket dort indéfiniment : c'est l'assignation qui déclenche | Toujours assigner |
 | Résumer un message d'erreur | Le texte exact est souvent la seule piste de recherche | Le citer mot pour mot |
 
 ## Signaux d'alerte — reprends l'étape correspondante
