@@ -28,10 +28,26 @@ export type ValidateMachineConfigResult = { ok: true; config: MachineConfig } | 
  * La configuration renvoyée n'a **pas** traversé `expandHome`, contrairement à celle de `parseMachineConfig` :
  * elle porte les chemins exactement comme la page les a soumis, et c'est elle qu'attend `writeMachineConfig`.
  */
+/** Lisible *et* fichier : `access` seul réussit sur un dossier, que personne ne saurait pourtant lire. */
+async function isReadableFile(path: string): Promise<boolean> {
+  try {
+    await access(path, constants.R_OK);
+    return (await stat(path)).isFile();
+  } catch {
+    return false;
+  }
+}
+
 export async function validateMachineConfigInput(
   raw: unknown,
-  current: Pick<MachineConfig, 'dataDir'>,
+  current: Pick<MachineConfig, 'dataDir' | 'jira'>,
 ): Promise<ValidateMachineConfigResult> {
+  // La page de réglages ne gère pas la section `jira` et ne la renvoie donc pas. Sans ce report, le simple
+  // fait d'enregistrer un budget effacerait tout le suivi Jira — en silence, et sans que rien ne le dise
+  // avant le prochain démarrage du daemon.
+  if (current.jira && raw !== null && typeof raw === 'object' && !('jira' in raw)) {
+    raw = { ...(raw as Record<string, unknown>), jira: current.jira };
+  }
   // `raw` tel quel, sans `?? {}` : un corps nul est un corps invalide, et « objet attendu » sur la racine est
   // plus parlant pour la page qu'une liste de champs manquants.
   const result = MachineConfigSchema.safeParse(raw);
@@ -48,16 +64,13 @@ export async function validateMachineConfigInput(
   }
   // Seul le chemin circule : le contenu de la clé n'est ni lu, ni affiché, ni transmis. `access` seul ne
   // suffit pas — il réussit sur un dossier, que le client GitHub ne saurait pourtant pas lire.
-  const keyPath = expandHome(config.github.privateKeyPath);
-  let readableFile = false;
-  try {
-    await access(keyPath, constants.R_OK);
-    readableFile = (await stat(keyPath)).isFile();
-  } catch {
-    readableFile = false;
-  }
+  const readableFile = await isReadableFile(expandHome(config.github.privateKeyPath));
   if (!readableFile) {
     issues.push({ path: 'github.privateKeyPath', message: `fichier introuvable ou illisible : ${config.github.privateKeyPath}` });
+  }
+  // Même contrôle pour le jeton Jira : un chemin mort ne se verrait sinon qu'au démarrage suivant.
+  if (config.jira && !(await isReadableFile(expandHome(config.jira.apiTokenPath)))) {
+    issues.push({ path: 'jira.apiTokenPath', message: `fichier introuvable ou illisible : ${config.jira.apiTokenPath}` });
   }
   // Combinaison que `createApp` refuse : sans cette règle, la page enregistrerait une configuration que le
   // prochain démarrage rejetterait, et le bandeau « Redémarrer » conduirait l'opérateur droit dans la panne.

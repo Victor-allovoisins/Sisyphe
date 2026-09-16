@@ -156,6 +156,26 @@ export class GitHubIssueSource implements IssueSource {
     };
   }
 
+  async resumeIfCommented(ref: IssueRef): Promise<boolean> {
+    const [issue, self] = await Promise.all([this.getIssue(ref), this.appLogin()]);
+    const last = issue.comments.at(-1);
+    if (!last || last.author === self) return false;
+    try {
+      const perm = await this.call((o) =>
+        o.rest.repos.getCollaboratorPermissionLevel({ owner: ref.repo.owner, repo: ref.repo.name, username: last.author }),
+      );
+      if (!hasWriteAccess(perm.data.permission)) return false;
+    } catch (err) {
+      // Même logique que canTrigger : transitoire (réseau, 5xx) remonte pour réessai au prochain poll ;
+      // 4xx (pas collaborateur, login introuvable…) est un refus silencieux, pas une erreur.
+      const s = status(err);
+      if (s === undefined || s >= 500) throw err;
+      return false;
+    }
+    await this.setStatus(ref, null);
+    return true;
+  }
+
   async canTrigger(ref: IssueRef): Promise<TriggerCheck> {
     // Notre propre login est indispensable pour ne pas nous prendre nous-mêmes pour le demandeur (label
     // reposé par `enqueue`/`retry`). Introuvable : on lève, `poll` ignore l'issue et réessaiera — jamais

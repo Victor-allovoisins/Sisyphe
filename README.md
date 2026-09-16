@@ -73,6 +73,37 @@ sisyphe service uninstall
 
 Les boutons Démarrer et Arrêter de l'interface (`sisyphe ui`) pilotent ces deux mêmes opérations — c'est le service qui est démarré ou arrêté, jamais un processus détaché de la page. Sur une plateforme sans gestionnaire de service, `sisyphe service start` lance un daemon détaché qui, lui, ne survit pas au redémarrage.
 
+## Suivi des tickets sur Jira
+
+Par défaut, Sisyphe lit des issues GitHub. Une section `jira` dans la config machine bascule le **suivi des tickets** sur Jira ; la **forge reste GitHub** dans tous les cas — clone, branche et pull request, qu'aucun traqueur ne sait héberger.
+
+```yaml
+jira:
+  site: allovoisins.atlassian.net
+  email: bot@allovoisins.com        # compte porteur du jeton, signataire des commentaires
+  apiTokenPath: ~/.sisyphe/jira-token.txt
+  projects:
+    - key: IOS
+      accountId: 5f8a...            # le compte dédié, ex. sisyphe-ios
+      repo: ILokYou/ILokYou-iOS
+      candidateStatuses: [Nouveau, En analyse]
+      statusesInOrder: [Nouveau, En analyse, A développer, En développement, En relecture, Developpement fini]
+      inProgressStatus: En développement
+      doneStatus: En relecture
+```
+
+`sisyphe setup` construit cette section par questions et résout l'`accountId` depuis une adresse — personne ne le connaît par cœur. Un dépôt sans projet Jira reste sur les issues GitHub : la bascule se fait dépôt par dépôt.
+
+Ce qui change, côté usage :
+
+- **Le déclencheur est l'assignation**, pas un label. On confie un ticket à Sisyphe en le lui assignant, sur un des `candidateStatuses`. Pouvoir assigner un ticket du projet *est* l'autorisation : il n'y a pas de contrôle de droits séparé.
+- **Sisyphe fait avancer le ticket dans votre workflow**, de proche en proche — jamais en sautant une colonne, jamais au-delà de 5 transitions. Il ne ferme pas un ticket : il le pose sur `doneStatus` (« En relecture ») quand la PR est ouverte, comme le ferait un développeur.
+- **Bloqué ou en échec, il rend la main** : le ticket est réassigné à la personne qui le lui avait confié, avec un commentaire. Il cesse d'être candidat sans changer de colonne, et le redevient dès qu'on le lui réassigne. C'est le seul signal de reprise.
+- **La branche de base vient du ticket.** La `fixVersion` désigne une branche de release (`releaseBranchPattern`, `release/{version}` par défaut) ; si elle n'est pas encore coupée, Sisyphe part du `baseBranch` du `sisyphe.yml`. Un ticket sans version, ou qui en vise plusieurs, est rendu : c'est une information qu'un humain doit trancher.
+- **Les captures d'écran restent invisibles à l'agent.** Une pièce jointe ADF devient un marqueur explicite dans le texte du ticket, pour qu'il sache qu'il lui manque quelque chose plutôt que de croire le ticket complet.
+
+`sisyphe doctor` vérifie le compte, l'accès à chaque projet et la cohérence des statuts configurés.
+
 ## Côté repo cible
 
 Un fichier `sisyphe.yml` à la racine de la branche par défaut (exemple iOS : `examples/sisyphe.ios.yml`). Poser le label `sisyphe` sur une issue déclenche le traitement. Retirer le label annule. Les labels `sisyphe:in-progress`, `sisyphe:blocked`, `sisyphe:done`, `sisyphe:failed` sont posés par Sisyphe ; les retirer relance.

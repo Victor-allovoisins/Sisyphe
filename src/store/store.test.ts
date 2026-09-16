@@ -41,7 +41,7 @@ describe('JobStore', () => {
   it('sérialise les colonnes JSON', () => {
     const { jobs } = setup();
     const job = jobs.create({ repo: 'a/b', issueNumber: 1, issueTitle: 't' });
-    const verdict = { verdict: 'ready' as const, confidence: 1, summary: 's', change_type: 'fix' as const, plan: ['p'], files_likely_touched: [], questions: [], reasons: [] };
+    const verdict = { verdict: 'ready' as const, confidence: 1, summary: 's', note: '', change_type: 'fix' as const, plan: ['p'], files_likely_touched: [], questions: [], reasons: [] };
     const u = jobs.update(job.id, { verdict, flags: { ...job.flags, largeDiff: true }, branch: 'feature/x' });
     expect(u.verdict?.plan).toEqual(['p']);
     expect(u.flags.largeDiff).toBe(true);

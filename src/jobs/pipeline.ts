@@ -12,12 +12,13 @@ import { phaseModel, type MachineConfig } from '../config/machine.js';
 import { jobDir as jobDirFor, repoCachePath, type DataPaths } from '../config/paths.js';
 import { REPO_CONFIG_FILENAME, RepoConfigError, parseRepoConfig, type RepoConfig } from '../config/repo.js';
 import {
-  renderBlockedComment, renderCancelledComment, renderConfigProblemComment, renderFailedComment,
-  renderNoChangesComment, renderProtectedPathsComment, renderSecretsComment, renderTakeoverComment,
+  renderBlockedComment, renderCancelledComment, renderConfigProblemComment,
+  renderMissingVersionComment, renderFailedComment,
+  renderNoChangesComment, renderProtectedPathsComment, renderSecretsComment,
 } from '../deliver/comments.js';
 import { deliver } from '../deliver/deliver.js';
 import type { Git } from '../git/git.js';
-import { issueRefOf, type IssueSource } from '../github/source.js';
+import { issueRefOf, type Forge, type IssueTracker } from '../github/source.js';
 import type { ActionStore } from '../store/actions.js';
 import type { JobPatch, JobStore } from '../store/jobs.js';
 import type { PhaseFinish, PhaseStore } from '../store/phases.js';
@@ -25,6 +26,8 @@ import { isTerminal, type Job, type JobFlags, type JobState, type PhaseName } fr
 import { minutes } from '../util/time.js';
 import { agentEnv, repoEnv, runRepoCommand } from '../verify/commands.js';
 import { runVerification, type ScanFn, type VerifyResult } from '../verify/verify.js';
+import { resolveBaseBranch } from './base-branch.js';
+import { relaunchFor } from './relaunch.js';
 import { branchName } from './slug.js';
 
 export interface PipelineDeps {
@@ -32,7 +35,9 @@ export interface PipelineDeps {
   phases: PhaseStore;
   /** Journal des commandes (UI, CLI) : écrit par le daemon, lu par l'UI. */
   actions: ActionStore;
-  source: IssueSource;
+  source: IssueTracker;
+  /** La forge git, distincte du suivi : c'est elle qui pousse et ouvre les PR. */
+  forge: Forge;
   agent: AgentRunner;
   git: Git;
   paths: DataPaths;
@@ -62,13 +67,13 @@ export const SHUTDOWN = 'shutdown';
 export const CANCELLED = 'cancelled';
 
 export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSignal): Promise<Job> {
-  const { store, phases, source } = deps;
+  const { store, phases, source, forge } = deps;
   const initial = store.get(jobId);
   if (!initial) throw new Error(`Job inconnu : ${jobId}`);
   let job = initial;
   const log = deps.log.child({ jobId, repo: job.repo, issue: job.issueNumber });
   const issueRef = issueRefOf(job);
-  const trigger = deps.machine.triggerLabel;
+  const trigger = relaunchFor(deps.machine, job.repo);
   const dir = jobDirFor(deps.paths, job.id);
   const startedAt = Date.now();
   const elapsed = () => Date.now() - startedAt;
@@ -122,13 +127,12 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
     job = store.transition(job.id, 'triaging');
     await mkdir(dir, { recursive: true });
     await source.setStatus(issueRef, 'in-progress');
-    await source.comment(issueRef, renderTakeoverComment(job.id));
     const issue = await source.getIssue(issueRef);
 
     // Git et configuration du repo : on ne rafraîchit que les branches de base, jamais celles des jobs.
-    const fetchUrl = await source.getAuthenticatedRemoteUrl(issueRef.repo);
+    const fetchUrl = await forge.getAuthenticatedRemoteUrl(issueRef.repo);
     const publicUrl = `https://github.com/${job.repo}.git`;
-    const defaultBranch = await source.getDefaultBranch(issueRef.repo);
+    const defaultBranch = await forge.getDefaultBranch(issueRef.repo);
     await deps.git.ensureMirror(job.repo, fetchUrl, publicUrl, [defaultBranch]);
     const configText = await deps.git.readFileAtRef(job.repo, defaultBranch, REPO_CONFIG_FILENAME);
     let config: RepoConfig;
@@ -142,9 +146,23 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
       return finish('blocked', { error: err.message });
     }
 
-    if (config.baseBranch !== defaultBranch) await deps.git.ensureMirror(job.repo, fetchUrl, publicUrl, [config.baseBranch]);
+    // Avec Jira, la branche de base dépend de la version visée par le ticket, pas seulement du `sisyphe.yml`.
+    const base = await resolveBaseBranch({
+      config,
+      issue,
+      branchExists: (b) => deps.git.remoteBranchExists(fetchUrl, b),
+    });
+    if (base.kind === 'blocked') {
+      await source.comment(issueRef, renderMissingVersionComment(base.reason, trigger));
+      await source.setStatus(issueRef, 'blocked');
+      return finish('blocked', { error: base.reason });
+    }
+    const baseBranch = base.branch;
+    deps.log.info({ jobId: job.id, baseBranch, raison: base.reason }, 'branche de base retenue');
+
+    if (baseBranch !== defaultBranch) await deps.git.ensureMirror(job.repo, fetchUrl, publicUrl, [baseBranch]);
     branch = branchName(config.branchPrefix, job.issueNumber, job.issueTitle);
-    const wt = await deps.git.createWorktree(job.repo, job.issueNumber, branch, config.baseBranch);
+    const wt = await deps.git.createWorktree(job.repo, job.issueNumber, branch, baseBranch);
     // Constante : les closures ci-dessous (agent, vérification, livraison) ne conservent pas le rétrécissement d'un `let`.
     const wtPath = wt.worktreePath;
     worktreePath = wtPath;
@@ -193,6 +211,7 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
       ? tparsed.data
       : {
           verdict: 'needs_clarification', confidence: 0, summary: "Le triage n'a pas produit de verdict exploitable.",
+          note: "Sisyphe a rencontré un problème technique avant de pouvoir analyser cette issue, sans rapport avec son contenu.",
           change_type: 'chore', plan: [], files_likely_touched: [], questions: [], reasons: [`Arrêt du triage : ${tres.stopReason}`],
         };
     job = store.update(job.id, { verdict });
@@ -291,14 +310,14 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
       job.attempt,
       null,
       async () => {
-        const prTemplate = await readPrTemplate(deps.git, job.repo, config.baseBranch);
+        const prTemplate = await readPrTemplate(deps.git, job.repo, baseBranch);
         // Le token d'installation vit une heure : on le ré-obtient juste avant le push, un job peut durer plus longtemps.
-        const pushUrl = await source.getAuthenticatedRemoteUrl(issueRef.repo);
+        const pushUrl = await forge.getAuthenticatedRemoteUrl(issueRef.repo);
         // durationMs ici = durée de ce seul run (depuis startedAt, ligne ~71) ; job.durationMs, lui, cumule
         // les runs précédents d'un job requeué (voir finish() ci-dessus) — deux grandeurs distinctes.
         return deliver({
           job, issue, config, report, verify: verified, phases: phases.listForJob(job.id),
-          source, git: deps.git, worktreePath: wtPath, pushUrl, prTemplate, durationMs: elapsed(),
+          source, forge, git: deps.git, worktreePath: wtPath, pushUrl, prTemplate, baseBranch, durationMs: elapsed(),
         });
       },
       () => ({ outcome: 'success' }),

@@ -119,6 +119,19 @@ export class Git {
     });
   }
 
+  /**
+   * La branche existe-t-elle sur le distant ? Interrogé sans rien rapatrier (`ls-remote`), parce que la
+   * question se pose avant de savoir sur quoi brancher : `ensureMirror` échouerait sur une branche absente.
+   */
+  async remoteBranchExists(fetchUrl: string, branch: string): Promise<boolean> {
+    this.assertBranchName(branch);
+    const r = await this.exec(['ls-remote', '--heads', '--exit-code', fetchUrl, `refs/heads/${branch}`]);
+    // 2 : aucune ref ne correspond, c'est une réponse, pas une panne. Tout autre code non nul en est une.
+    if (r.exitCode === 2) return false;
+    if (r.exitCode !== 0) throw this.fail(['ls-remote', '--heads', branch], r);
+    return true;
+  }
+
   /** Contenu d'un fichier sur une branche de base rafraîchie ; null si le fichier n'y existe pas ; erreur si la branche n'a pas été rafraîchie. */
   async readFileAtRef(repo: string, branch: string, path: string): Promise<string | null> {
     this.assertBranchName(branch);

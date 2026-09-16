@@ -22,7 +22,7 @@ import {
   type ReloadResult,
   type RestartRequiredField,
 } from './control-types.js';
-import { pollOnce } from './poll.js';
+import { pollOnce, resumeBlocked } from './poll.js';
 
 /** Délai maximal laissé aux jobs en vol pour se terminer avant que stop() abandonne (ex. sleep de rate limit d'une heure). */
 const STOP_GRACE_MS = 30_000;
@@ -100,6 +100,7 @@ export class Daemon {
   async runOnce(): Promise<void> {
     await reconcile(this.d);
     await this.ensureLabels();
+    await resumeBlocked(this.d);
     await pollOnce(this.d);
     await this.watchCancellations();
     for (;;) {
@@ -248,6 +249,7 @@ export class Daemon {
   private async doTick(): Promise<void> {
     if (this.stopping) return;
     try {
+      await resumeBlocked(this.d);
       await pollOnce(this.d);
       while (this.startNext()) {
         /* démarre tant que la concurrence et le budget le permettent */
@@ -590,7 +592,7 @@ export class Daemon {
     for (const job of this.d.store.listWithOpenPr(30)) {
       if (job.prNumber === null) continue;
       try {
-        const st = await this.d.source.getPullRequestState({ repo: parseRepo(job.repo), number: job.prNumber, url: job.prUrl ?? '' });
+        const st = await this.d.forge.getPullRequestState({ repo: parseRepo(job.repo), number: job.prNumber, url: job.prUrl ?? '' });
         this.d.store.update(job.id, { prState: st.state, prMergedAt: st.mergedAt });
       } catch (err) {
         this.log.warn({ err, jobId: job.id }, 'trackPullRequests : lecture impossible');

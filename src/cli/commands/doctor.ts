@@ -21,6 +21,11 @@ export interface DoctorGitHub {
   getFileContent(repo: RepoRef, path: string, ref?: string): Promise<string | null>;
 }
 
+/** Idem pour Jira : doctor n'a besoin que de savoir qui on est et quels projets répondent. */
+export interface DoctorJira {
+  checkAccess(): Promise<{ displayName: string; projects: { key: string; reachable: boolean }[] }>;
+}
+
 /** Le sous-ensemble du ServiceManager dont doctor a besoin : un test passe un faux, jamais launchd ni systemd. */
 export interface DoctorService {
   status(): Promise<ServiceStatus>;
@@ -29,6 +34,8 @@ export interface DoctorService {
 export interface BuildChecksInput {
   machine?: MachineConfig;
   github?: DoctorGitHub;
+  /** Absent quand la section `jira` n'est pas configurée : le suivi est alors sur les issues GitHub. */
+  jira?: DoctorJira;
   env: NodeJS.ProcessEnv;
   paths?: DataPaths;
   /** Absent (config illisible) : aucun check « service ». */
@@ -272,6 +279,36 @@ export function buildChecks(input: BuildChecksInput): Check[] {
     }
   }
 
+  // Le suivi des tickets : signalé explicitement, parce qu'une bascule à moitié configurée (section `jira`
+  // présente mais projet injoignable) ressemblerait sinon à un daemon qui ne trouve simplement aucun ticket.
+  if (input.machine?.jira && input.jira) {
+    const jira = input.jira;
+    const configured = input.machine.jira.projects;
+    checks.push({
+      name: 'Jira',
+      run: async () => {
+        const access = await jira.checkAccess();
+        const unreachable = access.projects.filter((p) => !p.reachable).map((p) => p.key);
+        if (unreachable.length) throw new Error(`projet(s) injoignable(s) : ${unreachable.join(', ')}`);
+        return `${access.displayName}, ${access.projects.length} projet(s)`;
+      },
+    });
+    for (const p of configured) {
+      checks.push({
+        name: `${p.key} · workflow`,
+        warn: true,
+        run: async () => {
+          // Un statut de travail hors de l'ordre déclaré rendrait la marche de transitions impossible,
+          // mais seulement au moment de livrer : autant le dire ici.
+          const known = new Set(p.statusesInOrder.map((x) => x.toLowerCase()));
+          const missing = [p.inProgressStatus, p.doneStatus].filter((x) => !known.has(x.toLowerCase()));
+          if (missing.length) throw new Error(`hors de statusesInOrder : ${missing.join(', ')}`);
+          return `${p.repo} ← ${p.key}, ${p.statusesInOrder.length} statuts`;
+        },
+      });
+    }
+  }
+
   return checks;
 }
 
@@ -290,7 +327,7 @@ export async function doctorCommand(): Promise<void> {
   // Sans config, ni racine de données ni gestionnaire de service : le check « config machine » dit déjà tout.
   const paths = app?.paths ?? (machine ? dataPaths(machine.dataDir) : undefined);
   const service = machine && paths ? await serviceManagerFor(paths, machine) : undefined;
-  const checks = buildChecks({ machine, github: app?.github, env: process.env, paths, service });
+  const checks = buildChecks({ machine, github: app?.github, jira: app?.jira, env: process.env, paths, service });
 
   // La config invalide est déjà signalée par le check « config machine » : ne pas la répéter ici.
   if (initError && !(initError instanceof MachineConfigError)) {

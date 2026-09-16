@@ -1,7 +1,7 @@
 import type { ImplementationReport } from '../agent/schemas.js';
 import type { RepoConfig } from '../config/repo.js';
 import { SISYPHE_AUTHOR, type Git } from '../git/git.js';
-import { issueRefOf, parseRepo, type Issue, type IssueSource, type PullRef } from '../github/source.js';
+import { issueRefOf, parseRepo, type Forge, type Issue, type IssueTracker, type PullRef } from '../github/source.js';
 import type { Job, Phase } from '../store/types.js';
 import type { VerifyResult } from '../verify/verify.js';
 import { renderDoneComment } from './comments.js';
@@ -14,10 +14,13 @@ export interface DeliverInput {
   report: ImplementationReport;
   verify: VerifyResult;
   phases: Phase[];
-  source: IssueSource;
+  source: IssueTracker;
+  forge: Forge;
   git: Git;
   worktreePath: string;
   pushUrl: string;
+  /** Base réellement retenue pour ce job : le `sisyphe.yml` ne décide plus seul quand le suivi est sur Jira. */
+  baseBranch: string;
   /** Template de PR lu sur la branche de base par le pipeline (contenu du repo, de confiance). */
   prTemplate: string | null;
   durationMs: number;
@@ -61,7 +64,7 @@ export function shouldBeDraft(job: Job, verify: VerifyResult, config: RepoConfig
  * Non idempotent : chaque appel produit un nouveau commit (horodatage) et un force-push.
  */
 export async function deliver(i: DeliverInput): Promise<DeliverResult> {
-  const { job, config, source } = i;
+  const { job, config, source, forge, baseBranch } = i;
   if (!job.branch || !job.baseSha) throw new Error('Job sans branche ou base : livraison impossible');
   if (!i.verify.treeSha) throw new Error('Aucun arbre vérifié : livraison impossible');
   // Seul point qui pousse : le garde anti-secrets est appliqué ici, quel que soit le chemin pris en amont.
@@ -76,15 +79,15 @@ export async function deliver(i: DeliverInput): Promise<DeliverResult> {
   const title = prTitle(job);
   const body = renderPrBody({ job, report: i.report, verify: i.verify, phases: i.phases, prTemplate: i.prTemplate, costUsd: job.costUsd, durationMs: i.durationMs });
 
-  const existing = await source.findPullRequest(repo, job.branch);
+  const existing = await forge.findPullRequest(repo, job.branch);
   let pr: PullRef;
   if (existing) {
-    await source.updatePullRequest(existing, { title, body, draft, base: config.baseBranch });
+    await forge.updatePullRequest(existing, { title, body, draft, base: baseBranch });
     pr = existing;
   } else {
     // L'auteur de l'issue est relecteur par défaut ; s'il n'a pas accès au repo, le client GitHub ignore le 422 : c'est le contrôle d'accès.
     const reviewers = config.pr.reviewers.length > 0 ? config.pr.reviewers : [i.issue.author];
-    pr = await source.openPullRequest({ repo, title, head: job.branch, base: config.baseBranch, body, draft, labels: config.pr.labels, reviewers });
+    pr = await forge.openPullRequest({ repo, title, head: job.branch, base: baseBranch, body, draft, labels: config.pr.labels, reviewers });
   }
 
   const warnings: string[] = [];

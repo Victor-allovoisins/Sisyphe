@@ -54,7 +54,7 @@ describe('prompts', () => {
     expect(p).toContain('needs_clarification');
   });
   it('implementPrompt contient plan et commandes', () => {
-    const p = implementPrompt(issue, { verdict: 'ready', confidence: 1, summary: 'Bouton bleu', change_type: 'feat', plan: ['créer la vue', 'brancher'], files_likely_touched: ['A.swift'], questions: [], reasons: [] }, config);
+    const p = implementPrompt(issue, { verdict: 'ready', confidence: 1, summary: 'Bouton bleu', note: '', change_type: 'feat', plan: ['créer la vue', 'brancher'], files_likely_touched: ['A.swift'], questions: [], reasons: [] }, config);
     expect(p).toContain('1. créer la vue');
     expect(p).toContain('2. brancher');
     expect(p).toContain('`xcodegen generate`');
@@ -87,7 +87,7 @@ describe('prompts', () => {
     expect(block).not.toContain('commentaire de');
     expect(block).not.toContain('\r');
     expect(systemAppend(parseRepoConfig('baseBranch: main\ncommands:\n  build: make\n'))).toContain('(aucun déclaré)');
-    const p = implementPrompt(issue, { verdict: 'ready', confidence: 1, summary: 's', change_type: 'fix', plan: [], files_likely_touched: [], questions: [], reasons: [] }, config);
+    const p = implementPrompt(issue, { verdict: 'ready', confidence: 1, summary: 's', note: '', change_type: 'fix', plan: [], files_likely_touched: [], questions: [], reasons: [] }, config);
     expect(p).toContain('(non précisé)');
   });
 

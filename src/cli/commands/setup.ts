@@ -5,11 +5,12 @@ import { createInterface } from 'node:readline/promises';
 import { stringify } from 'yaml';
 import { createApp, type App } from '../../app.js';
 import {
-  AGENT_BACKENDS, MachineConfigError, parseMachineConfig, parseMachineConfigAsWritten, type AgentBackend, type MachineConfig,
+  AGENT_BACKENDS, JIRA_STATUSES_DEFAULT, MachineConfigError, parseMachineConfig, parseMachineConfigAsWritten, type AgentBackend, type MachineConfig,
 } from '../../config/machine.js';
 import { writeMachineConfig } from '../../config/write.js';
 import { dataPaths, defaultDataDir, ensureDataDirs, expandHome, machineConfigPath, type DataPaths } from '../../config/paths.js';
 import { parseRepo } from '../../github/source.js';
+import { searchAccounts } from '../../jira/client.js';
 import { openDatabase } from '../../store/db.js';
 import type { ServiceManager } from '../../service/index.js';
 import { buildChecks } from './doctor.js';
@@ -85,6 +86,8 @@ export interface SetupAnswers {
   repos: string[];
   dataDir: string;
   agentBackend: AgentBackend;
+  /** Absent : le suivi reste sur les issues GitHub, et une section `jira` existante est conservée telle quelle. */
+  jira?: MachineConfig['jira'];
 }
 
 /**
@@ -103,8 +106,120 @@ export function buildRawConfig(answers: SetupAnswers, existing?: MachineConfig):
     repos: answers.repos,
     agentBackend: answers.agentBackend,
     ...(answers.agentBackend !== 'sdk' ? { sandbox: false } : {}),
+    // Le `...existing` en tête a déjà reporté une section `jira` en place : on ne l'écrase que si setup
+    // vient d'en construire une neuve, jamais pour la supprimer sans qu'on l'ait demandé.
+    ...(answers.jira ? { jira: answers.jira } : {}),
     dataDir: existing?.dataDir ?? answers.dataDir,
   };
+}
+
+
+/** Réponse « oui » tolérante : o, oui, y, yes, quelle que soit la casse. */
+export function isYes(answer: string): boolean {
+  return /^(o|oui|y|yes)$/i.test(answer.trim());
+}
+
+interface AskJiraDeps {
+  ask: (question: string, def?: string) => Promise<string>;
+  askValidated: (question: string, validate: (v: string) => string | null | Promise<string | null>, def?: string) => Promise<string>;
+  repos: string[];
+  existing?: MachineConfig;
+  dataDir: string;
+  /** Injecté par les tests : évite tout appel réseau. */
+  lookup?: typeof searchAccounts;
+}
+
+/**
+ * La section `jira`, construite par questions.
+ *
+ * Deux partis pris. D'abord, on ne demande jamais un `accountId` : personne ne le connaît. On demande une
+ * adresse et on la résout, en laissant choisir quand plusieurs comptes répondent — assigner les tickets au
+ * mauvais compte ne se verrait qu'à l'usage. Ensuite, un dépôt sans projet Jira reste sur les issues GitHub :
+ * la bascule se fait dépôt par dépôt, pas d'un bloc.
+ */
+export async function askJira(d: AskJiraDeps): Promise<MachineConfig['jira'] | undefined> {
+  const already = d.existing?.jira;
+  const answer = await d.ask(`Suivi des tickets sur Jira ? (o/N)`, already ? 'o' : 'n');
+  if (!isYes(answer)) return undefined;
+
+  const site = await d.askValidated(
+    'Site Atlassian (xxx.atlassian.net)',
+    (v) => (/^[a-z0-9-]+\.atlassian\.net$/.test(v) ? null : 'Format attendu : xxx.atlassian.net'),
+    already?.site,
+  );
+  const email = await d.askValidated(
+    'Adresse du compte porteur du jeton API',
+    (v) => (/^[^@\s]+@[^@\s]+$/.test(v) ? null : 'Adresse invalide'),
+    already?.email,
+  );
+  const apiTokenPath = await d.askValidated(
+    'Chemin du fichier contenant le jeton API',
+    validatePrivateKeyPath,
+    already?.apiTokenPath ?? join(d.dataDir, 'jira-token.txt'),
+  );
+  const apiToken = (await readFile(expandHome(apiTokenPath), 'utf8')).trim();
+  const lookup = d.lookup ?? searchAccounts;
+
+  const projects: NonNullable<MachineConfig['jira']>['projects'] = [];
+  for (const repo of d.repos) {
+    const prev = already?.projects.find((p) => p.repo === repo);
+    const key = await d.ask(`Projet Jira pour ${repo} (vide = rester sur les issues GitHub)`, prev?.key);
+    if (!key) continue;
+    const accountId = await resolveAccount({ site, email, apiToken }, d, repo, prev?.accountId, lookup);
+    projects.push({
+      key: key.toUpperCase(),
+      accountId,
+      repo,
+      candidateStatuses: prev?.candidateStatuses ?? ['Nouveau', 'En analyse'],
+      statusesInOrder: prev?.statusesInOrder ?? [...JIRA_STATUSES_DEFAULT],
+      inProgressStatus: prev?.inProgressStatus ?? 'En développement',
+      doneStatus: prev?.doneStatus ?? 'En relecture',
+    });
+  }
+  if (projects.length === 0) {
+    console.log('Aucun projet Jira renseigné : le suivi reste sur les issues GitHub.');
+    return undefined;
+  }
+  return { site, email, apiTokenPath, projects };
+}
+
+/** Le compte auquel on assignera les tickets de ce dépôt, résolu depuis une adresse ou un nom. */
+async function resolveAccount(
+  cfg: { site: string; email: string; apiToken: string },
+  d: AskJiraDeps,
+  repo: string,
+  previous: string | undefined,
+  lookup: typeof searchAccounts,
+): Promise<string> {
+  for (;;) {
+    const query = await d.ask(`Compte Sisyphe pour ${repo} (adresse ou nom)`, previous);
+    if (!query) continue;
+    let found: Awaited<ReturnType<typeof searchAccounts>>;
+    try {
+      found = await lookup(cfg, query);
+    } catch (err) {
+      // Jira injoignable ou jeton refusé : on ne bloque pas l'installation, on accepte l'identifiant à la main.
+      console.log(`Recherche impossible (${err instanceof Error ? err.message : String(err)}).`);
+      const manual = await d.ask('accountId Jira (laisser vide pour réessayer la recherche)', previous);
+      if (manual) return manual;
+      continue;
+    }
+    if (found.length === 0) {
+      console.log(`Aucun compte ne correspond à « ${query} ».`);
+      continue;
+    }
+    if (found.length === 1) {
+      console.log(`→ ${found[0].displayName}`);
+      return found[0].accountId;
+    }
+    found.forEach((u: { displayName: string; emailAddress?: string }, i: number) => console.log(`  ${i + 1}. ${u.displayName}${u.emailAddress ? ` <${u.emailAddress}>` : ''}`));
+    const pick = await d.askValidated(
+      'Lequel',
+      (v) => (Number(v) >= 1 && Number(v) <= found.length ? null : `Un nombre entre 1 et ${found.length}`),
+      '1',
+    );
+    return found[Number(pick) - 1].accountId;
+  }
 }
 
 /** Ce qui reste à faire après setup : le daemon n'est jamais démarré par l'installation. */
@@ -260,7 +375,9 @@ export async function setupCommand(
       apiKey = envKey && apiKeyAnswer === ENV_KEY_PLACEHOLDER ? envKey : apiKeyAnswer;
     }
 
-    const raw = buildRawConfig({ appId, installationId, privateKeyPath, repos, dataDir, agentBackend }, existing);
+    const jira = await askJira({ ask, askValidated, repos, existing, dataDir });
+
+    const raw = buildRawConfig({ appId, installationId, privateKeyPath, repos, dataDir, agentBackend, jira }, existing);
     const rawYaml = stringify(raw);
     // Deux formes de la même configuration, validées avant toute écriture : `written` garde les chemins tels
     // que saisis et c'est elle qui part sur le disque ; `machine` les développe, pour tout ce qui s'en sert

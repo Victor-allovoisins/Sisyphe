@@ -5,7 +5,7 @@ import { parseMachineConfig } from '../config/machine.js';
 import { parseRepo } from '../github/source.js';
 import { openDatabase } from '../store/db.js';
 import { JobStore } from '../store/jobs.js';
-import { pollOnce } from './poll.js';
+import { pollOnce, resumeBlocked } from './poll.js';
 
 const repo = parseRepo('acme/demo');
 const machine = parseMachineConfig('github:\n  appId: 1\n  installationId: 1\n  privateKeyPath: /x\nrepos:\n  - acme/demo\n');
@@ -120,5 +120,42 @@ describe('pollOnce', () => {
 
     await expect(pollOnce(deps)).resolves.toEqual([]);
     expect(store.listActive()).toHaveLength(1);
+  });
+});
+
+describe('resumeBlocked', () => {
+  it('retire le statut blocked quand la réponse vient de quelqu\'un avec accès write', async () => {
+    const source = new FakeIssueSource();
+    source.permissions.alice = 'write';
+    source.addIssue(repo, { number: 4, title: 'bloquée', labels: ['sisyphe', 'sisyphe:blocked'] });
+    source.replyAs({ repo, number: 4 }, 'alice', 'voilà la précision');
+    const store = new JobStore(openDatabase(':memory:'));
+    const deps = { source, store, machine, log: pino({ level: 'silent' }) };
+
+    await resumeBlocked(deps);
+    expect(source.labelsOf({ repo, number: 4 })).toEqual(['sisyphe']);
+  });
+
+  it('ignore une réponse sans accès write et laisse blocked', async () => {
+    const source = new FakeIssueSource();
+    source.addIssue(repo, { number: 4, title: 'bloquée', labels: ['sisyphe', 'sisyphe:blocked'] });
+    source.replyAs({ repo, number: 4 }, 'mallory', 'moi aussi ça me bloque');
+    const store = new JobStore(openDatabase(':memory:'));
+    const deps = { source, store, machine, log: pino({ level: 'silent' }) };
+
+    await resumeBlocked(deps);
+    expect(source.labelsOf({ repo, number: 4 })).toEqual(['sisyphe', 'sisyphe:blocked']);
+  });
+
+  it('ignore quand le dernier commentaire est le nôtre', async () => {
+    const source = new FakeIssueSource();
+    source.permissions.alice = 'write';
+    source.addIssue(repo, { number: 4, title: 'bloquée', labels: ['sisyphe', 'sisyphe:blocked'] });
+    await source.comment({ repo, number: 4 }, 'note de blocage');
+    const store = new JobStore(openDatabase(':memory:'));
+    const deps = { source, store, machine, log: pino({ level: 'silent' }) };
+
+    await resumeBlocked(deps);
+    expect(source.labelsOf({ repo, number: 4 })).toEqual(['sisyphe', 'sisyphe:blocked']);
   });
 });

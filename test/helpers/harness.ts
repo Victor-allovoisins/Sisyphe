@@ -13,6 +13,7 @@ import { openDatabase } from '../../src/store/db.js';
 import { JobStore } from '../../src/store/jobs.js';
 import { PhaseStore } from '../../src/store/phases.js';
 import { FakeIssueSource } from '../fakes/fake-issue-source.js';
+import type { Issue } from '../../src/github/source.js';
 import { ScriptedAgentRunner, type ScriptedStep } from '../fakes/scripted-agent-runner.js';
 import { TEST_ENV, createRemoteRepo, writeFiles } from './git-fixture.js';
 
@@ -30,7 +31,7 @@ limits:
 `;
 
 export const readyVerdict = {
-  verdict: 'ready', confidence: 0.9, summary: 'Écrire hello dans src/feature.txt', change_type: 'feat',
+  verdict: 'ready', confidence: 0.9, summary: 'Écrire hello dans src/feature.txt', note: '', change_type: 'feat',
   plan: ['créer src/feature.txt'], files_likely_touched: ['src/feature.txt'], questions: [], reasons: [],
 };
 
@@ -90,7 +91,7 @@ export interface HarnessOptions {
   agentBackend?: 'sdk' | 'cli' | 'claude-code' | 'codex' | 'opencode';
   /** Surcharge machine des modèles par phase (codex/opencode). */
   agentModels?: { triage?: string; implement?: string };
-  issues?: Array<{ number: number; title: string; author?: string; labeledBy?: string }>;
+  issues?: Array<{ number: number; title: string; author?: string; labeledBy?: string; tracker?: Issue['tracker'] }>;
   /** Fichiers ajoutés au repo distant ; peuvent remplacer ceux du fixture, `sisyphe.yml` compris. */
   files?: Record<string, string>;
   /** Branche par défaut du repo distant et de la forge. */
@@ -141,7 +142,7 @@ export async function makeHarness(o: HarnessOptions) {
   };
   await writeConfig();
   const deps: PipelineDeps = {
-    store, phases, actions, source, agent, git: new Git(paths), paths, machine,
+    store, phases, actions, source, forge: source, agent, git: new Git(paths), paths, machine,
     log: pino({ level: 'silent' }), env: { PATH: process.env.PATH ?? '' }, scan: async () => [],
   };
   return { root, paths, configPath, writeConfig, remotePath, headSha, store, phases, actions, source, agent, deps };

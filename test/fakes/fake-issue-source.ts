@@ -14,6 +14,8 @@ export interface FakeIssueInput {
   /** null simule l'absence d'événement `labeled` du label trigger ; omis, retombe sur `author`. */
   labeledBy?: string | null;
   state?: 'open' | 'closed';
+  /** Présent, l'issue se comporte comme un ticket Jira : c'est lui qui décide de la branche de base. */
+  tracker?: Issue['tracker'];
 }
 
 export interface FakePull {
@@ -46,6 +48,7 @@ export class FakeIssueSource implements IssueSource {
   defaultBranch = 'main';
   remoteUrl = 'file:///dev/null';
   private nextPr = 100;
+  private commentSeq = 0;
 
   constructor(readonly triggerLabel = 'sisyphe') {}
 
@@ -65,6 +68,7 @@ export class FakeIssueSource implements IssueSource {
       repo, number: input.number, title: input.title, body: input.body ?? '', author,
       state: input.state ?? 'open', labels: input.labels ?? [this.triggerLabel], comments: input.comments ?? [],
       labeledBy: 'labeledBy' in input ? (input.labeledBy ?? null) : author,
+      ...(input.tracker ? { tracker: input.tracker } : {}),
     });
   }
 
@@ -135,6 +139,25 @@ export class FakeIssueSource implements IssueSource {
     this.calls.push('comment');
     const k = this.key(ref);
     this.comments.set(k, [...(this.comments.get(k) ?? []), markdown]);
+    const i = this.stored(ref);
+    i.comments = [...i.comments, { author: this.selfLogin, body: markdown, createdAt: new Date(this.commentSeq++).toISOString() }];
+  }
+
+  /** Simule la réponse d'un tiers (pas notre App) sur une issue existante, pour tester `resumeIfCommented`. */
+  replyAs(ref: IssueRef, author: string, body = 'reply'): void {
+    const i = this.stored(ref);
+    i.comments = [...i.comments, { author, body, createdAt: new Date(this.commentSeq++).toISOString() }];
+  }
+
+  async resumeIfCommented(ref: IssueRef): Promise<boolean> {
+    this.calls.push('resumeIfCommented');
+    const i = this.stored(ref);
+    const last = i.comments.at(-1);
+    if (!last || last.author === this.selfLogin) return false;
+    const p = this.permissions[last.author];
+    if (p !== 'admin' && p !== 'write' && p !== 'maintain') return false;
+    await this.setStatus(ref, null);
+    return true;
   }
 
   async isStillActive(ref: IssueRef): Promise<boolean> {

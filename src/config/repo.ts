@@ -22,6 +22,12 @@ const section = <T extends z.ZodTypeAny>(schema: T) => nullable(schema);
 // `strictObject` partout : une clé inconnue (faute de frappe sur protectedPaths) désactiverait une barrière en silence.
 export const RepoConfigSchema = z.strictObject({
   baseBranch: nonEmpty,
+  /**
+   * Gabarit de branche de release, `{version}` étant la version cible du ticket. Sert quand le suivi est
+   * sur Jira : un ticket porte sa `fixVersion`, et un correctif part de la release correspondante quand elle
+   * est déjà ouverte — sinon de `baseBranch`. Sans suivi Jira, ce champ ne sert à rien.
+   */
+  releaseBranchPattern: z.string().min(1).includes('{version}', { message: 'doit contenir {version}' }).default('release/{version}'),
   branchPrefix: z
     .string()
     .regex(/^[A-Za-z0-9._/-]*$/, 'caractères autorisés : lettres, chiffres, . _ / -')

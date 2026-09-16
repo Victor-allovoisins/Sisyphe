@@ -47,13 +47,13 @@ describe('deliver', () => {
     const j = store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Titre' });
     return store.update(j.id, {
       branch: 'feature/issue-7-x', baseSha, worktreePath, attempt: 1, costUsd: 2.5,
-      verdict: { verdict: 'ready', confidence: 1, summary: 's', change_type: 'fix', plan: [], files_likely_touched: [], questions: [], reasons: [] },
+      verdict: { verdict: 'ready', confidence: 1, summary: 's', note: '', change_type: 'fix', plan: [], files_likely_touched: [], questions: [], reasons: [] },
       flags: { ...emptyFlags(), ...flags },
     });
   }
 
   const run = (job: ReturnType<typeof makeJob>, v: VerifyResult = verify, cfg: RepoConfig = config) =>
-    deliver({ job, issue: { repo, number: 7, title: 'Titre', body: '', author: 'alice', state: 'open', labels: [], comments: [] }, config: cfg, report, verify: v, phases: [], source, git, worktreePath, pushUrl: remotePath, prTemplate: null, durationMs: 5000 });
+    deliver({ job, issue: { repo, number: 7, title: 'Titre', body: '', author: 'alice', state: 'open', labels: [], comments: [] }, config: cfg, report, verify: v, phases: [], source, forge: source, git, worktreePath, baseBranch: cfg.baseBranch, pushUrl: remotePath, prTemplate: null, durationMs: 5000 });
 
   it('pousse un commit squashé et ouvre la PR', async () => {
     const job = makeJob();
