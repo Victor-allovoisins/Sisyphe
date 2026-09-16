@@ -291,6 +291,43 @@ describe('isStillActive', () => {
   });
 });
 
+describe('refFromKey', () => {
+  it('résout une clé vers le dépôt du projet qui la sert', () => {
+    const tracker = new JiraIssueTracker({
+      site: 'allovoisins.atlassian.net',
+      email: 'bot@example.test',
+      apiToken: 'jeton',
+      projects: [PROJECT],
+    });
+    expect(tracker.refFromKey('IOS-885')).toEqual({ repo: REPO, number: 885 });
+    expect(() => tracker.refFromKey('BACK-1')).toThrow(/BACK/);
+    expect(() => tracker.refFromKey('IOS')).toThrow(/IOS/);
+  });
+});
+
+describe('listTransitions', () => {
+  it('rend les transitions telles que l’API les donne, sans les transformer', async () => {
+    const transitions = [
+      { id: '21', to: { name: 'A développer' } },
+      { id: '31', to: { name: 'En développement' } },
+    ];
+    const h = harness({ 'GET /rest/api/3/issue/IOS-885/transitions': { transitions } });
+    expect(await h.tracker.listTransitions(REF)).toEqual(transitions);
+  });
+});
+
+describe('get', () => {
+  it('ne laisse passer qu’un chemin de lecture de l’API Jira', async () => {
+    const h = harness({ 'GET /rest/api/3/issue/IOS-885/changelog': { values: [] } });
+    await h.tracker.get('/rest/api/3/issue/IOS-885/changelog');
+    expect(h.calls).toEqual([{ method: 'GET', path: '/rest/api/3/issue/IOS-885/changelog', body: undefined }]);
+
+    for (const bad of ['https://evil.example/x', '/rest/api/3/../../admin', 'rest/api/3/issue', '/plugins/servlet/x']) {
+      await expect(h.tracker.get(bad)).rejects.toThrow(/chemin/i);
+    }
+  });
+});
+
 describe('configuration', () => {
   it('refuse explicitement un dépôt sans projet Jira configuré', async () => {
     const h = harness({});

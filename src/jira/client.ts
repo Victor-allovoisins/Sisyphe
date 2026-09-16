@@ -2,7 +2,15 @@ import { readFile } from 'node:fs/promises';
 import type { Logger } from 'pino';
 import type { MachineConfig } from '../config/machine.js';
 import { withRetry, type RetryOptions } from '../github/retry.js';
-import type { Issue, IssueRef, IssueTracker, RepoRef, StatusLabel, TriggerCheck } from '../github/source.js';
+import {
+  parseRepo,
+  type Issue,
+  type IssueRef,
+  type IssueTracker,
+  type RepoRef,
+  type StatusLabel,
+  type TriggerCheck,
+} from '../github/source.js';
 import { adfToMarkdown } from './adf.js';
 import { markdownToAdf } from './to-adf.js';
 import { walkTo, type JiraTransition } from './transitions.js';
@@ -79,10 +87,14 @@ export function jqlQuote(v: string): string {
  */
 export class JiraIssueTracker implements IssueTracker {
   private readonly byRepo = new Map<string, JiraProject>();
+  private readonly byKey = new Map<string, JiraProject>();
   private readonly auth: string;
 
   constructor(private readonly cfg: JiraClientConfig) {
-    for (const p of cfg.projects) this.byRepo.set(p.repo, p);
+    for (const p of cfg.projects) {
+      this.byRepo.set(p.repo, p);
+      this.byKey.set(p.key, p);
+    }
     this.auth = `Basic ${Buffer.from(`${cfg.email}:${cfg.apiToken}`).toString('base64')}`;
   }
 
@@ -110,6 +122,19 @@ export class JiraIssueTracker implements IssueTracker {
    */
   private key(ref: IssueRef): string {
     return `${this.project(ref.repo).key}-${ref.number}`;
+  }
+
+  /**
+   * Le chemin inverse de `key()` : la CLI reçoit `IOS-886`, le reste du code travaille en `IssueRef`.
+   * Un projet inconnu est une erreur de configuration, pas un cas courant — on le dit plutôt que de deviner.
+   */
+  refFromKey(key: string): IssueRef {
+    const number = numberFromKey(key);
+    const prefix = key.slice(0, key.lastIndexOf('-'));
+    if (number === null || !prefix) throw new Error(`Clé Jira invalide : ${key} (attendu PROJET-123)`);
+    const project = this.byKey.get(prefix);
+    if (!project) throw new Error(`Aucun projet Jira configuré pour la clé ${key}`);
+    return { repo: parseRepo(project.repo), number };
   }
 
   private async request<T>(method: string, path: string, body?: unknown, opts?: RetryOptions): Promise<T> {
@@ -312,6 +337,27 @@ export class JiraIssueTracker implements IssueTracker {
         await this.request('POST', `/rest/api/3/issue/${encodeURIComponent(key)}/transitions`, { transition: { id } }, { retryOnError: false });
       },
     });
+  }
+
+  /** Les transitions disponibles depuis le statut courant. Ce que `walkTo` consomme, exposé pour la CLI. */
+  async listTransitions(ref: IssueRef): Promise<JiraTransition[]> {
+    const r = await this.request<{ transitions?: JiraTransition[] }>(
+      'GET',
+      `/rest/api/3/issue/${encodeURIComponent(this.key(ref))}/transitions`,
+    );
+    return r.transitions ?? [];
+  }
+
+  /**
+   * Lecture brute de l'API Jira, pour ce que les verbes fixes ne couvrent pas. Strictement un GET sous
+   * `/rest/api/` : c'est la frontière entre « l'agent peut tout lire » et « l'agent peut écrire », et elle
+   * est tenue ici, pas dans la CLI — une deuxième porte d'entrée finirait par ne pas vérifier la même chose.
+   */
+  async get<T = unknown>(path: string): Promise<T> {
+    if (!path.startsWith('/rest/api/') || path.includes('..')) {
+      throw new Error(`Chemin refusé : ${path} (attendu un chemin de lecture sous /rest/api/)`);
+    }
+    return this.request<T>('GET', path);
   }
 
   /**
