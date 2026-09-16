@@ -112,10 +112,11 @@ export class CodexAgentRunner implements AgentRunner {
       onLine: (parsed) => {
         const e = parsed as { type?: string; thread_id?: string; usage?: Record<string, number> };
         // `thread.started`/`turn.started`, `error` (message racine) et `turn.failed` (error.message) sont
-        // épinglés sur une capture réelle. `turn.completed.usage` et `item.completed` restent issus du
-        // schéma codex-rs : le succès n'est pas encore validé contre la vraie CLI (capture du 2026-09-14
-        // bloquée par le quota ChatGPT, seul le chemin d'échec a été observé). La validation manuelle
-        // d'un vrai run réussi est décrite dans docs/playground.md.
+        // épinglés sur une capture réelle, de même que l'invocation « prompt sur stdin sans argument
+        // positionnel » (`Reading prompt from stdin...`, revérifiée le 2026-09-16). `turn.completed.usage`
+        // et `item.completed` restent issus du schéma codex-rs : le succès n'est pas encore validé contre
+        // la vraie CLI (quota ChatGPT épuisé jusqu'au 2026-09-19). La validation manuelle d'un vrai run
+        // réussi est décrite dans docs/playground.md.
         if (e.type === 'thread.started' && typeof e.thread_id === 'string') sessionId = e.thread_id;
         if (e.type === 'turn.completed') {
           numTurns += 1;

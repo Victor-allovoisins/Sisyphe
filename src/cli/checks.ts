@@ -82,6 +82,8 @@ const INSTALL_HINTS: Record<string, { darwin: string; linux: string }> = {
   git: { darwin: 'brew install git', linux: 'sudo apt-get install -y git' },
   gitleaks: { darwin: 'brew install gitleaks', linux: 'https://github.com/gitleaks/gitleaks/releases' },
   claude: { darwin: 'npm install -g @anthropic-ai/claude-code', linux: 'npm install -g @anthropic-ai/claude-code' },
+  codex: { darwin: 'npm install -g @openai/codex', linux: 'npm install -g @openai/codex' },
+  opencode: { darwin: 'npm install -g opencode-ai', linux: 'npm install -g opencode-ai' },
 };
 
 /** Commande d'installation de l'outil sur cette plateforme, `null` quand on n'a rien de sûr à conseiller. */
