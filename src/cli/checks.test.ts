@@ -57,6 +57,8 @@ describe('checks', () => {
     expect(installHint('gitleaks', 'darwin')).toBe('brew install gitleaks');
     expect(installHint('gitleaks', 'linux')).toBe('https://github.com/gitleaks/gitleaks/releases');
     expect(installHint('claude', 'linux')).toBe('npm install -g @anthropic-ai/claude-code');
+    expect(installHint('codex', 'darwin')).toBe('npm install -g @openai/codex');
+    expect(installHint('opencode', 'linux')).toBe('npm install -g opencode-ai');
     expect(installHint('gitleaks', 'freebsd')).toBeNull();
     expect(installHint('xcodebuild', 'darwin')).toBeNull();
   });

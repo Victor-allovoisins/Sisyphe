@@ -396,6 +396,8 @@ describe('OpenCodeAgentRunner : captures réelles (formes épinglées)', () => {
     expect(r.usage).toEqual({ inputTokens: 11458, outputTokens: 87, cacheReadTokens: 11136, cacheCreationTokens: 0 });
     // Le coût réel est par étape (0.0017367 puis 0.000097008), pas un total cumulé : il faut sommer.
     expect(r.costUsd).toBeCloseTo(0.001833708, 9);
+    // Un « tour » opencode = un `step_finish` (deux dans l'échantillon réel).
+    expect(r.numTurns).toBe(2);
   });
 
   it('erreur réelle : le message vient de error.data.message', async () => {

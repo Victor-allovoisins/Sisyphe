@@ -80,10 +80,10 @@ export function parseAuthStatus(stdout: string): string {
   return typeof status.authMethod === 'string' ? `connecté (${status.authMethod})` : 'connecté';
 }
 
-async function checkClaudeCli(platform: NodeJS.Platform): Promise<string> {
-  await whichOrHint('claude', platform);
-  const r = await execa('claude', ['--version'], { reject: false });
-  if (r.exitCode !== 0) throw new Error(`\`claude --version\` a échoué (code ${r.exitCode})`);
+async function checkCliVersion(bin: string, platform: NodeJS.Platform): Promise<string> {
+  await whichOrHint(bin, platform);
+  const r = await execa(bin, ['--version'], { reject: false });
+  if (r.exitCode !== 0) throw new Error(`\`${bin} --version\` a échoué (code ${r.exitCode})`);
   return r.stdout.trim();
 }
 
@@ -91,13 +91,6 @@ async function checkClaudeAuth(): Promise<string> {
   const r = await execa('claude', ['auth', 'status', '--json'], { reject: false });
   if (r.exitCode !== 0) throw new Error('`claude auth status` a échoué : lancer `claude login`');
   return parseAuthStatus(r.stdout);
-}
-
-async function checkCodexCli(platform: NodeJS.Platform): Promise<string> {
-  await whichOrHint('codex', platform);
-  const r = await execa('codex', ['--version'], { reject: false });
-  if (r.exitCode !== 0) throw new Error(`\`codex --version\` a échoué (code ${r.exitCode})`);
-  return r.stdout.trim();
 }
 
 /** `codex login status` (épinglé) : un code de sortie 0 = connecté ; la ligne « Logged in using … » suffit. */
@@ -122,13 +115,6 @@ export function parseOpenCodeAuthStatus(stdout: string): string {
   }
   if (clean === '') throw new Error('`opencode auth list` n’a rien renvoyé : lancer `opencode auth login`');
   return 'connecté';
-}
-
-async function checkOpencodeCli(platform: NodeJS.Platform): Promise<string> {
-  await whichOrHint('opencode', platform);
-  const r = await execa('opencode', ['--version'], { reject: false });
-  if (r.exitCode !== 0) throw new Error(`\`opencode --version\` a échoué (code ${r.exitCode})`);
-  return r.stdout.trim();
 }
 
 async function checkOpencodeAuth(): Promise<string> {
@@ -214,13 +200,13 @@ export function buildChecks(input: BuildChecksInput): Check[] {
   // schéma, `sdk`, et les checks de clé API ne concernent que lui.
   const backend = input.machine?.agentBackend ?? 'sdk';
   if (backend === 'claude-code') {
-    checks.push({ name: 'claude (CLI)', run: () => checkClaudeCli(platform) });
+    checks.push({ name: 'claude (CLI)', run: () => checkCliVersion('claude', platform) });
     checks.push({ name: 'claude auth status', run: checkClaudeAuth });
   } else if (backend === 'codex') {
-    checks.push({ name: 'codex (CLI)', run: () => checkCodexCli(platform) });
+    checks.push({ name: 'codex (CLI)', run: () => checkCliVersion('codex', platform) });
     checks.push({ name: 'codex login status', run: checkCodexAuth });
   } else if (backend === 'opencode') {
-    checks.push({ name: 'opencode (CLI)', run: () => checkOpencodeCli(platform) });
+    checks.push({ name: 'opencode (CLI)', run: () => checkCliVersion('opencode', platform) });
     checks.push({ name: 'opencode auth list', run: checkOpencodeAuth });
   } else if (input.apiKeyChecks !== false) {
     checks.push({

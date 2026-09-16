@@ -43,6 +43,11 @@ function isTerminalError(type: string): boolean {
  * ni en triage ni en implémentation. En implémentation (`allowedTools` contient `Edit` ou `Write`),
  * `edit` s'ouvre de la même façon puis subit les mêmes refus, et `bash` est alors autorisé ;
  * `webfetch`/`websearch` ne le sont jamais (couverts par `*: deny`).
+ *
+ * Limite assumée : `glob` et `grep` restent ouverts sans restriction de motif, faute de pouvoir y
+ * exprimer un chemin (leurs règles matchent le motif de recherche, pas le fichier). Un contenu protégé
+ * peut donc encore être approché par recherche ; le contrôle a posteriori — un chemin protégé touché
+ * fait échouer le job — reste le filet.
  */
 export function buildOpenCodePermission(o: AgentRunOptions): Record<string, unknown> {
   const patterns = o.pathGuard?.protectedPatterns ?? [];
@@ -258,6 +263,8 @@ export class OpenCodeAgentRunner implements AgentRunner {
     let finalAssistantText = '';
     let currentMessageKey: string | null = null;
     let costUsd = 0;
+    // opencode n'a pas de notion de « tour » comptée : chaque `step_finish` est une étape du modèle.
+    let numTurns = 0;
     let terminalFailure: string | null = null;
     const usage: AgentUsage = zeroUsage();
 
@@ -286,6 +293,7 @@ export class OpenCodeAgentRunner implements AgentRunner {
         const cost = eventCost(parsed);
         if (cost !== null) costUsd += cost;
         const type = typeof parsed.type === 'string' ? parsed.type : '';
+        if (type === 'step_finish') numTurns++;
         if (terminalFailure === null && isTerminalError(type)) {
           terminalFailure = eventErrorText(parsed) ?? `opencode ${type}`;
         }
@@ -321,7 +329,7 @@ export class OpenCodeAgentRunner implements AgentRunner {
       sessionId,
       costUsd,
       usage,
-      numTurns: 0,
+      numTurns,
       durationMs: Date.now() - started,
       stopReason,
       errorMessage: stopReason === 'completed' ? undefined : parts.filter(Boolean).join(' ; ') || undefined,
