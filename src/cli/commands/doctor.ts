@@ -1,6 +1,8 @@
 import { execa } from 'execa';
-import { readFile, statfs } from 'node:fs/promises';
+import { access, readFile, statfs } from 'node:fs/promises';
 import { userInfo } from 'node:os';
+import { join } from 'node:path';
+import { agentPluginPath } from '../../agent/plugin-path.js';
 import { createApp, machineConfigPath, type App } from '../../app.js';
 import { loadMachineConfig, MachineConfigError, type MachineConfig } from '../../config/machine.js';
 import { dataPaths, type DataPaths } from '../../config/paths.js';
@@ -46,6 +48,11 @@ export interface BuildChecksInput {
   platform?: NodeJS.Platform;
   /** Plist de l'agent launchd inspecté par le check « service » ; injectable pour ne jamais lire le vrai. */
   plistPath?: string;
+  /**
+   * Racine du plugin agent inspectée par le check « plugin agent » ; par défaut `agentPluginPath()`
+   * (le vrai `agent-plugin/` du dépôt). Injectable pour tester un plugin incomplet sans y toucher.
+   */
+  pluginPath?: string;
   /**
    * Faux : ni présence ni validité de la clé API. La page de réglages lit l'environnement de l'interface, pas
    * celui du service, et contredirait le daemon qui tourne ; `doctor` et `setup` gardent ces contrôles.
@@ -173,6 +180,29 @@ async function checkLinger(): Promise<string> {
     throw new Error(`désactivé : le service s'arrête à la déconnexion — \`sudo loginctl enable-linger ${user}\``);
   }
   return 'activé';
+}
+
+/**
+ * Le plugin livré avec Sisyphe. `tsc` ne copie ni Markdown ni JSON : ces fichiers vivent dans le dépôt et
+ * n'apparaissent pas dans `dist/`. Absents, la phase `jira` tournerait sans son skill — un agent qui
+ * improvise sur un ticket réel plutôt qu'un échec visible.
+ */
+async function checkAgentPlugin(root: string): Promise<string> {
+  const required = [join(root, '.claude-plugin', 'plugin.json'), join(root, 'skills', 'sisyphe-jira', 'SKILL.md')];
+  const missing: string[] = [];
+  for (const f of required) {
+    try {
+      await access(f);
+    } catch {
+      missing.push(f);
+    }
+  }
+  if (missing.length) {
+    throw new Error(
+      `fichiers manquants : ${missing.join(', ')}. Le plugin vit dans le dépôt, pas dans dist/ : reprendre le clone (git status) plutôt que relancer npm run build.`,
+    );
+  }
+  return root;
 }
 
 /** Construit la liste des checks, sans en exécuter aucun (fonction pure côté construction). */
@@ -307,6 +337,17 @@ export function buildChecks(input: BuildChecksInput): Check[] {
         },
       });
     }
+  }
+
+  // Le plugin n'est utile que si la phase `jira` peut charger un skill : suivi Jira, backend sdk/claude-code
+  // (même critère que `supportsSkills` dans jobs/pipeline.ts — dupliqué ici faute de pouvoir l'importer sans
+  // toucher à un quatrième fichier). Ailleurs (issues GitHub, ou codex/opencode) son absence ne change rien
+  // au comportement du daemon : un doctor rouge y serait un faux positif. Bloquant, pas `warn`, une fois le
+  // contrôle jugé pertinent : contrairement au workflow ci-dessus (dont l'effet se voit plus tard, à la
+  // livraison), un plugin manquant laisse l'agent improviser en silence sur un ticket réel.
+  if (input.machine?.jira && (backend === 'sdk' || backend === 'claude-code')) {
+    const root = input.pluginPath ?? agentPluginPath();
+    checks.push({ name: 'plugin agent (sisyphe-jira)', run: () => checkAgentPlugin(root) });
   }
 
   return checks;

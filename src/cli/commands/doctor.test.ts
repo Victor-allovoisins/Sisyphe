@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
@@ -42,6 +42,34 @@ function fakeGithub(getFileContent: DoctorGitHub['getFileContent'], access?: { a
     checkAccess: async () => access ?? { appSlug: 'app', repos: [] },
     getFileContent,
   };
+}
+
+/** Config machine minimale avec suivi Jira, pour le check « plugin agent » : seul le backend varie. */
+function machineWithJira(agentBackend: string): MachineConfig {
+  return machineWith(['acme/one'], {
+    agentBackend,
+    jira: {
+      site: 'acme.atlassian.net',
+      email: 'bot@acme.tld',
+      apiTokenPath: '/does/not/need/to/exist.txt',
+      projects: [{ key: 'ACME', accountId: '1', repo: 'acme/one' }],
+    },
+  });
+}
+
+/** Répertoire de plugin factice ne portant que les fichiers listés (`plugin.json`, `SKILL.md`), effacé à la fin. */
+async function pluginFixture(files: Array<'plugin.json' | 'SKILL.md'>): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), 'sisyphe-plugin-'));
+  tempDirs.push(dir);
+  if (files.includes('plugin.json')) {
+    await mkdir(join(dir, '.claude-plugin'), { recursive: true });
+    await writeFile(join(dir, '.claude-plugin', 'plugin.json'), '{}');
+  }
+  if (files.includes('SKILL.md')) {
+    await mkdir(join(dir, 'skills', 'sisyphe-jira'), { recursive: true });
+    await writeFile(join(dir, 'skills', 'sisyphe-jira', 'SKILL.md'), '# skill');
+  }
+  return dir;
 }
 
 // Les checks exercés via ce helper (node, sisyphe.yml par repo, GitHub App) ne renvoient jamais la forme
@@ -241,6 +269,35 @@ describe('check « socket de contrôle »', () => {
   it('le check est bloquant : un chemin impossible n’est pas un simple avertissement', () => {
     const c = buildChecks({ env: {}, paths: fakePaths('/tmp/x') }).find((x) => x.name === 'socket de contrôle');
     expect(c?.warn).toBeUndefined();
+  });
+});
+
+describe('check « plugin agent (sisyphe-jira) »', () => {
+  it("n'existe pas sans suivi Jira, ni avec un backend qui ne charge pas de plugin (codex, opencode)", () => {
+    const sansJira = buildChecks({ env: {}, machine: machineWith(['acme/one']) }).map((c) => c.name);
+    expect(sansJira).not.toContain('plugin agent (sisyphe-jira)');
+    for (const agentBackend of ['codex', 'opencode']) {
+      const names = buildChecks({ env: {}, machine: machineWithJira(agentBackend) }).map((c) => c.name);
+      expect(names).not.toContain('plugin agent (sisyphe-jira)');
+    }
+  });
+
+  it('plugin complet : ok, avec le chemin', async () => {
+    const root = await pluginFixture(['plugin.json', 'SKILL.md']);
+    const checks = buildChecks({ env: {}, machine: machineWithJira('sdk'), pluginPath: root });
+    const check = checks.find((c) => c.name === 'plugin agent (sisyphe-jira)');
+    if (!check) throw new Error('check absent');
+    await expect(check.run()).resolves.toBe(root);
+  });
+
+  it('plugin incomplet : échec bloquant nommant le fichier manquant et la marche à suivre (pas un rebuild)', async () => {
+    const root = await pluginFixture(['plugin.json']); // SKILL.md manquant
+    const checks = buildChecks({ env: {}, machine: machineWithJira('claude-code'), pluginPath: root });
+    const check = checks.find((c) => c.name === 'plugin agent (sisyphe-jira)');
+    if (!check) throw new Error('check absent');
+    expect(check.warn).toBeUndefined();
+    await expect(check.run()).rejects.toThrow(/SKILL\.md/);
+    await expect(check.run()).rejects.toThrow(/git status/);
   });
 });
 

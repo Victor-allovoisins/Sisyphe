@@ -133,6 +133,57 @@ Ce qui change, côté usage :
 
 `sisyphe doctor` vérifie le compte, l'accès à chaque projet et la cohérence des statuts configurés.
 
+## Ce que Sisyphe écrit sur le ticket Jira
+
+Sous suivi Jira, avec un backend qui sait charger un plugin local (`sdk` ou `claude-code` — voir « Les
+backends », plus bas), chaque job se termine par un tour d'agent dédié à la clôture du ticket.
+
+- **La phase `jira`** : dernière phase de chaque job, quelle que soit l'issue (livré, bloqué, échoué,
+  annulé). Un seul tour d'agent (20 tours maximum, 1 $ de budget), qui reçoit le sort du job — statut
+  d'arrivée, coût, durée, tentatives, drapeaux (secrets, chemins protégés, diff volumineux, arrêt précoce) —
+  mais pas le texte du ticket lui-même : pour l'avoir en contexte, l'agent doit le lire avec `sisyphe jira
+  show`. Il décide du statut d'arrivée sur Jira et rédige le commentaire de fin. Son seul outil est la
+  commande `sisyphe jira` ; un garde-fou Bash refuse tout ce qui ne commence pas exactement par `sisyphe
+  jira ` (pas d'enchaînement, pas de saut de ligne). `sisyphe doctor` vérifie la présence du plugin sur le
+  disque, sur ces deux mêmes backends — absent, l'agent chargerait le skill sans le trouver et improviserait
+  une réponse plausible, en silence.
+
+- **Le filet** : le daemon ne fait pas confiance à ce que l'agent affirme avoir fait. Une fois la phase
+  `jira` terminée, il vérifie deux choses contre l'état réel de Jira, et les corrige au besoin :
+  1. un job non livré ne laisse jamais le ticket assigné au compte dédié — sauf si l'agent dit avoir déjà
+     rendu la main, encore assigné, il est réassigné à qui l'avait confié ;
+  2. un job terminé laisse toujours un texte posté en commentaire — celui rédigé par l'agent s'il y en a un,
+     sinon le message qu'aurait posté l'ancien chemin scripté. Le daemon *tente* toujours de le poster : une
+     panne Jira au moment de commenter finit en avertissement dans les logs, pas en exception qui priverait
+     le job du reste de sa clôture.
+
+- **La commande `sisyphe jira`**, six verbes :
+  - `show <clé>` : titre, statut, type, versions visées, corps et commentaires du ticket, en JSON.
+  - `transitions <clé>` : les transitions possibles depuis l'état courant (id et statut d'arrivée).
+  - `transition <clé> <statut>` : fait avancer le ticket vers ce statut, de proche en proche.
+  - `comment <clé>` : poste un commentaire (corps lu sur l'entrée standard).
+  - `assign <clé> --back` ou `--bot` : rend le ticket à qui l'a confié, ou se l'assigne.
+  - `get <chemin>` : lecture brute de n'importe quel chemin `/rest/api/`, pour ce que les cinq verbes
+    au-dessus ne couvrent pas.
+
+  La lecture (`get`) est libre sur tout `/rest/api/` : elle ne fait qu'apporter de la donnée en plus, sans
+  rien déclencher. L'écriture, elle, est bornée à cinq verbes fixes, parce qu'une fois le ticket lu, l'agent
+  a en contexte son texte — titre, description, commentaires —, écrit par des tiers. Une commande d'écriture
+  arbitraire y serait exposée à une instruction glissée dans ce texte ; les verbes fixes, eux, ne peuvent
+  faire qu'une chose chacun.
+
+- **Le lien avec la PR** : la clé du ticket apparaît dans le sujet du commit et dans le titre de la PR
+  (`type(CLÉ-123): titre`), ce qui suffit à l'app GitHub for Jira pour remplir le panneau « Développement »
+  du ticket — elle s'appuie sur le commit et le titre, pas sur le nom de branche. Le nom de branche ne porte
+  donc pas la clé (convention AlloVoisins : préfixe, titre en snake_case, numéro seul — `517` pour `IOS-517`)
+  et n'a pas à la porter. Sous suivi Jira, le corps de la PR s'ouvre sur un lien vers le ticket et ne porte pas de
+  `Closes #N` : ce numéro y désignerait une issue GitHub sans rapport, qu'une fusion sur la branche par
+  défaut fermerait pour de bon.
+
+- **Les backends** : `codex` et `opencode` ne savent pas charger de plugin local. Sous ces deux backends,
+  Sisyphe garde le chemin scripté d'avant cette phase : c'est le daemon, et non un agent, qui décide alors
+  du statut Jira et du commentaire de fin.
+
 ## Côté repo cible
 
 Un fichier `sisyphe.yml` à la racine de la branche par défaut (exemple iOS : `examples/sisyphe.ios.yml`). Il porte les commandes de build et de test, les chemins protégés, les budgets et les limites — et, si le suivi passe par Jira, `releaseBranchPattern` (`release/{version}` par défaut), qui dit comment une version de ticket devient un nom de branche.
