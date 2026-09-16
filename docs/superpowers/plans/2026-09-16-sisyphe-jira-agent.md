@@ -920,19 +920,11 @@ Tu n'as qu'un outil : la commande `sisyphe jira`. Aucune autre commande ne passe
 | `sisyphe jira show IOS-886` | Le ticket : titre, statut courant, type, versions, description, commentaires. |
 | `sisyphe jira transitions IOS-886` | Les statuts atteignables **depuis le statut courant**, avec leur id. |
 | `sisyphe jira transition IOS-886 "En relecture"` | Va jusqu'à ce statut, en enchaînant les étapes s'il le faut. |
-| `sisyphe jira comment IOS-886` | Poste un commentaire ; le corps se passe sur l'entrée standard. |
 | `sisyphe jira assign IOS-886 --back` | Rend le ticket à la personne qui l'a confié à Sisyphe. |
 | `sisyphe jira get /rest/api/3/...` | N'importe quelle lecture de l'API Jira, pour ce que le reste ne dit pas. |
 
-Un commentaire se poste ainsi :
-
-```bash
-sisyphe jira comment IOS-886 <<'FIN'
-🪨 PR prête : https://github.com/acme/ios/pull/412
-
-Coût estimé : $0.42 · Durée : 6 min · Tentatives : 1
-FIN
-```
+Aucun enchaînement n'est possible : pas de `;`, pas de `|`, pas de `&&`, pas de redirection. Une commande par
+appel. C'est pour cela que le commentaire ne se poste pas par la ligne de commande — voir plus bas.
 
 ## Les transitions
 
@@ -960,6 +952,10 @@ Le résultat du job t'est donné dans le prompt. En fonction :
 - **Job annulé** → `assign --back`, commentaire court.
 
 ## Le commentaire
+
+Tu ne le postes pas toi-même : tu l'écris dans le champ `comment` de ton rapport JSON, et Sisyphe le pose.
+C'est le seul moyen d'avoir un texte sur plusieurs lignes — la ligne de commande n'en accepte aucune.
+Un `comment` vide veut dire « ne rien poster », et Sisyphe posera alors son propre message de secours.
 
 Il est lu par la personne qui a signalé le problème, pas par un développeur qui relira les logs.
 
@@ -1110,7 +1106,12 @@ Dans `src/agent/schemas.ts` :
 ```typescript
 export const JiraSyncReportSchema = z.object({
   status: z.string().describe("Statut Jira dans lequel le ticket a été laissé ; chaîne vide si aucune transition n'a eu lieu"),
-  commented: z.boolean().describe('Un commentaire a-t-il été posté sur le ticket'),
+  /**
+   * Le texte, pas un booléen : le garde-fou Bash interdit toute redirection, donc un corps sur plusieurs
+   * lignes ne peut pas passer par la ligne de commande. L'agent l'écrit ici, le pipeline le poste. Vide =
+   * rien à dire, et le pipeline posera son message de secours.
+   */
+  comment: z.string().describe('Le commentaire à poster sur le ticket, en markdown ; chaîne vide pour ne rien poster'),
   handedBack: z.boolean().describe("Le ticket a-t-il été rendu à la personne qui l'avait confié à Sisyphe"),
   note: z.string().describe("Ce qui n'a pas pu être fait, en une phrase ; chaîne vide si tout s'est bien passé"),
 });
@@ -1203,7 +1204,7 @@ export interface JiraSyncDeps {
   model?: string;
 }
 
-const EMPTY: JiraSyncReport = { status: '', commented: false, handedBack: false, note: 'aucun rapport produit' };
+const EMPTY: JiraSyncReport = { status: '', comment: '', handedBack: false, note: 'aucun rapport produit' };
 
 /**
  * Un tour d'agent, un seul outil. Ne lève jamais : le filet du pipeline s'appuie sur ce qu'elle rend, et
@@ -1446,9 +1447,10 @@ et ajouter, juste au-dessus :
       const still = await source.canTrigger(issueRef).catch(() => ({ ok: false, login: null }));
       if (still.ok) await source.removeTriggerLabel(issueRef).catch((err) => log.warn({ err }, 'ticket non rendu'));
     }
-    if (!report.commented) {
-      await source.comment(issueRef, scriptedComment(state, finished)).catch((err) => log.warn({ err }, 'commentaire de secours non posté'));
-    }
+    // L'agent rédige, le pipeline poste : c'est le seul chemin, et il garantit qu'un job terminé laisse
+    // toujours une trace — texte de l'agent s'il en a écrit un, message scripté sinon.
+    const body = report.comment.trim() || scriptedComment(state, finished);
+    await source.comment(issueRef, body).catch((err) => log.warn({ err }, 'commentaire de fin non posté'));
   };
 ```
 
