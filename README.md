@@ -139,7 +139,7 @@ Sous suivi Jira, avec un backend qui sait charger un plugin local (`sdk` ou `cla
 backends », plus bas), chaque job se termine par un tour d'agent dédié à la clôture du ticket.
 
 - **La phase `jira`** : dernière phase de chaque job, quelle que soit l'issue (livré, bloqué, échoué,
-  annulé). Un seul tour d'agent (20 tours maximum, 1 $ de budget), qui reçoit le sort du job — statut
+  annulé). Un seul passage d'agent (20 tours maximum, 1 $ de budget), qui reçoit le sort du job — statut
   d'arrivée, coût, durée, tentatives, drapeaux (secrets, chemins protégés, diff volumineux, arrêt précoce) —
   mais pas le texte du ticket lui-même : pour l'avoir en contexte, l'agent doit le lire avec `sisyphe jira
   show`. Il décide du statut d'arrivée sur Jira et rédige le commentaire de fin. Son seul outil est la
@@ -150,8 +150,9 @@ backends », plus bas), chaque job se termine par un tour d'agent dédié à la 
 
 - **Le filet** : le daemon ne fait pas confiance à ce que l'agent affirme avoir fait. Une fois la phase
   `jira` terminée, il vérifie deux choses contre l'état réel de Jira, et les corrige au besoin :
-  1. un job non livré ne laisse jamais le ticket assigné au compte dédié — sauf si l'agent dit avoir déjà
-     rendu la main, encore assigné, il est réassigné à qui l'avait confié ;
+  1. un job non livré ne laisse jamais le ticket assigné au compte dédié : sauf si l'agent déclare l'avoir
+     déjà rendu, le daemon relit l'assigné sur Jira et, s'il s'agit encore du compte dédié, réassigne le
+     ticket à qui l'avait confié ;
   2. un job terminé laisse toujours un texte posté en commentaire — celui rédigé par l'agent s'il y en a un,
      sinon le message qu'aurait posté l'ancien chemin scripté. Le daemon *tente* toujours de le poster : une
      panne Jira au moment de commenter finit en avertissement dans les logs, pas en exception qui priverait
