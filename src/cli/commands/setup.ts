@@ -1,6 +1,6 @@
 import { realpathSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { stringify } from 'yaml';
 import { createApp, type App } from '../../app.js';
@@ -152,12 +152,8 @@ export async function askJira(d: AskJiraDeps): Promise<MachineConfig['jira'] | u
     (v) => (/^[^@\s]+@[^@\s]+$/.test(v) ? null : 'Adresse invalide'),
     already?.email,
   );
-  const apiTokenPath = await d.askValidated(
-    'Chemin du fichier contenant le jeton API',
-    validatePrivateKeyPath,
-    already?.apiTokenPath ?? join(d.dataDir, 'jira-token.txt'),
-  );
-  const apiToken = (await readFile(expandHome(apiTokenPath), 'utf8')).trim();
+  const apiTokenPath = await d.ask('Chemin du fichier contenant le jeton API', already?.apiTokenPath ?? join(d.dataDir, 'jira-token.txt'));
+  const apiToken = await ensureTokenFile(apiTokenPath, d);
   const lookup = d.lookup ?? searchAccounts;
 
   const projects: NonNullable<MachineConfig['jira']>['projects'] = [];
@@ -181,6 +177,39 @@ export async function askJira(d: AskJiraDeps): Promise<MachineConfig['jira'] | u
     return undefined;
   }
   return { site, email, apiTokenPath, projects };
+}
+
+/**
+ * Le jeton, lu depuis son fichier — ou écrit dedans si le fichier n'existe pas encore.
+ *
+ * Le proposer à la saisie évite un aller-retour : sans cela, il faudrait interrompre `setup`, créer le
+ * fichier à la main, puis tout recommencer. La valeur ne part jamais dans `config.yml`, qui n'en garde que
+ * le chemin, et le fichier est écrit en 0600 — c'est un mot de passe.
+ */
+async function ensureTokenFile(tokenPath: string, d: AskJiraDeps): Promise<string> {
+  const resolved = expandHome(tokenPath);
+  for (;;) {
+    try {
+      const existing = (await readFile(resolved, 'utf8')).trim();
+      if (existing) return existing;
+      console.log(`${tokenPath} est vide.`);
+    } catch {
+      console.log(`${tokenPath} n'existe pas encore.`);
+    }
+    console.log('Jeton API du compte Jira dédié : id.atlassian.com → Sécurité → Créer un jeton API.');
+    const value = (await d.ask('Coller le jeton (vide pour créer le fichier soi-même et réessayer)')).trim();
+    if (!value) {
+      await d.ask('Appuyer sur Entrée une fois le fichier créé');
+      continue;
+    }
+    await mkdir(dirname(resolved), { recursive: true });
+    await writeFile(resolved, `${value}\n`, { mode: 0o600 });
+    // Un fichier déjà présent garde ses droits : on les repose, sinon un jeton écrit par-dessus un fichier
+    // lisible par tous le resterait.
+    await chmod(resolved, 0o600);
+    console.log(`Jeton écrit dans ${tokenPath} (lisible par vous seul).`);
+    return value;
+  }
 }
 
 /** Le compte auquel on assignera les tickets de ce dépôt, résolu depuis une adresse ou un nom. */

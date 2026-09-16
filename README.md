@@ -17,8 +17,9 @@ Une App GitHub `sisyphe[bot]`, permissions Contents (read & write), Issues (read
 Trois choses à préparer, sans quoi `sisyphe setup` ne pourra pas aller au bout :
 
 1. **Un compte Jira dédié**, membre du projet visé, avec le droit d'être assigné et de transitionner les tickets. C'est lui qu'on assigne pour déclencher un traitement, et c'est sous son nom qu'apparaissent les commentaires.
-2. **Un jeton API émis depuis ce compte** (`id.atlassian.com` → Sécurité → Jetons API). Émis depuis un autre compte, Sisyphe commenterait sous une identité et travaillerait sur les tickets d'une autre.
-3. **Le jeton dans un fichier**, par exemple `~/.sisyphe/jira-token.txt`. La configuration n'en garde que le chemin : le jeton lui-même n'est jamais écrit dans `config.yml`, ni affiché par l'interface.
+2. **Un jeton API émis depuis ce compte**. Se connecter à Atlassian **avec ce compte**, puis `id.atlassian.com` → Sécurité → Créer un jeton API. Émis depuis un autre compte, Sisyphe commenterait sous une identité et travaillerait sur les tickets d'une autre.
+
+`sisyphe setup` s'occupe du reste : il demande où ranger le jeton, et si le fichier n'existe pas encore, il propose de le coller et l'écrit en `0600`. La configuration n'en garde que le **chemin** — le jeton n'est jamais écrit dans `config.yml`, ni affiché par l'interface, ni transmis au navigateur.
 
 Détail de la section `jira` : plus bas, « Suivi des tickets sur Jira ».
 

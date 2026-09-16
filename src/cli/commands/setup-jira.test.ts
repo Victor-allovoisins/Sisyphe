@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -88,6 +88,28 @@ describe('askJira', () => {
     const s = scripted(['o', 'allovoisins.atlassian.net', 'bot@example.test', tokenPath, 'IOS', 'sisyphe', 'acc-saisi']);
     const jira = await askJira({ ...s, repos: ['ILokYou/ILokYou-iOS'], dataDir: dir, lookup });
     expect(jira?.projects[0].accountId).toBe('acc-saisi');
+  });
+
+  it('écrit le jeton collé quand le fichier n’existe pas, en 0600', async () => {
+    const missing = join(dir, 'pas-encore', 'jira-token.txt');
+    const s = scripted(['o', 'allovoisins.atlassian.net', 'bot@example.test', missing, 'jeton-collé', 'IOS', 'robot']);
+    const jira = await askJira({ ...s, repos: ['ILokYou/ILokYou-iOS'], dataDir: dir, lookup: found(1) });
+
+    expect(jira?.apiTokenPath).toBe(missing);
+    expect((await readFile(missing, 'utf8')).trim()).toBe('jeton-collé');
+    // Un mot de passe : lisible par son seul propriétaire.
+    expect((await stat(missing)).mode & 0o777).toBe(0o600);
+    // Et jamais recopié dans la configuration.
+    expect(JSON.stringify(jira)).not.toContain('jeton-collé');
+  });
+
+  it('reprend un jeton déjà en place sans rien demander', async () => {
+    const s = scripted(['o', 'allovoisins.atlassian.net', 'bot@example.test', tokenPath, 'IOS', 'robot']);
+    const lookup = found(1);
+    await askJira({ ...s, repos: ['ILokYou/ILokYou-iOS'], dataDir: dir, lookup });
+
+    expect(lookup).toHaveBeenCalledWith(expect.objectContaining({ apiToken: 'jeton' }), 'robot');
+    expect(s.asked.join('\n')).not.toContain('Coller le jeton');
   });
 });
 
