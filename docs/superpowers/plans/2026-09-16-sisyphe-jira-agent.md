@@ -1027,6 +1027,12 @@ export function agentPluginPath(): string {
 Run: `npx vitest run src/agent/plugin-path.test.ts`
 Expected: PASS. Si le chemin est faux, corriger le nombre de `..` selon l'emplacement réel de `dist/agent/`.
 
+**Vérifié en Task 0 :** le nom qualifié `<plugin>:<skill>` est la forme qui marche — d'où `sisyphe:sisyphe-jira`,
+et non `sisyphe-jira` comme l'écrit la §3.4 de la spec. Le champ `skills` du message `init` liste les skills
+*découverts*, pas les skills *autorisés* : il est identique avec et sans l'option `skills`. Ne pas s'en servir
+pour juger que l'allowlist fonctionne — elle fonctionne, mais ça se vérifie en demandant à l'agent d'invoquer
+un skill absent de la liste, pas en lisant `init`.
+
 - [ ] **Step 7 : commit**
 
 ```bash
@@ -1253,13 +1259,12 @@ Dans `src/agent/sdk-runner.ts`, `buildOptions`, ajouter :
 Dans `src/agent/cli/claude-code-runner.ts`, `buildCliArgs`, ajouter avant `--append-system-prompt-file` :
 
 ```typescript
-  if (o.skills?.length) {
-    args.push('--plugin-dir', agentPluginPath());
-    for (const s of o.skills) args.push('--skill', s);
-  }
+  // La CLI n'a pas d'équivalent de l'option `skills` du SDK (vérifié en Task 0 : ni --skills, ni
+  // --allowed-skills). Elle n'en a pas besoin ici : `--setting-sources ''` coupe toute autre source, donc
+  // seuls les skills de ce plugin existent pour l'agent. Le filtrage au cas par cas, s'il devenait utile,
+  // passerait par `--disallowedTools 'Skill(<plugin>:<skill>)'`, qui refuse bien l'invocation.
+  if (o.skills?.length) args.push('--plugin-dir', agentPluginPath());
 ```
-
-Si le drapeau `--skill` n'existe pas sur la CLI (le vérifier avec `claude -p --help`), se contenter de `--plugin-dir` : le skill est alors découvert et l'agent l'invoque depuis le prompt, qui le nomme explicitement.
 
 - [ ] **Step 7 : ajouter la phase au modèle**
 
