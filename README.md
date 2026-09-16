@@ -1,6 +1,6 @@
 # Sisyphe
 
-Daemon qui prend les issues GitHub labellisées `sisyphe`, les fait trier puis implémenter par un agent (Claude, Codex ou opencode selon le backend), vérifie lui-même build et tests, et ouvre une pull request documentée avec son coût et sa durée. Le matin, on relit des PR.
+Daemon qui prend des tickets — issues GitHub portant le label `sisyphe`, ou tickets Jira assignés à son compte —, les fait trier puis implémenter par un agent (Claude, Codex ou opencode selon le backend), vérifie lui-même build et tests, et ouvre une pull request documentée avec son coût et sa durée. Le matin, on relit des PR.
 
 - Spec : `docs/superpowers/specs/2026-09-08-sisyphe-design.md`
 - Plan : `docs/superpowers/plans/2026-09-08-sisyphe.md`
@@ -11,6 +11,16 @@ Daemon qui prend les issues GitHub labellisées `sisyphe`, les fait trier puis i
 Une App GitHub `sisyphe[bot]`, permissions Contents (read & write), Issues (read & write), Pull requests (read & write), Metadata (read), installée uniquement sur les repos cibles (spec §9). Marche à suivre complète : `docs/playground.md` §1.
 
 À faire d'abord : l'installation se termine par un `sisyphe setup` interactif qui réclame l'App ID, l'Installation ID et le chemin de la clé privée `.pem`. Sans ces trois valeurs sous la main, lancer `./install.sh --no-setup`, créer l'App, puis `sisyphe setup`.
+
+## Jira (à faire avant l'installation, si le suivi passe par Jira)
+
+Trois choses à préparer, sans quoi `sisyphe setup` ne pourra pas aller au bout :
+
+1. **Un compte Jira dédié**, membre du projet visé, avec le droit d'être assigné et de transitionner les tickets. C'est lui qu'on assigne pour déclencher un traitement, et c'est sous son nom qu'apparaissent les commentaires.
+2. **Un jeton API émis depuis ce compte** (`id.atlassian.com` → Sécurité → Jetons API). Émis depuis un autre compte, Sisyphe commenterait sous une identité et travaillerait sur les tickets d'une autre.
+3. **Le jeton dans un fichier**, par exemple `~/.sisyphe/jira-token.txt`. La configuration n'en garde que le chemin : le jeton lui-même n'est jamais écrit dans `config.yml`, ni affiché par l'interface.
+
+Détail de la section `jira` : plus bas, « Suivi des tickets sur Jira ».
 
 ## Installation
 
@@ -45,6 +55,8 @@ Limites à connaître, par backend :
 - **Coût** : `sdk`/`claude-code` rapportent le coût réel de la CLI ; `codex` reporte toujours **0** (abonnement) et `opencode` le reporte au mieux (0 si le flux ne le fournit pas). Les KPI et `report` en tiennent compte sans se casser.
 - **Chemins protégés** : `sdk`/`claude-code` les bloquent a priori (hook) ; `codex`/`opencode` s'appuient sur leur bac à sable / permissions et sur le contrôle a posteriori. `opencode` refuse `edit` et `read` par motif (`OPENCODE_PERMISSION`), mais `grep`/`glob` restent autorisés : un contenu protégé peut encore être approché par recherche, le contrôle a posteriori restant le filet. Dans tous les cas, un chemin protégé touché fait **échouer le job** — aucun push, aucune PR.
 - **Environnement** : les clés fournisseur ne sont pas toutes retirées. `sdk` est le seul à recevoir `ANTHROPIC_API_KEY` ; `codex` retire `OPENAI_API_KEY` ; `opencode` laisse les clés fournisseur telles quelles (son store `opencode auth` est la voie attendue).
+
+`sisyphe setup` demande ensuite si le suivi des tickets passe par Jira, et le cas échéant le site, le compte, le chemin du jeton et un projet par dépôt.
 
 À la fin, le script rappelle les dernières étapes : la connexion de la CLI choisie (`claude login`, `codex login`, `opencode auth login`), `exec $SHELL -l` pour recharger le `PATH` du terminal courant, puis `sisyphe ui`.
 
@@ -122,7 +134,22 @@ Ce qui change, côté usage :
 
 ## Côté repo cible
 
-Un fichier `sisyphe.yml` à la racine de la branche par défaut (exemple iOS : `examples/sisyphe.ios.yml`). Poser le label `sisyphe` sur une issue déclenche le traitement. Retirer le label annule. Les labels `sisyphe:in-progress`, `sisyphe:blocked`, `sisyphe:done`, `sisyphe:failed` sont posés par Sisyphe ; les retirer relance.
+Un fichier `sisyphe.yml` à la racine de la branche par défaut (exemple iOS : `examples/sisyphe.ios.yml`). Il porte les commandes de build et de test, les chemins protégés, les budgets et les limites — et, si le suivi passe par Jira, `releaseBranchPattern` (`release/{version}` par défaut), qui dit comment une version de ticket devient un nom de branche.
+
+Le déclencheur dépend du traqueur :
+
+- **Issues GitHub** : poser le label `sisyphe` déclenche, le retirer annule. Les labels `sisyphe:in-progress`, `sisyphe:blocked`, `sisyphe:done`, `sisyphe:failed` sont posés par Sisyphe ; les retirer relance.
+- **Tickets Jira** : assigner le ticket au compte dédié déclenche, le réassigner à quelqu'un d'autre annule. Aucun label n'entre en jeu.
+
+## Écrire les tickets : le skill `signaler-un-bug`
+
+`skills/signaler-un-bug/` est un skill Claude destiné aux personnes non techniques. Il mène un court entretien sur le bug rencontré, rédige le ticket et l'assigne au compte dédié.
+
+Il existe parce que le triage est sans recours : l'agent ne voit **aucune image**, ne peut ouvrir **aucun lien**, et ne peut **poser aucune question**. Un ticket trop maigre est renvoyé à son auteur sans qu'aucun travail ait eu lieu. Le skill est écrit à rebours de ces trois contraintes — il transcrit les captures en mots, cite les règles métier au lieu de les lier, et n'accepte qu'un bug par ticket.
+
+Il tourne sur **claude.ai ou l'app Desktop**, avec le connecteur Atlassian actif — pas dans Claude Code, puisque les personnes visées n'ont ni terminal ni clone. Le connecteur GitHub ne conviendrait pas : il est en lecture seule, toute création d'issue y échoue en 403.
+
+Installation et prérequis : `skills/signaler-un-bug/README.md`.
 
 ## Commandes
 
