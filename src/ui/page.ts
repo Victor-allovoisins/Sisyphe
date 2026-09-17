@@ -1445,12 +1445,21 @@ export const PAGE_HTML = `<!doctype html>
     });
   }
 
-  /** Le nom lisible du compte n'est qu'un confort d'affichage : il ne fait pas partie de la configuration. */
+  /**
+   * Le nom lisible du compte n'est qu'un confort d'affichage : il ne fait pas partie de la configuration.
+   *
+   * Le statut de blocage est recopié bien que la page n'offre aucun champ pour le régler : cette fonction
+   * décide seule de ce qui survit à un enregistrement, et un champ qu'elle oublie disparaît sans erreur ni
+   * trace — les tickets bloqués resteraient dans la colonne de travail, et personne ne relierait la panne
+   * au fait d'avoir ouvert les réglages. Une valeur absente vaut undefined, que la sérialisation JSON
+   * efface : un projet sans ce statut envoie donc exactement ce qu'il envoyait avant.
+   */
   function cleanJiraProject(p) {
     return {
       key: p.key, accountId: p.accountId, repo: p.repo,
       candidateStatuses: p.candidateStatuses, statusesInOrder: p.statusesInOrder,
-      inProgressStatus: p.inProgressStatus, doneStatus: p.doneStatus
+      inProgressStatus: p.inProgressStatus, doneStatus: p.doneStatus,
+      blockedStatus: p.blockedStatus
     };
   }
 

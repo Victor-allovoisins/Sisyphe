@@ -1,4 +1,9 @@
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { loadMachineConfig, parseMachineConfigAsWritten } from '../config/machine.js';
+import { validateMachineConfigInput, writeMachineConfig } from '../config/write.js';
 import { PAGE_HTML } from './page.js';
 
 const JIRA = { site: 'acme.atlassian.net', keys: { 'acme/demo': 'DEMO' } };
@@ -117,6 +122,61 @@ describe('PAGE_HTML', () => {
     // Un null explicite : sans lui le serveur reporterait l'ancienne section, et le retrait serait impossible.
     expect(PAGE_HTML).toContain('config.jira = (site && email && token && settings.jira.projects.length)');
     expect(PAGE_HTML).toContain(': null;');
+  });
+
+  /**
+   * L'aller-retour complet d'un champ que la page n'affiche pas : lu du fichier, reposté par la page,
+   * validé, réécrit, relu. Joué de bout en bout plutôt que par une recherche de `blockedStatus` dans le
+   * HTML — ce qui se perd ici se perd en silence, et le seul contrôle qui morde est celui qui rejoue la
+   * chaîne entière : un troisième chemin de reconstruction qui oublierait le champ le ferait tomber.
+   */
+  it('n’efface pas un statut de blocage configuré à la main : aller-retour par les réglages', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sisyphe-page-'));
+    try {
+      const keyPath = join(dir, 'app.pem');
+      const tokenPath = join(dir, 'jira-token.txt');
+      const configPath = join(dir, 'config.yml');
+      await writeFile(keyPath, 'clé factice');
+      await writeFile(tokenPath, 'jeton');
+      const ecrit = `github: { appId: 12, installationId: 34, privateKeyPath: ${keyPath} }
+repos: [ILokYou/ILokYou-iOS, ILokYou/back]
+dataDir: ${dir}
+jira:
+  site: allovoisins.atlassian.net
+  email: bot@example.test
+  apiTokenPath: ${tokenPath}
+  projects:
+    - key: IOS
+      accountId: acc-1
+      repo: ILokYou/ILokYou-iOS
+      blockedStatus: En attente d'informations
+    - key: BACK
+      accountId: acc-1
+      repo: ILokYou/back
+`;
+      // Ce que la page reçoit de `settingsView`, puis ce qu'elle reposte — la vraie fonction, extraite du
+      // HTML et exécutée, et le passage par JSON qui efface les `undefined` comme le ferait `fetch`.
+      const vue = parseMachineConfigAsWritten(ecrit);
+      const clean = Function(`${fnSource('cleanJiraProject')}\nreturn cleanJiraProject;`)() as (p: unknown) => unknown;
+      const poste: unknown = JSON.parse(JSON.stringify({
+        ...vue,
+        jira: { ...vue.jira, projects: vue.jira?.projects.map(clean) },
+      }));
+
+      const valide = await validateMachineConfigInput(poste, vue);
+      if (!valide.ok) throw new Error(`refus inattendu : ${JSON.stringify(valide.issues)}`);
+      await writeMachineConfig(configPath, valide.config);
+
+      const relu = await loadMachineConfig(configPath);
+      expect(relu.jira?.projects[0].blockedStatus).toBe("En attente d'informations");
+      // L'autre moitié : un projet qui n'en a pas ne doit pas se retrouver avec la clé posée à vide. Le
+      // schéma refuse `null` et la chaîne vide — le fichier réécrit deviendrait illisible au démarrage
+      // suivant, et la page aurait cassé la configuration en enregistrant autre chose.
+      expect(relu.jira?.projects[1].blockedStatus).toBeUndefined();
+      expect(await readFile(configPath, 'utf8')).not.toContain('blockedStatus: null');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('ajoute un quatrième onglet Réglages, avec son formulaire groupé', () => {

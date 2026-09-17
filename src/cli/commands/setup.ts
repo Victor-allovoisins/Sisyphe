@@ -174,6 +174,10 @@ export async function askJira(d: AskJiraDeps): Promise<MachineConfig['jira'] | u
       statusesInOrder: prev?.statusesInOrder ?? [...JIRA_STATUSES_DEFAULT],
       inProgressStatus: prev?.inProgressStatus ?? 'En développement',
       doneStatus: prev?.doneStatus ?? 'En relecture',
+      // Reporté sans jamais être demandé : `setup` ne propose pas ce statut, mais le perdre en silence
+      // remettrait les tickets bloqués dans la colonne de travail sans que personne ne relie la panne à ce
+      // `setup`. Ce qu'on ne sait pas demander, on le recopie.
+      ...(prev?.blockedStatus ? { blockedStatus: prev.blockedStatus } : {}),
     });
   }
   if (projects.length === 0) {

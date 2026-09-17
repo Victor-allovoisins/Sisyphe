@@ -81,6 +81,29 @@ describe('askJira', () => {
     expect(jira).toBeUndefined();
   });
 
+  it('reporte le statut de blocage d’une config existante, qu’il ne sait pourtant pas demander', async () => {
+    // Un `setup` relancé sur une configuration en place ne doit rien perdre de ce qu'il ne demande pas : le
+    // statut d'attente disparaîtrait sans erreur, et les tickets bloqués resteraient dans la colonne de
+    // travail sans que personne ne relie la panne à ce `setup`.
+    const existing = parseMachineConfig(`
+github: { appId: 1, installationId: 2, privateKeyPath: /dev/null }
+repos: [ILokYou/ILokYou-iOS]
+jira:
+  site: allovoisins.atlassian.net
+  email: bot@example.test
+  apiTokenPath: ${tokenPath}
+  projects:
+    - key: IOS
+      accountId: acc-1
+      repo: ILokYou/ILokYou-iOS
+      blockedStatus: En attente d'informations
+`);
+    const s = scripted(['o', 'allovoisins.atlassian.net', 'bot@example.test', tokenPath, 'robot', 'IOS']);
+    const jira = await askJira({ ...s, repos: ['ILokYou/ILokYou-iOS'], dataDir: dir, existing, lookup: found(1) });
+
+    expect(jira?.projects[0].blockedStatus).toBe("En attente d'informations");
+  });
+
   it('accepte un accountId à la main quand Jira est injoignable', async () => {
     const lookup = vi.fn(async () => {
       throw new Error('ECONNREFUSED');
