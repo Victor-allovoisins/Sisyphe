@@ -149,6 +149,48 @@ describe('runJob', () => {
     ]);
   });
 
+  it('périmètre restreint : `test` reste hors périmètre, et la PR dit pourquoi', async () => {
+    // Le `test.sh` du fixture exige « hello » et l'agent écrit autre chose : si `verdict.verification`
+    // n'arrivait pas jusqu'à `requested`, `test` tournerait, échouerait, et le job finirait en draft.
+    const restreint = { ...readyVerdict, verification: { steps: ['build'], why: 'changement de libellé' } };
+    const h = await makeHarness({ steps: [{ output: restreint }, { output: report('v1'), sideEffect: writeFeature('coucou\n') }] });
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    const done = await runJob(job.id, h.deps, signal());
+
+    expect(done.state).toBe('done');
+    expect(done.attempt).toBe(1);
+    expect(h.source.pulls[0].draft).toBe(false);
+    const body = h.source.pulls[0].body;
+    expect(body).toContain('- build : ✅ ok');
+    expect(body).toContain('- test : 🚫 hors périmètre');
+    expect(body).toContain('changement de libellé');
+    expect(body).not.toContain('Périmètre élargi');
+  });
+
+  it('reprise : la seconde tentative élargit le périmètre que le triage avait restreint', async () => {
+    const restreint = { ...readyVerdict, verification: { steps: ['build'], why: 'changement de libellé' } };
+    const h = await makeHarness({
+      // `build` réclame « ok », `test » réclame « hello » : la première tentative rate le build, la seconde
+      // satisfait les deux. `test` ne tourne que si la reprise a bien élargi le périmètre.
+      files: { 'build.sh': 'grep -q ok src/feature.txt', 'test.sh': 'grep -q hello src/feature.txt' },
+      steps: [
+        { output: restreint },
+        { output: report('v1'), sideEffect: writeFeature('raté\n') },
+        { output: report('v2'), sideEffect: writeFeature('ok hello\n') },
+      ],
+    });
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    const done = await runJob(job.id, h.deps, signal());
+
+    expect(done.state).toBe('done');
+    expect(done.attempt).toBe(2);
+    const body = h.source.pulls[0].body;
+    // Une erreur d'un cran sur `attempt` — 0-based au lieu de 1-based — laisserait `test` hors périmètre ici.
+    expect(body).toContain('- test : ✅ ok');
+    expect(body).toContain('Périmètre élargi');
+    expect(body).toContain('reprise après échec');
+  });
+
   it('tentatives épuisées : failed avec PR draft, worktree supprimé et dossier de job conservé', async () => {
     const h = await makeHarness({
       steps: [{ output: readyVerdict }, { output: report('v1'), sideEffect: writeFeature('bye\n') }, { output: report('v2'), sideEffect: writeFeature('bye\n') }],
