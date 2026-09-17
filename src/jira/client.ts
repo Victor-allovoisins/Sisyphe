@@ -352,12 +352,29 @@ export class JiraIssueTracker implements IssueTracker {
    * Lecture brute de l'API Jira, pour ce que les verbes fixes ne couvrent pas. Strictement un GET sous
    * `/rest/api/` : c'est la frontière entre « l'agent peut tout lire » et « l'agent peut écrire », et elle
    * est tenue ici, pas dans la CLI — une deuxième porte d'entrée finirait par ne pas vérifier la même chose.
+   *
+   * La frontière se juge sur l'URL **normalisée**, jamais sur la chaîne reçue : c'est `fetch` qui parse, et
+   * le parseur WHATWG résout aussi les remontées écrites en pourcent — `/rest/api/.%2e/.%2e/wiki/rest/api/…`
+   * sort sur `/wiki/…`, c'est-à-dire Confluence, avec le jeton du compte dédié. On construit donc l'URL comme
+   * `request` le fera, on juge l'hôte et le chemin obtenus, et c'est ce chemin normalisé qu'on transmet : le
+   * vérifié et l'appelé sont alors le même.
    */
   async get<T = unknown>(path: string): Promise<T> {
-    if (!path.startsWith('/rest/api/') || path.includes('..')) {
+    const refuse = (): never => {
       throw new Error(`Chemin refusé : ${path} (attendu un chemin de lecture sous /rest/api/)`);
+    };
+    let url: URL;
+    let base: URL;
+    try {
+      base = new URL(`https://${this.cfg.site}/`);
+      url = new URL(`https://${this.cfg.site}${path}`);
+    } catch {
+      return refuse();
     }
-    return this.request<T>('GET', path);
+    // L'hôte compte autant que le chemin : un `path` sans `/` initial le déplace (`evil.com/x` donne
+    // `…atlassian.netevil.com`), et un `@` y logerait une tout autre autorité.
+    if (url.origin !== base.origin || !url.pathname.startsWith('/rest/api/')) return refuse();
+    return this.request<T>('GET', url.pathname + url.search);
   }
 
   /**

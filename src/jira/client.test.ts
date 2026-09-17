@@ -322,9 +322,30 @@ describe('get', () => {
     await h.tracker.get('/rest/api/3/issue/IOS-885/changelog');
     expect(h.calls).toEqual([{ method: 'GET', path: '/rest/api/3/issue/IOS-885/changelog', body: undefined }]);
 
-    for (const bad of ['https://evil.example/x', '/rest/api/3/../../admin', 'rest/api/3/issue', '/plugins/servlet/x']) {
+    // Les quatre derniers ne sortent de l'API qu'une fois l'URL normalisée — ce que fait `fetch`, et que la
+    // chaîne brute ne montre pas : `/rest/api/.%2e/.%2e/wiki/rest/api/content` atterrit sur `/wiki/…`,
+    // c'est-à-dire Confluence, avec le jeton du compte dédié.
+    const bads = [
+      'https://evil.example/x',
+      '/rest/api/3/../../admin',
+      'rest/api/3/issue',
+      '/plugins/servlet/x',
+      '/rest/api/.%2e/.%2e/wiki/rest/api/content',
+      '/rest/api/%2e%2e/%2e%2e/wiki',
+      '/rest/api/%2e./%2e./wiki',
+      '/rest/api/%2E%2E/%2E%2E/wiki',
+    ];
+    for (const bad of bads) {
       await expect(h.tracker.get(bad)).rejects.toThrow(/chemin/i);
     }
+    // Ce que le titre promet et que les `rejects` seuls ne montraient pas : aucun de ces chemins n'est parti.
+    expect(h.calls).toHaveLength(1);
+  });
+
+  it('transmet le chemin normalisé, pas la chaîne reçue', async () => {
+    const h = harness({ 'GET /rest/api/3/issue/IOS-885/changelog': { values: [] } });
+    await h.tracker.get('/rest/api/3/./issue/IOS-885/changelog?maxResults=1');
+    expect(h.calls).toEqual([{ method: 'GET', path: '/rest/api/3/issue/IOS-885/changelog?maxResults=1', body: undefined }]);
   });
 });
 
