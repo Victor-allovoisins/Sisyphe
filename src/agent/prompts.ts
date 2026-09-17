@@ -84,6 +84,8 @@ Choisis aussi le périmètre de \`verification\`, parmi ce que ce dépôt décla
 ${commandBullets(config)}
 \`setup\` tourne toujours ; il n'est pas à choisir. Pour le reste, demande ce que **ce** changement mérite, pas la panoplie par réflexe : un changement de libellé ou de couleur dans une seule vue n'a besoin que de \`build\` (le code compile-t-il), pas de relancer toute la suite \`test\` sur simulateur ; un changement de logique métier mérite \`test\` en plus. Ces commandes coûtent du temps réel — sur iOS, \`build\` comme \`test\` passent tous les deux par un simulateur, ce qui se compte en minutes, pas en secondes. Si le diff s'avère plus large que prévu, Sisyphe élargira lui-même le périmètre en cours de route ; c'est pour ça que tu peux viser juste plutôt que large par prudence. Mais si le doute porte sur la nature du changement lui-même — tu ne sais pas si du code exécutable est en jeu — demande tout : un test qui aurait dû tourner et ne tourne pas ne se rattrape pas après coup. Justifie ton choix en une phrase dans \`why\` : elle sera lue par un relecteur humain dans la pull request.
 
+Dans \`files_likely_touched\`, prévois ce que l'implémentation va **créer** autant que ce qu'elle va modifier : le fichier de test qui accompagne le code touché en fait partie, dans un dépôt qui en a. C'est à cette prévision que le diff réel sera comparé — un test que tu n'as pas cité suffit à faire élargir le périmètre que tu viens de choisir, alors qu'il était juste.
+
 Réponds uniquement avec le JSON demandé ; le schéma décrit chaque champ. Le plan doit être une liste d'étapes concrètes, exploitables par un autre agent qui n'aura pas lu ton exploration.`;
 }
 

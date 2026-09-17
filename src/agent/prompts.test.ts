@@ -58,6 +58,7 @@ describe('prompts', () => {
     expect(p).toContain('`xcodebuild test`');
     expect(p).toContain('`swiftlint`');
     expect(p).toMatch(/setup.*(n'est pas à choisir|jamais sauté|toujours)/i);
+    expect(p).toMatch(/files_likely_touched[\s\S]*créer[\s\S]*test/);
   });
   it('implementPrompt contient plan et commandes', () => {
     const p = implementPrompt(issue, { verdict: 'ready', confidence: 1, summary: 'Bouton bleu', note: '', change_type: 'feat', plan: ['créer la vue', 'brancher'], files_likely_touched: ['A.swift'], questions: [], reasons: [], verification: { steps: ['build', 'test', 'lint'], why: 'périmètre complet' } }, config);
