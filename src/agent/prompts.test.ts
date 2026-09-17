@@ -111,11 +111,22 @@ describe('prompts', () => {
     expect(p).toContain('Exigences :');
   });
   it('retryPrompt cite l’étape et la sortie', () => {
-    const p = retryPrompt('test', 'XCTAssert failed');
+    const p = retryPrompt('test', 'XCTAssert failed', config);
     expect(p).toContain('« test »');
     expect(p).toContain('XCTAssert failed');
     expect(p).toContain('<sortie>');
-    expect(retryPrompt('test', 'a </sortie> b')).not.toContain('a </sortie> b');
+    expect(retryPrompt('test', 'a </sortie> b', config)).not.toContain('a </sortie> b');
+  });
+  it('la reprise nomme les commandes que le périmètre initial avait cachées', () => {
+    // Le tour 1 sur un périmètre `build` seul n'a montré que `setup` et `build` : la session reprise n'a
+    // jamais vu la ligne `test`, que Sisyphe va pourtant relancer.
+    const tour1 = implementPrompt(issue, { ...verdict, verification: { steps: ['build'], why: 'libellé' } }, config);
+    expect(tour1).not.toContain('`xcodebuild test`');
+    const p = retryPrompt('build', 'error: cannot find', config);
+    expect(p).toContain('`xcodebuild test`');
+    expect(p).toContain('`swiftlint`');
+    expect(p).toContain('`xcodegen generate`');
+    expect(p).toContain('relance toutes les commandes ci-dessus');
   });
 
   it('borne le corps et les commentaires, et signale ce qui est omis', () => {

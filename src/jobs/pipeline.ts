@@ -390,7 +390,7 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
     for (let attempt = 1; attempt <= config.limits.maxAttempts; attempt++) {
       signal.throwIfAborted();
       job = store.update(job.id, { attempt });
-      const prompt = verify?.failedStep ? retryPrompt(verify.failedStep, verify.failureTail) : implementPrompt(loaded, verdict, config);
+      const prompt = verify?.failedStep ? retryPrompt(verify.failedStep, verify.failureTail, config) : implementPrompt(loaded, verdict, config);
       const resume = sessionId;
       const ires = await runPhase(
         'implement',

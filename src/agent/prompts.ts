@@ -130,14 +130,26 @@ ${commands ? `Commandes du repo :\n${commands}\n\n` : ''}Exigences :
 - Termine par le rapport JSON demandé ; le schéma décrit chaque champ.`;
 }
 
-export function retryPrompt(failedStep: string, failureTail: string): string {
+/**
+ * La reprise nomme tout ce que le dépôt déclare, sans filtrer : une reprise, c'est `attempt > 1`, la
+ * première branche d'élargissement de `resolveVerifyScope` — le périmètre y est toujours complet, et ces
+ * commandes sont exactement celles que Sisyphe va relancer. Les nommer n'est pas une redite : la session
+ * reprise n'a vu que le périmètre du premier tour, qui a pu être restreint, et une ligne `xcodebuild` ne
+ * se devine pas.
+ */
+export function retryPrompt(failedStep: string, failureTail: string, config: RepoConfig): string {
+  // Sans filtre, et donc jamais vide : `build` est obligatoire dans `sisyphe.yml`.
+  const commands = commandBullets(config);
   return `La vérification indépendante de Sisyphe a échoué à l'étape « ${failedStep} ». Voici la fin de la sortie :
 
 <sortie>
 ${neutralize(failureTail)}
 </sortie>
 
-Corrige le problème, relance les commandes de vérification (build, test, lint si défini), puis renvoie un rapport JSON complet mis à jour, avec le même schéma que précédemment.`;
+Commandes du repo :
+${commands}
+
+Corrige le problème, puis relance toutes les commandes ci-dessus : une reprise annule le périmètre restreint demandé au triage, et Sisyphe les relancera toutes. Renvoie ensuite un rapport JSON complet mis à jour, avec le même schéma que précédemment.`;
 }
 
 /**
