@@ -43,7 +43,8 @@ export const JiraSyncReportSchema = z.object({
    * rien à dire, et le pipeline posera son message de secours.
    */
   comment: z.string().describe('Le commentaire à poster sur le ticket, en markdown ; chaîne vide pour ne rien poster'),
-  handedBack: z.boolean().describe("Le ticket a-t-il été rendu à la personne qui l'avait confié à Sisyphe"),
+  // Pas de champ « ai-je rendu la main » : le pipeline le vérifie contre Jira, et un champ qui ne servirait
+  // qu'à lui faire sauter cette vérification serait un piège — c'est le mode d'échec qu'on a mesuré.
   note: z.string().describe("Ce qui n'a pas pu être fait, en une phrase ; chaîne vide si tout s'est bien passé"),
 });
 export type JiraSyncReport = z.infer<typeof JiraSyncReportSchema>;

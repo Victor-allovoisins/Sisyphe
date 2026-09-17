@@ -19,9 +19,9 @@ const ORDER: string[] = [...JIRA_STATUSES_DEFAULT];
 const ISSUE_7 = { repo: repoRef, number: 7 };
 
 /** Ce que la phase `jira` rend quand elle a fait son travail : elle a transitionné et rédigé son texte. */
-const jiraOk = { status: 'En relecture', comment: '🪨 PR prête : https://example.test/pr/1', handedBack: false, note: '' };
+const jiraOk = { status: 'En relecture', comment: '🪨 PR prête : https://example.test/pr/1', note: '' };
 /** Ce qu'elle rend quand elle n'a rien pu faire : c'est le cas que le filet doit rattraper. */
-const jiraMuet = { status: '', comment: '', handedBack: false, note: 'coincé' };
+const jiraMuet = { status: '', comment: '', note: 'coincé' };
 
 /** Jira factice : un statut, un assigné, et un graphe de transitions qui suit le workflow réel. */
 function fakeJira(start = 'Nouveau') {
@@ -213,6 +213,58 @@ describe('pipeline sur Jira', () => {
     expect(j.state.assignee).toBe('acc-victor');
     // Invariant 2 : un job terminé laisse toujours une trace.
     expect(j.state.comments.join('\n')).toContain('🪨');
+  });
+
+  /**
+   * Les trois façons dont le filet sautait quand il était du code en ligne, conditionné au rapport de
+   * l'agent et hors de tout `finally`. Chacune a été mesurée sur le ticket : statut « En développement »,
+   * assigné au compte dédié — hors des statuts candidats, donc repris par personne et vu par personne.
+   */
+  describe('le filet ne dépend ni de ce que l’agent déclare ni de sa bonne fin', () => {
+    const blocked = { ...readyVerdict, verdict: 'needs_clarification', note: 'Il manque un écran.', questions: ['Quel écran ?'] };
+
+    it('rend le ticket alors que la phase jira affirme l’avoir déjà rendu', async () => {
+      const j = fakeJira();
+      // `handedBack` n'existe plus au schéma ; le champ reste ici pour dire ce que le test rejoue : un agent
+      // qui se croit quitte de son `assign --back`, mode d'échec attendu d'une consigne que le SKILL lui donne.
+      const menteur = { status: '', comment: '🪨 Le ticket vous est rendu.', handedBack: true, note: '' };
+      const h = await harnessOn(j.tracker, [{ output: blocked }, { output: menteur }]);
+      const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+      await runJob(job.id, h.deps, signal());
+
+      expect(j.state.assignee).toBe('acc-victor');
+    });
+
+    it('rend le ticket quand canTrigger tombe : une erreur ne vaut pas « pas à nous »', async () => {
+      const j = fakeJira();
+      const h = await harnessOn(j.tracker, [{ output: blocked }, { output: jiraMuet }]);
+      // Deux GET, juste après un tour d'agent qui peut durer des minutes : c'est la panne la plus probable.
+      j.tracker.canTrigger = async () => {
+        throw new Error('Jira GET /rest/api/3/issue/IOS-7 → 503');
+      };
+      const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+      await runJob(job.id, h.deps, signal());
+
+      expect(j.state.assignee).toBe('acc-victor');
+    });
+
+    it('rend le ticket et commente même si la phase jira ne démarre pas', async () => {
+      const j = fakeJira();
+      const h = await harnessOn(j.tracker, [{ output: blocked }]);
+      // Un `throw` entre la sortie du pipeline et le filet : ici l'ouverture de la phase sur une base verrouillée.
+      const start = h.deps.phases.start.bind(h.deps.phases);
+      h.deps.phases.start = (input) => {
+        if (input.name === 'jira') throw new Error('database is locked');
+        return start(input);
+      };
+      const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+      await runJob(job.id, h.deps, signal());
+
+      expect(j.state.assignee).toBe('acc-victor');
+      // L'invariant 2 tombait avec le premier : sans commentaire, rien ne dit non plus pourquoi le job s'arrête.
+      expect(j.state.comments).toHaveLength(1);
+      expect(j.state.comments.join('\n')).toContain('🪨');
+    });
   });
 
   it('poste le texte rédigé par la phase jira, et lui seul', async () => {

@@ -34,7 +34,7 @@ export interface JiraSyncDeps {
   model?: string;
 }
 
-const EMPTY: JiraSyncReport = { status: '', comment: '', handedBack: false, note: 'aucun rapport produit' };
+const EMPTY: JiraSyncReport = { status: '', comment: '', note: 'aucun rapport produit' };
 
 /**
  * Un tour d'agent, un seul outil. Ne lève jamais : le filet du pipeline s'appuie sur ce qu'elle rend, et

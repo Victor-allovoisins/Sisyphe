@@ -21,7 +21,7 @@ function flags(over: Partial<JobFlags>): JobFlags {
   return { ...emptyFlags(), ...over };
 }
 
-const report: JiraSyncReport = { status: 'En relecture', comment: '🪨 C’est prêt.', handedBack: false, note: '' };
+const report: JiraSyncReport = { status: 'En relecture', comment: '🪨 C’est prêt.', note: '' };
 
 function agentResult(over: Partial<AgentResult<JiraSyncReport>> = {}): AgentResult<JiraSyncReport> {
   return {
@@ -113,7 +113,7 @@ describe('runJiraPhase', () => {
   });
 
   it('rend le rapport de secours quand la sortie est absente ou non conforme', async () => {
-    const empty = { status: '', comment: '', handedBack: false, note: 'aucun rapport produit' };
+    const empty = { status: '', comment: '', note: 'aucun rapport produit' };
     const { agent: a1 } = stubAgent(async () => agentResult({ output: null, stopReason: 'max_turns' }));
     const r1 = await runJiraPhase(deps(a1), makeJob(), outcome);
     expect(r1.report).toEqual(empty);

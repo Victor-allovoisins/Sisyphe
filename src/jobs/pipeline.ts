@@ -160,7 +160,11 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
    * Phase `jira` puis filet. Deux invariants, et rien d'autre :
    * 1. un job non livré ne laisse jamais le ticket assigné au compte dédié ;
    * 2. un job terminé laisse toujours un commentaire.
-   * Les deux sont vérifiés contre Jira, pas contre ce que l'agent affirme : c'est le seul état qui compte.
+   *
+   * Le filet tient dans le `finally`, et il n'interroge que Jira. Ni le rapport de l'agent ni même la bonne
+   * fin de la phase ne le conditionnent : un agent qui affirme avoir rendu la main sans l'avoir fait, un
+   * `canTrigger` qui tombe, une exception avant d'arriver jusqu'ici — chacun laissait sinon le ticket assigné
+   * au compte dédié et hors des statuts candidats, c'est-à-dire repris par personne et vu par personne.
    *
    * `comment` est le texte que la sortie avait rédigé pour elle-même (verdict de triage, secrets, chemins
    * protégés…) : lui seul dit *pourquoi* le job s'arrête là, et le message générique ne le remplace pas.
@@ -175,26 +179,34 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
       await source.setStatus(issueRef, statusFor(state)).catch(() => undefined);
       return;
     }
-    // Pas de modèle imposé : `config` (le sisyphe.yml du dépôt) n'existe pas sur les sorties les plus
-    // précoces — une config illisible est justement l'une d'elles. Chaque backend applique son défaut.
-    const { report, result } = await runPhase('jira', finished.attempt, null, () =>
-      runJiraPhase(
-        { agent: deps.agent, env: jiraEnv, transcriptPath: join(dir, `transcript-jira-${finished.attempt}.jsonl`), cwd: dir, timeoutMs: minutes(5), signal },
-        finished,
-        jiraOutcomeOf(finished, state, project.doneStatus, key),
-      ),
-      (out) => ({ outcome: out.report.note ? 'failure' : 'success', costUsd: out.result.costUsd, usage: out.result.usage, numTurns: out.result.numTurns, stopReason: out.result.stopReason }),
-    );
-    // Le coût suit le job comme celui des autres phases : le plafond quotidien le compte.
-    record(result);
-    if (state !== 'done' && !report.handedBack) {
-      const still = await source.canTrigger(issueRef).catch(() => ({ ok: false, login: null }));
-      if (still.ok) await source.removeTriggerLabel(issueRef).catch((err) => log.warn({ err }, 'ticket non rendu'));
-    }
     // L'agent rédige, le pipeline poste : c'est le seul chemin, et il garantit qu'un job terminé laisse
-    // toujours une trace — texte de l'agent s'il en a écrit un, message scripté sinon.
-    const body = report.comment.trim() || scripted;
-    await source.comment(issueRef, body).catch((err) => log.warn({ err }, 'commentaire de fin non posté'));
+    // toujours une trace — texte de l'agent s'il en a écrit un, message scripté sinon. Calculé ici, avant
+    // le `try` : le filet doit pouvoir le poster même quand la phase a levé sans rien rendre.
+    let body = scripted;
+    try {
+      // Pas de modèle imposé : `config` (le sisyphe.yml du dépôt) n'existe pas sur les sorties les plus
+      // précoces — une config illisible est justement l'une d'elles. Chaque backend applique son défaut.
+      const { report, result } = await runPhase('jira', finished.attempt, null, () =>
+        runJiraPhase(
+          { agent: deps.agent, env: jiraEnv, transcriptPath: join(dir, `transcript-jira-${finished.attempt}.jsonl`), cwd: dir, timeoutMs: minutes(5), signal },
+          finished,
+          jiraOutcomeOf(finished, state, project.doneStatus, key),
+        ),
+        (out) => ({ outcome: out.report.note ? 'failure' : 'success', costUsd: out.result.costUsd, usage: out.result.usage, numTurns: out.result.numTurns, stopReason: out.result.stopReason }),
+      );
+      // Le coût suit le job comme celui des autres phases : le plafond quotidien le compte.
+      record(result);
+      body = report.comment.trim() || scripted;
+    } finally {
+      if (state !== 'done') {
+        // Un `canTrigger` en erreur ne dit pas « pas à nous », il ne dit rien : on penche alors vers le rendu.
+        // Rendre un ticket déjà rendu ne coûte qu'un PUT — `removeTriggerLabel` est idempotent — quand ne pas
+        // rendre celui qui aurait dû l'être est précisément la panne silencieuse à empêcher.
+        const still = await source.canTrigger(issueRef).catch(() => ({ ok: true, login: null }));
+        if (still.ok) await source.removeTriggerLabel(issueRef).catch((err) => log.warn({ err }, 'ticket non rendu'));
+      }
+      await source.comment(issueRef, body).catch((err) => log.warn({ err }, 'commentaire de fin non posté'));
+    }
   };
 
   /**

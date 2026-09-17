@@ -148,11 +148,13 @@ backends », plus bas), chaque job se termine par un tour d'agent dédié à la 
   disque, sur ces deux mêmes backends — absent, l'agent chargerait le skill sans le trouver et improviserait
   une réponse plausible, en silence.
 
-- **Le filet** : le daemon ne fait pas confiance à ce que l'agent affirme avoir fait. Une fois la phase
-  `jira` terminée, il vérifie deux choses contre l'état réel de Jira, et les corrige au besoin :
-  1. un job non livré ne laisse jamais le ticket assigné au compte dédié : sauf si l'agent déclare l'avoir
-     déjà rendu, le daemon relit l'assigné sur Jira et, s'il s'agit encore du compte dédié, réassigne le
-     ticket à qui l'avait confié ;
+- **Le filet** : le daemon ne fait pas confiance à ce que l'agent affirme avoir fait, et ne compte pas non
+  plus sur la bonne fin de la phase `jira`. Quoi qu'il arrive à celle-ci — rapport vide, rapport mensonger,
+  exception — il vérifie deux choses contre l'état réel de Jira, et les corrige au besoin :
+  1. un job non livré ne laisse jamais le ticket assigné au compte dédié : le daemon relit l'assigné sur Jira
+     et, s'il s'agit encore du compte dédié, réassigne le ticket à qui l'avait confié. Rien de ce que l'agent
+     déclare ne fait sauter cette relecture, et une relecture en erreur penche vers le rendu : rendre un
+     ticket déjà rendu est sans conséquence, ne pas rendre celui qui aurait dû l'être est la panne ;
   2. un job terminé laisse toujours un texte posté en commentaire — celui rédigé par l'agent s'il y en a un,
      sinon le message qu'aurait posté l'ancien chemin scripté. Le daemon *tente* toujours de le poster : une
      panne Jira au moment de commenter finit en avertissement dans les logs, pas en exception qui priverait
