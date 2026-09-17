@@ -104,6 +104,11 @@ export interface IssueTracker {
   /** Ouverte et label trigger toujours présent. */
   isStillActive(ref: IssueRef): Promise<boolean>;
   ensureLabels(repo: RepoRef): Promise<void>;
+  /**
+   * Nom affiché d'un compte, pour l'écrire dans un message lu par un humain. Optionnel : le suivi par
+   * label n'en a pas besoin, ses consignes nomment un label et non une personne.
+   */
+  accountName?(accountId: string): Promise<string | null>;
 }
 
 /**

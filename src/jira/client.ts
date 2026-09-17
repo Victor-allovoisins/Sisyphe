@@ -88,6 +88,8 @@ export function jqlQuote(v: string): string {
 export class JiraIssueTracker implements IssueTracker {
   private readonly byRepo = new Map<string, JiraProject>();
   private readonly byKey = new Map<string, JiraProject>();
+  /** Nom affiché par `accountId`, garni au fil de l'eau : voir `accountName`. */
+  private readonly displayNames = new Map<string, string>();
   private readonly auth: string;
 
   constructor(private readonly cfg: JiraClientConfig) {
@@ -426,6 +428,31 @@ export class JiraIssueTracker implements IssueTracker {
     const missing = [...p.statusesInOrder, p.inProgressStatus, p.doneStatus].filter((s) => !known.has(s.toLowerCase()));
     if (missing.length > 0) {
       this.cfg.log?.warn({ project: p.key, missing }, 'statuts configurés absents du projet Jira');
+    }
+  }
+
+  /**
+   * Nom affiché d'un compte. Mémorisé pour la durée du processus : un nom affiché ne change pas en
+   * pratique, et chaque message rendu le redemanderait sinon. Seul un succès est retenu — garder un échec
+   * priverait le daemon du nom jusqu'à son redémarrage pour un 503 passé.
+   *
+   * L'échec n'arrête rien : nommer le compte est un confort de lecture, pas une donnée, et un message qui
+   * ne part pas coûte infiniment plus cher qu'un message qui ne nomme personne.
+   */
+  async accountName(accountId: string): Promise<string | null> {
+    const known = this.displayNames.get(accountId);
+    if (known !== undefined) return known;
+    try {
+      const user = await this.request<{ displayName?: string }>(
+        'GET',
+        `/rest/api/3/user?accountId=${encodeURIComponent(accountId)}`,
+      );
+      const name = user.displayName ?? null;
+      if (name) this.displayNames.set(accountId, name);
+      return name;
+    } catch (err) {
+      this.cfg.log?.warn({ err, accountId }, 'nom du compte Jira illisible');
+      return null;
     }
   }
 

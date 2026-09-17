@@ -84,7 +84,7 @@ async function requeueOrFail(job: Job, d: ReconcileDeps): Promise<void> {
   } else {
     const reason = `interrompu ${MAX_REQUEUES + 1} fois par un redémarrage du daemon`;
     d.store.transition(job.id, 'failed', { error: reason });
-    await d.source.comment(ref, renderFailedComment(job.id, reason, relaunchFor(d.machine, job.repo))).catch(() => undefined);
+    await d.source.comment(ref, renderFailedComment(job.id, reason, await relaunchFor(d.machine, job.repo, d.source))).catch(() => undefined);
     await d.source.setStatus(ref, 'failed').catch(() => undefined);
     d.log.warn({ jobId: job.id }, 'réconciliation : job abandonné');
   }

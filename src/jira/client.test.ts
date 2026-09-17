@@ -291,6 +291,22 @@ describe('isStillActive', () => {
   });
 });
 
+describe('accountName', () => {
+  it('résout le nom affiché et ne le redemande pas', async () => {
+    const h = harness({ 'GET /rest/api/3/user': { accountId: ACCOUNT, displayName: 'Sisyphe iOS' } });
+    expect(await h.tracker.accountName(ACCOUNT)).toBe('Sisyphe iOS');
+    expect(await h.tracker.accountName(ACCOUNT)).toBe('Sisyphe iOS');
+    const asked = h.calls.filter((c) => c.path.startsWith('/rest/api/3/user'));
+    expect(asked).toHaveLength(1);
+    expect(asked[0].path).toContain(`accountId=${encodeURIComponent(ACCOUNT)}`);
+  });
+
+  it('rend null plutôt que de lever : nommer le compte est un confort, pas une donnée', async () => {
+    const h = harness({});
+    expect(await h.tracker.accountName(ACCOUNT)).toBeNull();
+  });
+});
+
 describe('refFromKey', () => {
   it('résout une clé vers le dépôt du projet qui la sert', () => {
     const tracker = new JiraIssueTracker({

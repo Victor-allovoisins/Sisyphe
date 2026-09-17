@@ -12,14 +12,18 @@ export function jobMarker(jobId: string): string {
  * Comment reprendre la main dépend du traqueur, pas du message : sur GitHub on retire un label, sur Jira on
  * réassigne le ticket. Passer le descriptif plutôt que le nom du label évite d'imprimer, sur un ticket Jira,
  * une consigne qui ne veut rien dire pour son lecteur.
+ *
+ * `who` est le nom affiché du compte, jamais son `accountId` : ce message est lu par celui qui a signalé le
+ * bug. `null` quand le nom n'a pas pu être résolu — on désigne alors le compte sans le nommer.
  */
-export type Relaunch = { kind: 'label'; trigger: string } | { kind: 'assignee'; who: string };
+export type Relaunch = { kind: 'label'; trigger: string } | { kind: 'assignee'; who: string | null };
 
 export const labelRelaunch = (trigger: string): Relaunch => ({ kind: 'label', trigger });
 
 function relaunch(r: Relaunch, status: 'blocked' | 'failed'): string {
   if (r.kind === 'assignee') {
-    return `Pour relancer : répondez dans ce ticket si besoin, puis réassignez-le à \`${r.who}\`.`;
+    const to = r.who ? `à ${r.who}` : 'au compte Sisyphe';
+    return `Pour relancer : répondez dans ce ticket si besoin, puis réassignez-le ${to}.`;
   }
   return `Pour relancer : répondez dans cette issue si besoin, puis retirez le label \`${statusLabelName(r.trigger, status)}\` en laissant \`${r.trigger}\`.`;
 }

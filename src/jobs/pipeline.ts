@@ -85,7 +85,7 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
   let job = initial;
   const log = deps.log.child({ jobId, repo: job.repo, issue: job.issueNumber });
   const issueRef = issueRefOf(job);
-  const trigger = relaunchFor(deps.machine, job.repo);
+  const trigger = await relaunchFor(deps.machine, job.repo, deps.source);
   const dir = jobDirFor(deps.paths, job.id);
   const startedAt = Date.now();
   const elapsed = () => Date.now() - startedAt;
