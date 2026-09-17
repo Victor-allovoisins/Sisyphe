@@ -19,6 +19,7 @@ const report = {
   tests_run: ['xcodebuild test : ok'], risks: ['Vérifier le dark mode'], follow_ups: ['Ajouter un test UI'], confidence: 0.8,
 };
 const verify: VerifyResult = {
+  scope: { steps: ['build', 'test', 'lint'], reason: 'périmètre complet', widened: false },
   ok: true, noChanges: false, treeSha: 'a'.repeat(40), failedStep: null, failureTail: '', files: ['A.swift'], changedLines: 900, driftedFiles: ['Package.resolved'],
   flags: { protectedPathsTouched: job.flags.protectedPathsTouched, largeDiff: job.flags.largeDiff, secretsFound: [] },
   steps: [

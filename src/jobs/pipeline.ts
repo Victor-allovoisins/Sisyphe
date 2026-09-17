@@ -396,7 +396,13 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
         'verify',
         attempt,
         null,
-        () => runVerification({ worktreePath: wtPath, baseSha: wt.baseSha, config, jobDir: dir, env, git: deps.git, signal, scan: deps.scan }),
+        () =>
+          runVerification({
+            worktreePath: wtPath, baseSha: wt.baseSha, config, jobDir: dir, env, git: deps.git, signal, scan: deps.scan,
+            // `attempt` est celui de la boucle d'implémentation : au-delà de 1, une vérification a déjà
+            // échoué sur ce travail, et le périmètre annoncé au triage ne vaut plus.
+            requested: verdict.verification, attempt, filesLikelyTouched: verdict.files_likely_touched,
+          }),
         (v) => ({ outcome: v.ok ? 'success' : 'failure', stopReason: v.failedStep }),
       );
       flags = { ...flags, protectedPathsTouched: verify.flags.protectedPathsTouched, largeDiff: verify.flags.largeDiff, secretsFound: verify.flags.secretsFound };

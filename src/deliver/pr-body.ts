@@ -25,6 +25,7 @@ const STEP_LABEL: Record<VerifyStep['status'], (s: VerifyStep) => string> = {
   failed: (s) => `❌ code ${s.exitCode} (${fmtDuration(s.durationMs)})`,
   timeout: (s) => `⏱️ délai de vérification dépassé après ${fmtDuration(s.durationMs)}`,
   skipped: () => '⏭️ non exécutée (étape précédente en échec ou délai de vérification épuisé)',
+  'out-of-scope': () => '⏭️ hors périmètre',
 };
 
 /** Copie du rapport dont tout texte venant du modèle est passé par sanitizeModelText. */

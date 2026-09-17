@@ -1,5 +1,5 @@
 import { execa } from 'execa';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -8,7 +8,7 @@ import { dataPaths, type DataPaths } from '../config/paths.js';
 import { parseRepoConfig } from '../config/repo.js';
 import { Git } from '../git/git.js';
 import { repoEnv } from './commands.js';
-import { runVerification, type ScanFn } from './verify.js';
+import { runVerification, type ScanFn, type VerifyInput } from './verify.js';
 
 const config = parseRepoConfig(`
 baseBranch: main
@@ -18,6 +18,25 @@ commands:
 protectedPaths: ["secrets/**"]
 limits:
   maxDiffLines: 3
+`);
+
+// Un dépôt qui déclare les quatre étapes, chacune laissant sa trace : c'est cette trace, et non le
+// statut rendu, qui prouve qu'une étape hors périmètre ne lance aucune commande.
+const cfgTracee = parseRepoConfig(`
+baseBranch: main
+commands:
+  setup: sh trace.sh setup
+  build: sh trace.sh build
+  test: sh trace.sh test
+  lint: sh trace.sh lint
+`);
+const cfgTraceeEchec = parseRepoConfig(`
+baseBranch: main
+commands:
+  setup: sh trace.sh setup
+  build: sh echec.sh build
+  test: sh trace.sh test
+  lint: sh trace.sh lint
 `);
 
 describe('runVerification', () => {
@@ -36,6 +55,8 @@ describe('runVerification', () => {
     const { remotePath } = await createRemoteRepo(root, {
       'build.sh': 'test -f src/feature.txt || { echo "feature manquante" >&2; exit 1; }',
       'test.sh': 'grep -q hello src/feature.txt',
+      'trace.sh': 'echo "$1" >> trace.txt',
+      'echec.sh': 'echo "$1" >> trace.txt; exit 1',
     });
     git = new Git(paths);
     await git.ensureMirror(repo, remotePath, remotePath, ['main']);
@@ -44,8 +65,16 @@ describe('runVerification', () => {
     await writeFiles(jobDir, { '.keep': '' });
   });
 
-  const run = (over: { scan?: ScanFn; cfg?: typeof config; signal?: AbortSignal } = {}) =>
-    runVerification({ worktreePath, baseSha, config: over.cfg ?? config, jobDir, env, git, scan: over.scan ?? (async () => []), signal: over.signal });
+  const run = (over: { scan?: ScanFn; cfg?: typeof config; signal?: AbortSignal; requested?: VerifyInput['requested']; attempt?: number; filesLikelyTouched?: string[] } = {}) =>
+    runVerification({
+      worktreePath, baseSha, config: over.cfg ?? config, jobDir, env, git, scan: over.scan ?? (async () => []), signal: over.signal,
+      requested: over.requested ?? { steps: ['build', 'test', 'lint'], why: 'périmètre complet' },
+      attempt: over.attempt ?? 1,
+      filesLikelyTouched: over.filesLikelyTouched ?? [],
+    });
+
+  /** Ce que les commandes ont réellement lancé, dans l'ordre. */
+  const trace = () => readFile(join(worktreePath, 'trace.txt'), 'utf8').catch(() => '');
 
   it('signale l’absence de changement', async () => {
     const r = await run();
@@ -123,5 +152,56 @@ describe('runVerification', () => {
     const controller = new AbortController();
     setTimeout(() => controller.abort('cancelled'), 200);
     await expect(run({ signal: controller.signal })).rejects.toBe('cancelled');
+  });
+  it('ne lance que les étapes retenues et marque les autres hors périmètre', async () => {
+    await writeFiles(worktreePath, { 'src/feature.txt': 'hello\n' });
+    const r = await run({ cfg: cfgTracee, requested: { steps: ['build'], why: 'changement de libellé' }, filesLikelyTouched: ['src/feature.txt'] });
+    expect(r.ok).toBe(true);
+    expect(r.steps.filter((s) => s.status === 'ok').map((s) => s.name)).toEqual(['setup', 'build']);
+    const horsPerimetre = r.steps.filter((s) => s.status === 'out-of-scope');
+    expect(horsPerimetre.map((s) => s.name)).toEqual(['test', 'lint']);
+    expect(horsPerimetre[0].reason).toBe('changement de libellé');
+    expect(horsPerimetre.map((s) => [s.exitCode, s.durationMs, s.logFile])).toEqual([[0, 0, ''], [0, 0, '']]);
+    expect(r.scope).toMatchObject({ widened: false, steps: ['setup', 'build'] });
+    // La preuve : test et lint n'ont pas écrit leur trace, donc aucune commande n'a été lancée pour elles.
+    expect(await trace()).toBe('setup\nbuild\n');
+  });
+
+  it('élargit et le dit quand le diff sort de la prévision du triage', async () => {
+    await writeFiles(worktreePath, { 'src/feature.txt': 'hello\n' });
+    const r = await run({ cfg: cfgTracee, requested: { steps: ['build'], why: 'changement de libellé' }, filesLikelyTouched: [] });
+    expect(r.steps.every((s) => s.status !== 'out-of-scope')).toBe(true);
+    expect(r.scope.widened).toBe(true);
+    expect(r.scope.reason).toContain('src/feature.txt');
+    expect(await trace()).toBe('setup\nbuild\ntest\nlint\n');
+  });
+
+  it('dit encore ce qui était hors périmètre quand une étape retenue échoue', async () => {
+    await writeFiles(worktreePath, { 'src/feature.txt': 'hello\n' });
+    const r = await run({ cfg: cfgTraceeEchec, requested: { steps: ['build'], why: 'changement de libellé' }, filesLikelyTouched: ['src/feature.txt'] });
+    expect(r.failedStep).toBe('build');
+    expect(r.steps.map((s) => [s.name, s.status])).toEqual([['setup', 'ok'], ['build', 'failed'], ['test', 'out-of-scope'], ['lint', 'out-of-scope']]);
+    expect(await trace()).toBe('setup\nbuild\n');
+  });
+
+  it('le plancher du dépôt est retenu même quand le triage ne le demande pas', async () => {
+    await writeFiles(worktreePath, { 'src/feature.txt': 'hello\n' });
+    const cfg = parseRepoConfig(`baseBranch: main\ncommands:\n  build: sh trace.sh build\n  test: sh trace.sh test\n  lint: sh trace.sh lint\nverify:\n  alwaysRun: ["lint"]\n`);
+    const r = await run({ cfg, requested: { steps: ['build'], why: 'changement de libellé' }, filesLikelyTouched: ['src/feature.txt'] });
+    expect(r.steps.map((s) => [s.name, s.status])).toEqual([['build', 'ok'], ['test', 'out-of-scope'], ['lint', 'ok']]);
+    expect(await trace()).toBe('build\nlint\n');
+  });
+
+  it('une reprise revérifie tout : le périmètre annoncé au triage n’est plus crédible', async () => {
+    await writeFiles(worktreePath, { 'src/feature.txt': 'hello\n' });
+    const r = await run({ cfg: cfgTracee, requested: { steps: ['build'], why: 'changement de libellé' }, filesLikelyTouched: ['src/feature.txt'], attempt: 2 });
+    expect(r.scope.widened).toBe(true);
+    expect(await trace()).toBe('setup\nbuild\ntest\nlint\n');
+  });
+
+  it('le périmètre est rendu même quand la vérification s’arrête avant de le calculer', async () => {
+    const r = await run();
+    expect(r.noChanges).toBe(true);
+    expect(r.scope).toEqual({ steps: [], reason: expect.stringContaining('non calculé'), widened: false });
   });
 });
