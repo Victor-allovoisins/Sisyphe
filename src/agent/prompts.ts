@@ -50,16 +50,28 @@ export function systemAppend(config: RepoConfig, repoContext = ''): string {
   return parts.join('\n\n');
 }
 
-function commandBullets(config: RepoConfig): string {
+/** Le périmètre tel que le triage peut le demander : `setup` n'en est pas, il tourne toujours. */
+type VerifyChoice = TriageVerdict['verification']['steps'][number];
+
+/**
+ * Les commandes déclarées par le dépôt, ou seulement celles de `only` — `setup` y figure quoi qu'il arrive,
+ * rien ne se construit sans lui. Montrer à l'agent une commande qu'on lui demande de ne pas lancer, c'est
+ * l'inviter à la lancer.
+ */
+function commandBullets(config: RepoConfig, only?: readonly VerifyChoice[]): string {
   return (['setup', 'build', 'test', 'lint'] as const)
-    .filter((n) => config.commands[n])
+    .filter((n) => config.commands[n] && (!only || n === 'setup' || only.includes(n)))
     .map((n) => `- ${n} : \`${config.commands[n]}\``)
     .join('\n');
 }
 
-function verifyStepsSentence(config: RepoConfig): string {
-  const steps = (['build', 'test', 'lint'] as const).filter((n) => config.commands[n]);
-  return steps.join(', ');
+/**
+ * Ce que Sisyphe relancera au-delà de `setup` : ce que le dépôt déclare, croisé avec le périmètre du triage
+ * — plancher du dépôt compris, sans quoi le prompt promettrait à l'agent une étape de moins que la
+ * vérification, et `alwaysRun` coûterait une tentative pour rien.
+ */
+function verifySteps(config: RepoConfig, requested: readonly VerifyChoice[]): VerifyChoice[] {
+  return (['build', 'test', 'lint'] as const).filter((n) => config.commands[n] && (requested.includes(n) || config.verify.alwaysRun.includes(n)));
 }
 
 export function triagePrompt(issue: Issue, config: RepoConfig): string {
@@ -90,6 +102,15 @@ Réponds uniquement avec le JSON demandé ; le schéma décrit chaque champ. Le 
 }
 
 export function implementPrompt(issue: Issue, verdict: TriageVerdict, config: RepoConfig): string {
+  // Faire relancer à l'agent ce que Sisyphe ne relancera pas, c'est payer deux fois les étapes que le
+  // périmètre venait d'écarter — le double passage que la vérification ciblée existe pour supprimer.
+  const steps = verifySteps(config, verdict.verification.steps);
+  // Un dépôt sans `setup` et un périmètre vide ne laissent rien à montrer : mieux vaut pas de section
+  // qu'un titre suivi du vide.
+  const commands = commandBullets(config, steps);
+  const verifyRequirement = steps.length
+    ? `\n- Avant de conclure, exécute les commandes ${steps.join(', ')} ci-dessus et corrige jusqu'au vert : c'est ce que Sisyphe relancera${steps.includes('lint') ? ', lint compris' : ''} — plus large si ton diff sort de ce que le triage avait prévu — et tout échec y coûte une tentative.`
+    : '';
   return `Tu es en phase d'IMPLÉMENTATION. Implémente l'issue ci-dessous dans ce dépôt (répertoire courant), sur la branche déjà créée.
 
 ${untrustedNotice('risks')}
@@ -101,13 +122,9 @@ Plan proposé :
 ${verdict.plan.map((p, i) => `${i + 1}. ${p}`).join('\n')}
 Fichiers probablement concernés : ${verdict.files_likely_touched.join(', ') || '(non précisé)'}
 
-Commandes du repo :
-${commandBullets(config)}
-
-Exigences :
+${commands ? `Commandes du repo :\n${commands}\n\n` : ''}Exigences :
 - Suis les conventions du repo (son CLAUDE.md figure dans tes instructions système).
-- Ne modifie pas les chemins protégés. N'exécute pas git push.
-- Avant de conclure, exécute les commandes ${verifyStepsSentence(config)} ci-dessus et corrige jusqu'au vert : Sisyphe relancera exactement ces commandes, et un échec de l'une d'elles, lint compris, coûte une tentative.
+- Ne modifie pas les chemins protégés. N'exécute pas git push.${verifyRequirement}
 - Nettoie le worktree de tes fichiers de travail : tout fichier non ignoré part dans le commit.
 - Reste dans le périmètre de l'issue ; note dans follow_ups ce que tu as volontairement laissé de côté.
 - Termine par le rapport JSON demandé ; le schéma décrit chaque champ.`;

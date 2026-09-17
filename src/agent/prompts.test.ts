@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { parseRepoConfig } from '../config/repo.js';
 import type { Issue } from '../github/source.js';
 import { implementPrompt, renderIssueBlock, retryPrompt, systemAppend, triagePrompt } from './prompts.js';
+import type { TriageVerdict } from './schemas.js';
 
 const issue: Issue = {
   repo: { owner: 'acme', name: 'demo', full: 'acme/demo' },
@@ -23,6 +24,10 @@ commands:
 protectedPaths: ["**/*.xcconfig"]
 instructions: Utiliser SwiftUI uniquement.
 `);
+const verdict: TriageVerdict = {
+  verdict: 'ready', confidence: 1, summary: 'Bouton bleu', note: '', change_type: 'feat', plan: ['créer la vue', 'brancher'],
+  files_likely_touched: ['A.swift'], questions: [], reasons: [], verification: { steps: ['build', 'test', 'lint'], why: 'périmètre complet' },
+};
 
 describe('renderIssueBlock', () => {
   it('encadre l’issue, neutralise les balises et inclut les commentaires', () => {
@@ -61,7 +66,7 @@ describe('prompts', () => {
     expect(p).toMatch(/files_likely_touched[\s\S]*créer[\s\S]*test/);
   });
   it('implementPrompt contient plan et commandes', () => {
-    const p = implementPrompt(issue, { verdict: 'ready', confidence: 1, summary: 'Bouton bleu', note: '', change_type: 'feat', plan: ['créer la vue', 'brancher'], files_likely_touched: ['A.swift'], questions: [], reasons: [], verification: { steps: ['build', 'test', 'lint'], why: 'périmètre complet' } }, config);
+    const p = implementPrompt(issue, verdict, config);
     expect(p).toContain('1. créer la vue');
     expect(p).toContain('2. brancher');
     expect(p).toContain('`xcodegen generate`');
@@ -69,6 +74,36 @@ describe('prompts', () => {
     expect(p).toContain('A.swift');
     expect(p).toContain('lint compris');
     expect(p).toContain('exécute les commandes build, test, lint ci-dessus');
+  });
+  it('l’implémentation ne demande de relancer que les étapes retenues', () => {
+    const p = implementPrompt(issue, { ...verdict, verification: { steps: ['build'], why: 'libellé' } }, config);
+    expect(p).toContain('build');
+    expect(p).not.toMatch(/exécute les commandes[^.]*test/);
+    // La commande écartée ne figure plus dans la liste : la montrer, c'est inviter à la lancer.
+    expect(p).not.toContain('`xcodebuild test`');
+    expect(p).not.toContain('`swiftlint`');
+    expect(p).toContain('`xcodegen generate`');
+    expect(p).not.toContain('lint compris');
+  });
+  it('le plancher du dépôt reste dans ce que l’agent doit relancer', () => {
+    const cfg = parseRepoConfig('baseBranch: main\ncommands:\n  build: make\n  test: make test\n  lint: make lint\nverify:\n  alwaysRun: ["lint"]\n');
+    const p = implementPrompt(issue, { ...verdict, verification: { steps: ['build'], why: 'libellé' } }, cfg);
+    expect(p).toContain('exécute les commandes build, lint ci-dessus');
+    expect(p).toContain('`make lint`');
+    expect(p).not.toContain('`make test`');
+  });
+  it('périmètre vide : ni commande à relancer, ni exigence de vert', () => {
+    const p = implementPrompt(issue, { ...verdict, verification: { steps: [], why: 'documentation seule' } }, config);
+    expect(p).not.toContain('exécute les commandes');
+    expect(p).not.toContain("corrige jusqu'au vert");
+    expect(p).not.toContain('coûte une tentative');
+    expect(p).toContain('`xcodegen generate`');
+  });
+  it('sans setup ni périmètre, la section des commandes disparaît au lieu de rester vide', () => {
+    const cfg = parseRepoConfig('baseBranch: main\ncommands:\n  build: make\n');
+    const p = implementPrompt(issue, { ...verdict, verification: { steps: [], why: 'documentation seule' } }, cfg);
+    expect(p).not.toContain('Commandes du repo');
+    expect(p).toContain('Exigences :');
   });
   it('retryPrompt cite l’étape et la sortie', () => {
     const p = retryPrompt('test', 'XCTAssert failed');
