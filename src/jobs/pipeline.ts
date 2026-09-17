@@ -192,7 +192,7 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
         runJiraPhase(
           { agent: deps.agent, env: jiraEnv, transcriptPath: join(dir, `transcript-jira-${finished.attempt}.jsonl`), cwd: dir, timeoutMs: minutes(5), signal },
           finished,
-          jiraOutcomeOf(finished, state, project.doneStatus, key, scripted),
+          jiraOutcomeOf(finished, state, project.doneStatus, key, scripted, project.blockedStatus ?? null),
         ),
         (out) => ({ outcome: out.report.note ? 'failure' : 'success', costUsd: out.result.costUsd, usage: out.result.usage, numTurns: out.result.numTurns, stopReason: out.result.stopReason }),
       );
@@ -201,6 +201,27 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
       body = report.comment.trim() || scripted;
     } finally {
       if (state !== 'done') {
+        // Bloqué, et le projet a un statut d'attente : le ticket quitte la colonne de travail avant d'être
+        // rendu. Sans cela il y resterait sans assigné — du travail en cours sur lequel personne n'est, la
+        // panne silencieuse que le reste du dispositif cherche justement à empêcher. Seulement `blocked` :
+        // un échec n'attend aucune information, il garde le rendu sur place (voir `jiraOutcomeOf`).
+        //
+        // Même garde que le rattrapage du job livré ci-dessous, et pour la même raison : un ticket qu'un
+        // humain a déjà déplacé — ou que l'agent a lui-même posé sur ce statut — ne doit pas être ramené en
+        // arrière. Et même asymétrie sur l'incertitude : `?? ''` ne peut jamais égaler `inProgressStatus`,
+        // donc une lecture Jira en échec retombe sur « ne pas agir » plutôt que de déplacer à l'aveugle.
+        //
+        // Le `.catch` n'est pas qu'une politesse : la transition est dans le `finally`, avant le commentaire
+        // de fin, et `walkTo` lève quand le statut n'est offert ni en saut direct ni par la marche. Un ticket
+        // rendu vaut mieux qu'un job perdu, et c'est le commentaire qui porte alors l'information.
+        if (state === 'blocked' && project.blockedStatus) {
+          const before = await source.getIssue(issueRef).catch(() => null);
+          const onWorkColumn = before ? sameStatus(before.tracker?.status ?? '', project.inProgressStatus) : false;
+          if (onWorkColumn) {
+            await source.transitionTo?.(issueRef, project.blockedStatus)
+              .catch((err) => log.warn({ err }, "statut d'attente non posé"));
+          }
+        }
         // Un `canTrigger` en erreur ne dit pas « pas à nous », il ne dit rien : on penche alors vers le rendu.
         // Rendre un ticket déjà rendu ne coûte qu'un PUT — `removeTriggerLabel` est idempotent — quand ne pas
         // rendre celui qui aurait dû l'être est précisément la panne silencieuse à empêcher.

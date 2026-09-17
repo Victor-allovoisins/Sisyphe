@@ -17,6 +17,15 @@ import { REPO, makeHarness, readyVerdict, repoRef, report, writeFeature } from '
 const ACCOUNT = 'acc-sisyphe-ios';
 const ORDER: string[] = [...JIRA_STATUSES_DEFAULT];
 const ISSUE_7 = { repo: repoRef, number: 7 };
+/** La colonne de travail, celle que `inProgressStatus` désigne — le filet ne bouge un ticket que depuis elle. */
+const TRAVAIL = 'En développement';
+/**
+ * Le statut d'attente du projet, comme BACK le tient : **hors de `ORDER`**, et il doit le rester. C'est ce
+ * qui en fait un statut de côté — il n'est sur aucun chemin d'avancement, et rien d'autre que la transition
+ * latérale offerte plus bas n'y mène. L'y ajouter ferait aboutir les tests par la marche de proche en
+ * proche, donc pour une tout autre raison que celle qu'ils prétendent prouver.
+ */
+const ATTENTE = "En attente d'informations";
 
 /** Ce que la phase `jira` rend quand elle a fait son travail : elle a transitionné et rédigé son texte. */
 const jiraOk = { status: 'En relecture', comment: '🪨 PR prête : https://example.test/pr/1', note: '' };
@@ -27,10 +36,16 @@ const jiraMuet = { status: '', comment: '', note: 'coincé' };
 function fakeJira(start = 'Nouveau') {
   const state = { status: start, assignee: ACCOUNT as string | null, comments: [] as string[] };
   const transitionsFrom = (s: string) => {
+    // Depuis le statut d'attente, une seule issue : revenir dans la colonne de travail. Un statut de côté
+    // n'ouvre sur aucune étape du chemin d'avancement — sans quoi il serait sur le chemin.
+    if (s === ATTENTE) return [{ id: 'retour-attente', to: { name: TRAVAIL } }];
     const i = ORDER.indexOf(s);
     const out: { id: string; to: { name: string } }[] = [];
     if (i > 0) out.push({ id: `back-${i}`, to: { name: ORDER[i - 1] } });
     if (i >= 0 && i < ORDER.length - 1) out.push({ id: `fwd-${i}`, to: { name: ORDER[i + 1] } });
+    // La transition latérale : offerte depuis la colonne de travail seulement, et vers un statut que
+    // `ORDER` ignore. C'est le saut direct de `walkTo` qui l'emprunte, jamais la marche.
+    if (s === TRAVAIL) out.push({ id: 'vers-attente', to: { name: ATTENTE } });
     return out;
   };
 
@@ -97,7 +112,16 @@ function fakeJira(start = 'Nouveau') {
 const json = (v: unknown) => new Response(JSON.stringify(v), { status: 200, headers: { 'content-type': 'application/json' } });
 const signal = () => new AbortController().signal;
 
-async function harnessOn(jiraTracker: JiraIssueTracker, steps: Parameters<typeof makeHarness>[0]['steps'], extraBranches?: string[]) {
+/**
+ * `blockedStatus` n'est posé que sur la config machine : c'est elle, et non le client câblé, que `closeTicket`
+ * lit pour décider — et `transitionTo` prend son statut cible en argument, sans jamais consulter le projet.
+ */
+async function harnessOn(
+  jiraTracker: JiraIssueTracker,
+  steps: Parameters<typeof makeHarness>[0]['steps'],
+  extraBranches?: string[],
+  blockedStatus?: string,
+) {
   const h = await makeHarness({ steps, ...(extraBranches ? { extraBranches } : {}) });
   // La forge reste le faux GitHub (branches, PR) ; seul le suivi passe par Jira.
   h.deps.source = jiraTracker;
@@ -112,7 +136,8 @@ async function harnessOn(jiraTracker: JiraIssueTracker, steps: Parameters<typeof
       projects: [{
         key: 'IOS', accountId: ACCOUNT, repo: REPO,
         candidateStatuses: ['Nouveau', 'En analyse'], statusesInOrder: ORDER,
-        inProgressStatus: 'En développement', doneStatus: 'En relecture',
+        inProgressStatus: TRAVAIL, doneStatus: 'En relecture',
+        ...(blockedStatus ? { blockedStatus } : {}),
       }],
     },
   };
@@ -154,7 +179,9 @@ describe('pipeline sur Jira', () => {
   it('rend la main, sans quitter la colonne de travail, quand le triage bloque', async () => {
     const j = fakeJira();
     const blocked = { ...readyVerdict, verdict: 'needs_clarification', note: 'Il manque un écran.', questions: ['Quel écran ?'] };
-    // La phase `jira` ne dit rien : c'est le filet qui rend la main et qui poste le message scripté.
+    // La phase `jira` ne dit rien : c'est le filet qui rend la main et qui poste le message scripté. Et le
+    // projet n'a pas de statut d'attente configuré — le cas de tous ceux qui existent aujourd'hui : le
+    // ticket est donc rendu là où il est, comportement d'avant `blockedStatus`.
     const h = await harnessOn(j.tracker, [{ output: blocked }, { output: jiraMuet }]);
     const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
     const done = await runJob(job.id, h.deps, signal());
@@ -268,6 +295,63 @@ describe('pipeline sur Jira', () => {
     // Le ticket ne recule pas vers « En relecture » : il reste où il était.
     expect(j.state.status).toBe('Developpement fini');
     expect(j.state.assignee).toBe(ACCOUNT);
+  });
+
+  /**
+   * Un ticket bloqué quitte la colonne de travail quand le projet donne un statut où l'attendre. Sinon il
+   * reste où il est — sans assigné sur « En développement », c'est-à-dire du travail en cours sur lequel
+   * personne n'est : la panne que ce statut de côté vient couvrir.
+   */
+  describe('le statut d’attente du projet', () => {
+    const blocked = { ...readyVerdict, verdict: 'needs_clarification', note: 'Il manque un écran.', questions: ['Quel écran ?'] };
+
+    it('y pose le ticket bloqué, puis le rend, quand la phase jira ne l’a pas fait', async () => {
+      const j = fakeJira();
+      const h = await harnessOn(j.tracker, [{ output: blocked }, { output: jiraMuet }], undefined, ATTENTE);
+      const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+      const done = await runJob(job.id, h.deps, signal());
+
+      expect(done.state).toBe('blocked');
+      // Le saut direct de `walkTo` : « En attente d'informations » n'est dans aucun `statusesInOrder`, seule
+      // la transition latérale offerte depuis la colonne de travail y mène.
+      expect(j.state.status).toBe(ATTENTE);
+      // Déplacé *et* rendu : le déplacement ne remplace pas le rendu, il le complète.
+      expect(j.state.assignee).toBe('acc-victor');
+      expect(j.state.comments.join('\n')).toContain('🪨');
+    });
+
+    it('ne ramène pas en arrière un ticket qu’un humain a déjà déplacé', async () => {
+      const j = fakeJira();
+      // Quelqu'un a repris le ticket pendant le job et l'a renvoyé en analyse : le filet n'a rien à y faire.
+      const h = await harnessOn(
+        j.tracker,
+        [{ output: blocked }, { output: jiraMuet, sideEffect: async () => { j.state.status = 'En analyse'; } }],
+        undefined,
+        ATTENTE,
+      );
+      const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+      await runJob(job.id, h.deps, signal());
+
+      expect(j.state.status).toBe('En analyse');
+      expect(j.state.assignee).toBe('acc-victor');
+    });
+
+    it('ne reçoit pas les jobs en échec : un secret détecté n’attend aucune information', async () => {
+      const j = fakeJira();
+      const h = await harnessOn(j.tracker, [
+        { output: readyVerdict },
+        { output: report('v1'), sideEffect: writeFeature('hello\n') },
+        { output: jiraMuet },
+      ], undefined, ATTENTE);
+      h.deps.scan = async () => [{ file: 'src/feature.txt', ruleId: 'aws-access-token', line: 5 }];
+      const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+      const done = await runJob(job.id, h.deps, signal());
+
+      expect(done.state).toBe('failed');
+      // Un refus, pas une attente : le ticket est rendu là où il est, comme avant.
+      expect(j.state.status).toBe(TRAVAIL);
+      expect(j.state.assignee).toBe('acc-victor');
+    });
   });
 
   /**

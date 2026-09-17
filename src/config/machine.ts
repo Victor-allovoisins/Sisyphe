@@ -75,6 +75,15 @@ export const MachineConfigSchema = z.strictObject({
              * développeur ne déclare pas son propre travail terminé, il le soumet à relecture.
              */
             doneStatus: z.string().min(1).default('En relecture'),
+            /**
+             * Où poser un ticket sur lequel Sisyphe s'est bloqué — « En attente d'informations » sur BACK.
+             * Un statut **de côté** : délibérément hors de `statusesInOrder`, parce qu'il n'est pas sur le
+             * chemin d'avancement. `walkTo` l'atteint quand même, par le saut direct qu'il tente avant la
+             * marche ; l'ajouter à `statusesInOrder` casserait au contraire la marche des autres statuts.
+             *
+             * Facultatif : sans lui, un job bloqué rend le ticket sans le déplacer, comme avant.
+             */
+            blockedStatus: z.string().min(1).optional(),
           }),
         )
         .min(1)

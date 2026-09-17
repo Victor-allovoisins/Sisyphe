@@ -56,7 +56,7 @@ describe('jiraOutcomeOf', () => {
     expect(o).toEqual({
       key: 'IOS-886', state: 'done', verificationFailed: false,
       prUrl: 'https://github.com/acme/ios/pull/412', attempts: 2, costUsd: 3.5,
-      duration: '2 min 5 s', targetHint: 'En relecture', reason: null, flags: [], draft: '',
+      duration: '2 min 5 s', targetHint: 'En relecture', blockedStatus: null, reason: null, flags: [], draft: '',
     });
   });
 
@@ -67,6 +67,20 @@ describe('jiraOutcomeOf', () => {
     expect(o.state).toBe('blocked');
     expect(o.reason).toBe('triage : too_big');
     expect(o.flags).toEqual([]);
+  });
+
+  it('ne nomme le statut de blocage qu’à un job bloqué : un échec n’attend aucune information', () => {
+    const attente = "En attente d'informations";
+    const bloque = jiraOutcomeOf(makeJob({ state: 'blocked' }), 'blocked', 'En relecture', 'IOS-887', '', attente);
+    expect(bloque.blockedStatus).toBe(attente);
+    expect(jiraSyncPrompt(bloque)).toContain(attente);
+    // Secrets détectés, chemin protégé, vérification rouge : le skill couvre tout cela par la même branche
+    // « rien à livrer ». Ne pas nommer le statut est ce qui empêche l'agent d'y poser un ticket en échec.
+    const echoue = jiraOutcomeOf(makeJob(), 'failed', 'En relecture', 'IOS-887', '', attente);
+    expect(echoue.blockedStatus).toBeNull();
+    expect(jiraSyncPrompt(echoue)).not.toContain(attente);
+    // Projet sans statut d'attente configuré : rien ne change pour lui.
+    expect(jiraOutcomeOf(makeJob({ state: 'blocked' }), 'blocked', 'En relecture', 'IOS-887').blockedStatus).toBeNull();
   });
 
   it('remonte chaque drapeau du job', () => {

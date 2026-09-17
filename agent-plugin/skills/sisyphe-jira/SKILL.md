@@ -20,9 +20,9 @@ interroger : tu ne poses pas de question, tu décides ou tu rends la main.
    ```
 
 2. Décide où le laisser, d'après le résultat du job que le prompt t'a donné — voir « Où laisser le ticket ».
-3. Agis : **une seule** commande, soit `transition` vers le statut visé, soit `assign --back` — jamais les
-   deux, sauf si la transition échoue : tu rends alors le ticket avec `assign --back` et tu n'essaies rien
-   d'autre.
+3. Agis : `transition` vers le statut visé, ou `assign --back`, ou les deux dans cet ordre — mais seulement
+   dans les cas que « Où laisser le ticket » énumère, et jamais plus de ces deux commandes. Si la transition
+   échoue, tu rends le ticket avec `assign --back` et tu n'essaies rien d'autre.
 4. Relis le ticket avec `show` et vérifie qu'il est bien là où tu voulais le laisser.
 5. Rends ton rapport JSON, commentaire compris.
 
@@ -80,9 +80,17 @@ Le résultat du job t'est donné dans le prompt. En fonction :
   lance aucun `assign` : le ticket reste assigné à Sisyphe, c'est un travail soumis, pas un travail abandonné.
 - **PR ouverte mais vérification rouge** → même statut de relecture, toujours aucun `assign`. Le commentaire
   doit dire, en premier, que la PR est en brouillon et pourquoi.
-- **Rien à livrer** (triage non concluant, diff vide, secret détecté, chemin protégé touché, échec) → ne
-  déplace pas le ticket, `assign --back`. On ne fait pas reculer une colonne parce qu'on a buté ; on rend la
-  main là où le ticket se trouve.
+- **Rien à livrer** (triage non concluant, diff vide, secret détecté, chemin protégé touché, échec) :
+  - Le prompt te donne un **statut de blocage** → `transition` vers lui, puis `assign --back`. Ce statut est
+    tenu hors du chemin d'avancement : le ticket quitte la colonne de travail sans avancer ni reculer, et
+    cesse d'y afficher un travail en cours sur lequel personne n'est. C'est la seule situation où tu lances
+    deux commandes à la suite.
+  - Le prompt n'en donne pas → ne déplace pas le ticket, `assign --back`. On ne fait pas reculer une colonne
+    parce qu'on a buté ; on rend la main là où le ticket se trouve. Et **ne cherche pas toi-même un statut
+    d'attente** que le prompt n'a pas nommé : son absence est une décision, pas un oubli.
+  - La transition n'est pas offerte depuis la colonne où le ticket se trouve → `transition` échoue.
+    N'insiste pas, ne cherche pas de statut de remplacement : `assign --back`, et dis dans ton commentaire
+    que le ticket n'a pas pu être déplacé. C'est la règle déjà donnée plus haut pour toute transition.
 - **Job annulé** → `assign --back`, commentaire court.
 
 ## Le commentaire

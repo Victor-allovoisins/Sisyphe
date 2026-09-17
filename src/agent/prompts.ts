@@ -154,6 +154,12 @@ export interface JiraOutcome {
   costUsd: number;
   duration: string;
   targetHint: string;
+  /**
+   * Le statut d'attente du projet, quand il en a un *et* que le job s'est bloqué : c'est là que l'agent
+   * pose le ticket avant de rendre la main, pour qu'il quitte la colonne de travail. `null` sinon — un
+   * échec n'attend aucune information, et ne doit donc jamais l'apprendre (voir `jiraOutcomeOf`).
+   */
+  blockedStatus: string | null;
   reason: string | null;
   flags: string[];
   /**
@@ -188,6 +194,7 @@ export function jiraSyncPrompt(o: JiraOutcome): string {
     `- coût : $${o.costUsd.toFixed(2)} · durée : ${o.duration}`,
     `- statut de relecture configuré pour ce projet : « ${o.targetHint} »`,
   ];
+  if (o.blockedStatus) lines.push(`- statut de blocage configuré pour ce projet : « ${o.blockedStatus} »`);
   if (o.reason) lines.push(`- ce qui s'est passé : ${o.reason}`);
   if (o.flags.length) lines.push(`- signalements : ${o.flags.join(', ')}`);
   if (o.draft) {

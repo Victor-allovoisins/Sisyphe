@@ -310,6 +310,11 @@ export class JiraIssueTracker implements IssueTracker {
    * mais « ce ticket n'est plus à moi ». Sans cela, un job annulé ou orphelin laisserait le ticket en cours et
    * assigné au compte dédié : hors des statuts candidats, donc jamais repris, et assigné au bot, donc invisible.
    *
+   * Ce verbe ne déplace rien sur `blocked`, mais le ticket, lui, a pu bouger : quand le projet configure un
+   * `blockedStatus`, un job bloqué pose le ticket sur ce statut d'attente avant d'être rendu. Tenu hors du
+   * chemin d'avancement, ce n'est pas un recul ; et ce n'est pas ici que ça se décide, mais dans `closeTicket`
+   * — avec le garde qui va avec — et dans le skill, à qui le prompt nomme le statut.
+   *
    * Cas assumé : après une PR ouverte dont la vérification échoue, le ticket est rendu sans quitter la colonne
    * de travail. Le commentaire porte le lien de la PR, et c'est à la personne qui reprend la main de décider
    * si elle passe en relecture ou repart en arrière.
