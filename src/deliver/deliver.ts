@@ -34,6 +34,7 @@ export interface TicketRef {
 export interface DeliverResult {
   prNumber: number;
   prUrl: string;
+  /** Le commit de travail, porteur de l'arbre vérifié — pas l'éventuel commit de build, qui ne désigne aucun contenu. */
   commitSha: string;
   draft: boolean;
 }
@@ -69,6 +70,28 @@ export function shouldBeDraft(job: Job, verify: VerifyResult, config: RepoConfig
 }
 
 /**
+ * Note de version du build de préproduction. La CI la reprend telle quelle (`head_commit.message`) dans
+ * Firebase, son commentaire Jira et sa carte Teams : elle est lue par des humains qui installent l'app et
+ * ne connaissent pas le code, d'où la clé du ticket et son titre en clair plutôt qu'un marqueur seul.
+ */
+export function buildCommitMessage(job: Job, ticket: TicketRef): string {
+  return `!build ${ticket.key} — ${cleanTitle(job.issueTitle)}`;
+}
+
+/**
+ * Un build de préproduction ne part que pour une version installable : le quota Xcode Cloud est la ressource
+ * rare, on ne le dépense pas pour du code que personne ne testera.
+ * Ressemble à l'inverse de `shouldBeDraft` mais s'en distingue volontairement : `config.pr.draft` est un
+ * réglage de présentation du dépôt (« toutes mes PR sont en brouillon »), pas un signal de qualité, et un
+ * dépôt qui l'active ne doit pas perdre ses builds pour autant.
+ * Sans ticket (suivi GitHub), pas de clé à mettre dans la note de version — et le dépôt visé n'est pas celui
+ * qui lit le marqueur : on ne pousse rien.
+ */
+export function shouldTriggerBuild(job: Job, verify: VerifyResult, ticket: TicketRef | null): ticket is TicketRef {
+  return ticket !== null && !job.flags.verificationFailed && !verify.flags.largeDiff;
+}
+
+/**
  * Commite l'arbre vérifié, pousse, crée ou met à jour la PR. Ne touche plus au ticket : statut et
  * commentaire de fin sont le travail de `finish()` dans le pipeline, qui les tient pour *toutes* les
  * sorties du job — la livraison n'en est qu'une, et n'a aucune raison d'en connaître le protocole.
@@ -85,7 +108,14 @@ export async function deliver(i: DeliverInput): Promise<DeliverResult> {
 
   // On commite l'arbre exact que la vérification a inspecté, pas l'état du worktree après build/test.
   const commitSha = await i.git.commitTree(i.worktreePath, job.branch, i.verify.treeSha, job.baseSha, commitMessage(job, i.ticket));
-  await i.git.push(i.worktreePath, i.pushUrl, job.branch, commitSha);
+  // Commit vide dédié, et surtout pas le marqueur dans le message du commit de travail : celui-là est fusionné
+  // dans la branche de base et son message y reste pour toujours, un marqueur de CI n'y a pas sa place.
+  // Il doit être le dernier commit poussé : la CI ne regarde que `head_commit.message`.
+  const buildSha = shouldTriggerBuild(job, i.verify, i.ticket)
+    ? await i.git.commitEmpty(i.worktreePath, job.branch, commitSha, buildCommitMessage(job, i.ticket))
+    : null;
+  // Un seul push pour les deux commits, donc un seul déclenchement du workflow.
+  await i.git.push(i.worktreePath, i.pushUrl, job.branch, buildSha ?? commitSha);
 
   const draft = shouldBeDraft(job, i.verify, config);
   const title = prTitle(job, i.ticket);

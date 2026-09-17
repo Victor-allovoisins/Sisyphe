@@ -214,6 +214,19 @@ export class Git {
     return sha;
   }
 
+  /**
+   * Commit sans contenu posé sur `parentSha` : `commit-tree` avec l'arbre du parent produit exactement un
+   * commit vide, invisible dans le diff de la PR. Ne sert qu'à porter un message que la CI du dépôt lit.
+   */
+  async commitEmpty(wt: string, branch: string, parentSha: string, message: string): Promise<string> {
+    this.assertBranchName(branch);
+    const treeSha = await this.run(['rev-parse', `${parentSha}^{tree}`], wt);
+    const sha = await this.run(['commit-tree', treeSha, '-p', parentSha, '-m', message], wt);
+    await this.run(['update-ref', `refs/heads/${branch}`, sha], wt);
+    await this.run(['symbolic-ref', 'HEAD', `refs/heads/${branch}`], wt);
+    return sha;
+  }
+
   async push(wt: string, pushUrl: string, branch: string, sha = 'HEAD'): Promise<void> {
     this.assertBranchName(branch);
     if (!/^(HEAD|[0-9a-f]{40})$/.test(sha)) throw new GitError(`Sha invalide : ${sha}`, 'push', '');
