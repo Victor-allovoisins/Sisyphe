@@ -77,16 +77,16 @@ describe('prompts', () => {
     // La promesse d'avant : un filet général, qui dispensait de juger la nature du changement.
     expect(p).not.toMatch(/reprend la main dès que le diff dément la prévision/);
   });
-  it('triagePrompt dispense d’écrire un test quand seule une valeur affichée change', () => {
+  it('triagePrompt ne demande la suite de tests que pour du code critique', () => {
     const p = triagePrompt(issue, config);
-    // IOS-887 : le triage a demandé `test` parce qu'il avait décidé d'écrire un test de non-régression
-    // sur une couleur. La règle « prévoir un test oblige à demander test » était respectée ; ce qui
-    // manquait, c'est la consigne en amont — ce test-là n'attrape rien et coûte la suite entière.
-    expect(p).toMatch(/ne prévois pas d'écrire un test/);
-    expect(p).toMatch(/valeur affichée/);
-    // Le critère est la condition ou le calcul, pas « est-ce visuel » : un thème choisi par une enum
-    // reste de la logique, et mérite son test.
-    expect(p).toMatch(/condition.*calcul/);
+    // IOS-887 : trente minutes de suite complète pour une couleur. Le triage avait demandé `test`
+    // parce qu'il comptait écrire un test de non-régression — règle respectée, défaut inversé.
+    expect(p).toMatch(/Par défaut, ne demande pas/);
+    expect(p).toMatch(/critique/);
+    // Le déclencheur est ce que fait le code, jamais la priorité du ticket : « Bloquant » peut n'être
+    // qu'un libellé, « Mineur » peut toucher une facture. Le prompt le dit au modèle lui-même.
+    expect(p).toMatch(/jamais l'urgence du ticket/);
+    expect(p).toMatch(/Bloquant.*Mineur/);
   });
   it('implementPrompt contient plan et commandes', () => {
     const p = implementPrompt(issue, verdict, config);
