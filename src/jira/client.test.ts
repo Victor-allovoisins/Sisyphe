@@ -334,6 +334,12 @@ describe('get', () => {
       '/rest/api/%2e%2e/%2e%2e/wiki',
       '/rest/api/%2e./%2e./wiki',
       '/rest/api/%2E%2E/%2E%2E/wiki',
+      // `%2f`/`%5c` ne se décodent pas en séparateur ici — `pathname` les garde tels quels, donc ces chemins
+      // restent sous `/rest/api/` et passeraient les deux contrôles ci-dessus. On ne sait pas si le routeur
+      // d'Atlassian les décode avant de router ; le garde les refuse donc lui-même, sans compter dessus.
+      '/rest/api/3/..%2f..%2fwiki/rest/api/content',
+      '/rest/api/3/..%2F..%2Fwiki/rest/api/content',
+      '/rest/api/3/issue%5c..%5cadmin',
     ];
     for (const bad of bads) {
       await expect(h.tracker.get(bad)).rejects.toThrow(/chemin/i);
@@ -346,6 +352,14 @@ describe('get', () => {
     const h = harness({ 'GET /rest/api/3/issue/IOS-885/changelog': { values: [] } });
     await h.tracker.get('/rest/api/3/./issue/IOS-885/changelog?maxResults=1');
     expect(h.calls).toEqual([{ method: 'GET', path: '/rest/api/3/issue/IOS-885/changelog?maxResults=1', body: undefined }]);
+  });
+
+  it('laisse passer un `..` dans la chaîne de requête : seul le chemin est jugé', async () => {
+    const h = harness({ 'GET /rest/api/3/issue/IOS-885/changelog': { values: [] } });
+    // Un JQL légitime peut porter `..` (une plage de dates, par exemple) : le refus de `%2f`/`%5c` ne doit
+    // juger que `pathname`, jamais `search`.
+    await h.tracker.get('/rest/api/3/issue/IOS-885/changelog?jql=note ~ "a..b"');
+    expect(h.calls).toEqual([{ method: 'GET', path: '/rest/api/3/issue/IOS-885/changelog?jql=note%20~%20%22a..b%22', body: undefined }]);
   });
 });
 

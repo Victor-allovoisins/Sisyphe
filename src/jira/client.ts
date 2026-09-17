@@ -373,7 +373,13 @@ export class JiraIssueTracker implements IssueTracker {
     }
     // L'hôte compte autant que le chemin : un `path` sans `/` initial le déplace (`evil.com/x` donne
     // `…atlassian.netevil.com`), et un `@` y logerait une tout autre autorité.
-    if (url.origin !== base.origin || !url.pathname.startsWith('/rest/api/')) return refuse();
+    //
+    // `%2f`/`%5c` (les deux casses) restent un reste étroit : le parseur WHATWG ne les décode pas en `/` ou
+    // `\`, donc `..%2f..%2fwiki/rest/api/…` reste sous `/rest/api/` et passe les deux contrôles ci-dessus —
+    // mais rien ne dit comment le routeur d'Atlassian les décodera avant de router, et le garde ne doit pas
+    // reposer sur cette hypothèse-là. On les refuse donc explicitement, sur `pathname` seul : `search` — où
+    // vit un JQL légitimement porteur de `..` — n'est pas concerné.
+    if (url.origin !== base.origin || !url.pathname.startsWith('/rest/api/') || /%2f|%5c/i.test(url.pathname)) return refuse();
     return this.request<T>('GET', url.pathname + url.search);
   }
 
