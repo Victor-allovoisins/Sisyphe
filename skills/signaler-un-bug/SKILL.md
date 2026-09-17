@@ -262,15 +262,60 @@ Deux exceptions, et seulement si la personne l'a dit d'elle-même :
 
 Dans le doute, laisse vide. Une version fausse envoie le correctif sur la mauvaise branche ; une version absente ne coûte rien.
 
+**Le composant est obligatoire.** Le projet `IOS` refuse toute création sans lui — l'API répond « Composants est obligatoire ». Tu le **déduis** de ce que la personne a déjà raconté ; tu ne le lui demandes jamais. Elle ne connaît pas ce découpage, il est interne à l'équipe : lui poser la question, c'est un tour de plus pour une information qu'elle n'a pas, et c'est là qu'on décroche. Un composant approximatif se corrige d'un clic au triage ; une personne qui abandonne en cours d'entretien ne revient pas.
+
+Les valeurs du projet :
+
+| Le bug touche | Composant |
+|---|---|
+| Abonnement, offre payante, renouvellement, bandeau de réabonnement | `Abonnements` |
+| Création de compte, connexion, mot de passe oublié, identifiant | `Accueil / Inscription / Gestion identifiant` |
+| Mail reçu ou non reçu, notification, fil d'actualité | `Alerting / mails / flux` |
+| Avis laissé ou reçu, note | `Avis` |
+| Traitement nocturne, relance automatique | `Batchs` |
+| Back-office, outil d'équipe | `BO / outils internes` |
+| Dépôt d'une demande, réponse à une demande, mise en relation | `Demandes` |
+| Devis et factures | `DF` |
+| Fiche d'un offreur, carte, menu offreurs | `Menu offreurs / cartes offreurs / profil offreurs` |
+| Supports de com d'un offreur (flyers, carte de visite) | `Mes supports de communication` |
+| Conversation, envoi de message, pièce jointe | `Messagerie` |
+| Plantage de l'app, fermeture inopinée | `MOB - CrashFix` |
+| Informations personnelles, KYC, mentions légales | `Mon profil & infos légales / personnelles & KYC` |
+| Bascule particulier → professionnel | `Part à Pro` |
+| Écran « Mon compte », profil de la personne connectée | `Profil - Mon compte` |
+| Référencement, page publique, partage de lien | `SEO` |
+| Signaler un contenu ou une personne | `Signalement` |
+| Activation d'une fonctionnalité selon le profil ou la version | `Variabilisation` |
+| **Rien ne colle clairement** | `Autres` |
+
+`Autres` est la bonne réponse par défaut, pas un aveu d'échec : mieux vaut un ticket créé avec `Autres` qu'un entretien qui s'éternise sur une question d'organisation interne.
+
 ### 12. Créer le ticket
 
 Montre le récapitulatif — titre, type, version si tu en as mis une, corps — et demande « je crée ? ». Attends le oui.
 
-Puis crée le ticket dans le projet `IOS` avec le type retenu, et **assigne-le au compte « Agent IA »**. C'est l'assignation qui déclenche le traitement : sans elle, le ticket dort.
+Puis crée le ticket dans le projet `IOS`, avec le type et le composant retenus. Laisse le statut par défaut (`Nouveau`) : ne le fais pas avancer toi-même, c'est Sisyphe qui déplacera le ticket dans le board au fil de son travail.
 
-Laisse le statut par défaut (`Nouveau`). Ne le fais pas avancer toi-même : c'est Sisyphe qui déplacera le ticket dans le board au fil de son travail.
+**L'assignation se pose en deux temps, et se vérifie.** Constaté sur un vrai ticket : passer le compte « Agent IA » dans l'appel de création rend un `assignee` à `null` — le ticket existe, personne n'est assigné, et Sisyphe ne le verra jamais. Aucune erreur n'est levée. Donc, dans cet ordre :
 
-Si la création échoue, ne perds pas le travail : affiche le titre et le corps dans un bloc à copier, et dis à la personne de créer le ticket à la main en l'assignant à « Agent IA ».
+1. crée le ticket **sans** assignation ;
+2. pose l'assignation dans un **second appel**, une édition du ticket créé ;
+3. **relis le champ `assignee` dans la réponse** avant d'annoncer quoi que ce soit à la personne.
+
+Si `assignee` est toujours vide après le second appel, ne dis pas que c'est créé. Donne le lien et demande à la personne d'assigner le ticket à « Agent IA » elle-même, en lui disant pourquoi ça compte : sans assignation, le ticket dort et personne ne s'en aperçoit.
+
+C'est le point le plus fragile de toute la mécanique. Un ticket mal rédigé revient avec une question ; un ticket non assigné ne revient jamais.
+
+**Si la création échoue, relance le même appel une fois avant tout repli.** Constaté également : un premier appel refusé sur une restriction d'adresse IP côté Jira, et le même appel rejoué juste après qui passe. Ces échecs-là sont transitoires.
+
+Au **second** échec seulement, ne perds pas le travail : affiche le titre et le corps dans un bloc à copier, et dis à la personne de créer le ticket à la main en l'assignant à « Agent IA ».
+
+**Identifiants du site, pour éviter deux appels de découverte à chaque ticket :**
+
+- `cloudId` du site allovoisins : `a34eacf0-b8c7-43ae-8d04-80e292d11393`
+- `accountId` du compte « Agent IA » : `712020:4963213c-f4db-4741-a1d7-ae8a7084ebdc`
+
+Si l'un des deux est refusé, redécouvre-le avec les outils prévus pour ça plutôt que d'abandonner : ces valeurs sont stables, pas éternelles.
 
 ### 13. Dire où la suite se passera
 
@@ -296,6 +341,7 @@ Cette phrase est la seule chose qui empêche un ticket rendu de mourir : personn
 | Grouper plusieurs bugs | Classé `too_big`, rien n'est corrigé | Un ticket par bug |
 | Renseigner une version « pour bien faire » | Envoie le correctif sur la mauvaise branche | Laisser vide : le backlog est le cas normal |
 | Oublier d'assigner à « Agent IA » | Le ticket dort indéfiniment : c'est l'assignation qui déclenche | Toujours assigner |
+| Croire l'assignation posée à la création | Elle retombe à `null` sans lever d'erreur : ticket créé, jamais traité, personne ne le voit | Assigner dans un second appel, puis relire `assignee` dans la réponse |
 | Résumer un message d'erreur | Le texte exact est souvent la seule piste de recherche | Le citer mot pour mot |
 
 ## Signaux d'alerte — reprends l'étape correspondante
