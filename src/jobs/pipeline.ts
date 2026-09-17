@@ -177,9 +177,11 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
     const key = issue?.tracker?.key;
     const project = deps.machine.jira?.projects.find((p) => p.repo === job.repo);
     if (!key || !project || !supportsSkills(deps.machine.agentBackend)) {
-      // Chemin historique : suivi GitHub, ou backend sans skills.
-      await source.comment(issueRef, scripted).catch(() => undefined);
-      await source.setStatus(issueRef, statusFor(state)).catch(() => undefined);
+      // Chemin historique : suivi GitHub, ou backend sans skills. Les échecs se loggent comme ceux du chemin
+      // Jira : avant que la clôture ne soit séparée de `deliver`, ils remontaient en `warnings` du job — un
+      // label `sisyphe:done` jamais posé ne laissait sinon aucune trace nulle part.
+      await source.comment(issueRef, scripted).catch((err) => log.warn({ err }, 'commentaire de fin non posté'));
+      await source.setStatus(issueRef, statusFor(state)).catch((err) => log.warn({ err }, 'statut de fin non posé'));
       return;
     }
     // L'agent rédige, le pipeline poste : c'est le seul chemin, et il garantit qu'un job terminé laisse
