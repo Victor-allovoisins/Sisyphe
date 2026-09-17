@@ -150,7 +150,7 @@ backends », plus bas), chaque job se termine par un tour d'agent dédié à la 
 
 - **Le filet** : le daemon ne fait pas confiance à ce que l'agent affirme avoir fait, et ne compte pas non
   plus sur la bonne fin de la phase `jira`. Quoi qu'il arrive à celle-ci — rapport vide, rapport mensonger,
-  exception — il vérifie deux choses contre l'état réel de Jira, et les corrige au besoin :
+  exception — il vérifie trois choses contre l'état réel de Jira, et les corrige au besoin :
   1. un job non livré ne laisse jamais le ticket assigné au compte dédié : le daemon relit l'assigné sur Jira
      et, s'il s'agit encore du compte dédié, réassigne le ticket à qui l'avait confié. Rien de ce que l'agent
      déclare ne fait sauter cette relecture, et une relecture en erreur penche vers le rendu : rendre un
