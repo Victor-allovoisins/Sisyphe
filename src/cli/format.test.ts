@@ -26,6 +26,12 @@ describe('formatJobLine', () => {
     expect(line).toContain('acme/demo#7');
   });
 
+  it('nomme le ticket par sa clé Jira quand le job en porte une', () => {
+    const line = formatJobLine({ ...job, issueKey: 'IOS-885' });
+    expect(line).toContain('IOS-885');
+    expect(line).not.toContain('acme/demo#7');
+  });
+
   it('nettoie un titre hostile (échappement ANSI, retour à la ligne) et le tronque', () => {
     const esc = String.fromCharCode(27);
     const hostileTitle = `Titre ${esc}[31mavec un retour\nà la ligne et un texte largement plus long que la largeur d'affichage fixe prévue pour les titres`;
