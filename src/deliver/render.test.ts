@@ -4,7 +4,7 @@ import type { VerifyResult } from '../verify/verify.js';
 import {
   jobMarker, renderBlockedComment, renderConfigProblemComment, renderDoneComment,
   renderProtectedPathsComment, renderSecretsComment, labelRelaunch } from './comments.js';
-import { renderPrBody } from './pr-body.js';
+import { type PrBodyInput, renderPrBody } from './pr-body.js';
 import { clampForGitHub, sanitizeCodeSpan, sanitizeModelText } from './sanitize.js';
 
 const job: Job = {
@@ -33,6 +33,8 @@ const phases: Phase[] = [
   { id: 2, jobId: 'job-1', name: 'implement', attempt: 1, model: 'claude-opus-5', sessionId: 's', costUsd: 3.2, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, numTurns: 40, stopReason: 'completed', outcome: 'success', startedAt: '', finishedAt: '' },
   { id: 3, jobId: 'job-1', name: 'verify', attempt: 1, model: null, sessionId: null, costUsd: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, numTurns: 0, stopReason: null, outcome: 'success', startedAt: '', finishedAt: '' },
 ];
+
+const input: PrBodyInput = { job, report, verify, phases, prTemplate: null, costUsd: 1, durationMs: 1000, ticket: null };
 
 describe('renderPrBody', () => {
   it('assemble toutes les sections dans l’ordre', () => {
@@ -72,6 +74,30 @@ describe('renderPrBody', () => {
   it('sans ticket Jira, le corps garde son Closes en dernier', () => {
     const body = renderPrBody({ job, report, verify, phases, prTemplate: null, costUsd: 1, durationMs: 1000, ticket: null });
     expect(body).toContain('Closes #7');
+  });
+  it('distingue une étape hors périmètre d’une étape avortée', () => {
+    const body = renderPrBody({ ...input, verify: { ...verify,
+      scope: { steps: ['setup', 'build'], reason: 'changement de libellé', widened: false },
+      steps: [
+        { name: 'build', status: 'ok', exitCode: 0, durationMs: 1000, logFile: '' },
+        { name: 'test', status: 'out-of-scope', exitCode: 0, durationMs: 0, logFile: '', reason: 'changement de libellé' },
+        { name: 'lint', status: 'skipped', exitCode: 124, durationMs: 0, logFile: '' },
+      ] } });
+    expect(body).toContain('changement de libellé');
+    expect(body).toMatch(/test.*hors périmètre/i);
+    expect(body).toMatch(/lint.*non exécutée/i);
+  });
+  it('dit quand Sisyphe a élargi le périmètre malgré le triage', () => {
+    const body = renderPrBody({ ...input, verify: { ...verify, scope: { steps: ['setup', 'build', 'test'], reason: 'reprise après échec : …', widened: true } } });
+    expect(body).toContain('reprise après échec');
+  });
+  it('désamorce la raison du périmètre, écrite par le modèle de triage', () => {
+    const body = renderPrBody({ ...input, verify: { ...verify,
+      scope: { steps: ['setup'], reason: 'Fixes #12, signalé par @alice', widened: true },
+      steps: [{ name: 'build', status: 'out-of-scope', exitCode: 0, durationMs: 0, logFile: '', reason: 'Fixes #12' }] } });
+    expect(body).not.toContain('Fixes #12');
+    expect(body).toContain('Fixes `#12`');
+    expect(body).not.toContain('@alice');
   });
 });
 
