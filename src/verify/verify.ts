@@ -105,16 +105,16 @@ export async function runVerification(i: VerifyInput): Promise<VerifyResult> {
     filesLikelyTouched: i.filesLikelyTouched,
     changedFiles: stat.files,
   });
-  const configured = scope.steps;
+  const inScope = scope.steps;
   // Déclarées par le dépôt, écartées par le périmètre : aucune commande, donc aucun log à ouvrir.
-  outOfScope = ORDER.filter((name) => i.config.commands[name] && !configured.includes(name))
+  outOfScope = ORDER.filter((name) => i.config.commands[name] && !inScope.includes(name))
     .map((name) => ({ name, status: 'out-of-scope', exitCode: 0, durationMs: 0, logFile: '', reason: scope.reason }));
   const steps: VerifyStep[] = [];
   const skipRest = (from: number) => {
-    for (const name of configured.slice(from)) steps.push({ name, status: 'skipped', exitCode: 124, durationMs: 0, logFile: join(i.jobDir, `verify-${name}.log`) });
+    for (const name of inScope.slice(from)) steps.push({ name, status: 'skipped', exitCode: 124, durationMs: 0, logFile: join(i.jobDir, `verify-${name}.log`) });
   };
-  for (let k = 0; k < configured.length; k++) {
-    const name = configured[k];
+  for (let k = 0; k < inScope.length; k++) {
+    const name = inScope[k];
     const logFile = join(i.jobDir, `verify-${name}.log`);
     const left = remaining();
     if (left <= 0) {
