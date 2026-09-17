@@ -920,19 +920,11 @@ Tu n'as qu'un outil : la commande `sisyphe jira`. Aucune autre commande ne passe
 | `sisyphe jira show IOS-886` | Le ticket : titre, statut courant, type, versions, description, commentaires. |
 | `sisyphe jira transitions IOS-886` | Les statuts atteignables **depuis le statut courant**, avec leur id. |
 | `sisyphe jira transition IOS-886 "En relecture"` | Va jusqu'à ce statut, en enchaînant les étapes s'il le faut. |
-| `sisyphe jira comment IOS-886` | Poste un commentaire ; le corps se passe sur l'entrée standard. |
 | `sisyphe jira assign IOS-886 --back` | Rend le ticket à la personne qui l'a confié à Sisyphe. |
 | `sisyphe jira get /rest/api/3/...` | N'importe quelle lecture de l'API Jira, pour ce que le reste ne dit pas. |
 
-Un commentaire se poste ainsi :
-
-```bash
-sisyphe jira comment IOS-886 <<'FIN'
-🪨 PR prête : https://github.com/acme/ios/pull/412
-
-Coût estimé : $0.42 · Durée : 6 min · Tentatives : 1
-FIN
-```
+Aucun enchaînement n'est possible : pas de `;`, pas de `|`, pas de `&&`, pas de redirection. Une commande par
+appel. C'est pour cela que le commentaire ne se poste pas par la ligne de commande — voir plus bas.
 
 ## Les transitions
 
@@ -960,6 +952,10 @@ Le résultat du job t'est donné dans le prompt. En fonction :
 - **Job annulé** → `assign --back`, commentaire court.
 
 ## Le commentaire
+
+Tu ne le postes pas toi-même : tu l'écris dans le champ `comment` de ton rapport JSON, et Sisyphe le pose.
+C'est le seul moyen d'avoir un texte sur plusieurs lignes — la ligne de commande n'en accepte aucune.
+Un `comment` vide veut dire « ne rien poster », et Sisyphe posera alors son propre message de secours.
 
 Il est lu par la personne qui a signalé le problème, pas par un développeur qui relira les logs.
 
@@ -1026,6 +1022,12 @@ export function agentPluginPath(): string {
 
 Run: `npx vitest run src/agent/plugin-path.test.ts`
 Expected: PASS. Si le chemin est faux, corriger le nombre de `..` selon l'emplacement réel de `dist/agent/`.
+
+**Vérifié en Task 0 :** le nom qualifié `<plugin>:<skill>` est la forme qui marche — d'où `sisyphe:sisyphe-jira`,
+et non `sisyphe-jira` comme l'écrit la §3.4 de la spec. Le champ `skills` du message `init` liste les skills
+*découverts*, pas les skills *autorisés* : il est identique avec et sans l'option `skills`. Ne pas s'en servir
+pour juger que l'allowlist fonctionne — elle fonctionne, mais ça se vérifie en demandant à l'agent d'invoquer
+un skill absent de la liste, pas en lisant `init`.
 
 - [ ] **Step 7 : commit**
 
@@ -1104,7 +1106,12 @@ Dans `src/agent/schemas.ts` :
 ```typescript
 export const JiraSyncReportSchema = z.object({
   status: z.string().describe("Statut Jira dans lequel le ticket a été laissé ; chaîne vide si aucune transition n'a eu lieu"),
-  commented: z.boolean().describe('Un commentaire a-t-il été posté sur le ticket'),
+  /**
+   * Le texte, pas un booléen : le garde-fou Bash interdit toute redirection, donc un corps sur plusieurs
+   * lignes ne peut pas passer par la ligne de commande. L'agent l'écrit ici, le pipeline le poste. Vide =
+   * rien à dire, et le pipeline posera son message de secours.
+   */
+  comment: z.string().describe('Le commentaire à poster sur le ticket, en markdown ; chaîne vide pour ne rien poster'),
   handedBack: z.boolean().describe("Le ticket a-t-il été rendu à la personne qui l'avait confié à Sisyphe"),
   note: z.string().describe("Ce qui n'a pas pu être fait, en une phrase ; chaîne vide si tout s'est bien passé"),
 });
@@ -1197,7 +1204,7 @@ export interface JiraSyncDeps {
   model?: string;
 }
 
-const EMPTY: JiraSyncReport = { status: '', commented: false, handedBack: false, note: 'aucun rapport produit' };
+const EMPTY: JiraSyncReport = { status: '', comment: '', handedBack: false, note: 'aucun rapport produit' };
 
 /**
  * Un tour d'agent, un seul outil. Ne lève jamais : le filet du pipeline s'appuie sur ce qu'elle rend, et
@@ -1253,13 +1260,12 @@ Dans `src/agent/sdk-runner.ts`, `buildOptions`, ajouter :
 Dans `src/agent/cli/claude-code-runner.ts`, `buildCliArgs`, ajouter avant `--append-system-prompt-file` :
 
 ```typescript
-  if (o.skills?.length) {
-    args.push('--plugin-dir', agentPluginPath());
-    for (const s of o.skills) args.push('--skill', s);
-  }
+  // La CLI n'a pas d'équivalent de l'option `skills` du SDK (vérifié en Task 0 : ni --skills, ni
+  // --allowed-skills). Elle n'en a pas besoin ici : `--setting-sources ''` coupe toute autre source, donc
+  // seuls les skills de ce plugin existent pour l'agent. Le filtrage au cas par cas, s'il devenait utile,
+  // passerait par `--disallowedTools 'Skill(<plugin>:<skill>)'`, qui refuse bien l'invocation.
+  if (o.skills?.length) args.push('--plugin-dir', agentPluginPath());
 ```
-
-Si le drapeau `--skill` n'existe pas sur la CLI (le vérifier avec `claude -p --help`), se contenter de `--plugin-dir` : le skill est alors découvert et l'agent l'invoque depuis le prompt, qui le nomme explicitement.
 
 - [ ] **Step 7 : ajouter la phase au modèle**
 
@@ -1308,10 +1314,10 @@ dont la sortie a la forme d'un `JiraSyncReport`. C'est la première chose à fai
 Ajouter en tête de `test/integration/jira-pipeline.test.ts` :
 
 ```typescript
-/** Ce que la phase `jira` rend quand elle a fait son travail. */
-const jiraOk = { status: 'En relecture', commented: true, handedBack: false, note: '' };
+/** Ce que la phase `jira` rend quand elle a fait son travail : elle a transitionné et rédigé son texte. */
+const jiraOk = { status: 'En relecture', comment: '🪨 PR prête : https://example.test/pr/1', handedBack: false, note: '' };
 /** Ce qu'elle rend quand elle n'a rien pu faire : c'est le cas que le filet doit rattraper. */
-const jiraMuet = { status: '', commented: false, handedBack: false, note: 'coincé' };
+const jiraMuet = { status: '', comment: '', handedBack: false, note: 'coincé' };
 ```
 
 puis les tests :
@@ -1344,17 +1350,19 @@ puis les tests :
     expect(j.state.comments.join('\n')).toContain('🪨');
   });
 
-  it('ne double pas le commentaire quand la phase jira en a posté un', async () => {
+  it('poste le texte rédigé par la phase jira, et lui seul', async () => {
     const j = fakeJira();
     const h = await harnessOn(j.tracker, [
       { output: readyVerdict },
       { output: report('Créé'), sideEffect: writeFeature('hello\n') },
-      { output: jiraOk, sideEffect: async () => { j.state.comments.push('🪨 PR prête : …'); } },
+      { output: jiraOk },
     ], ['release/8.42.0']);
     const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
     await runJob(job.id, h.deps, signal());
 
+    // Un seul commentaire, et c'est celui de l'agent : le message scripté ne doit pas s'y ajouter.
     expect(j.state.comments).toHaveLength(1);
+    expect(j.state.comments[0]).toContain('https://example.test/pr/1');
   });
 ```
 
@@ -1441,9 +1449,10 @@ et ajouter, juste au-dessus :
       const still = await source.canTrigger(issueRef).catch(() => ({ ok: false, login: null }));
       if (still.ok) await source.removeTriggerLabel(issueRef).catch((err) => log.warn({ err }, 'ticket non rendu'));
     }
-    if (!report.commented) {
-      await source.comment(issueRef, scriptedComment(state, finished)).catch((err) => log.warn({ err }, 'commentaire de secours non posté'));
-    }
+    // L'agent rédige, le pipeline poste : c'est le seul chemin, et il garantit qu'un job terminé laisse
+    // toujours une trace — texte de l'agent s'il en a écrit un, message scripté sinon.
+    const body = report.comment.trim() || scriptedComment(state, finished);
+    await source.comment(issueRef, body).catch((err) => log.warn({ err }, 'commentaire de fin non posté'));
   };
 ```
 
@@ -1466,6 +1475,12 @@ function statusFor(state: JobState): StatusLabel | null {
   return null;
 }
 ```
+
+**Le répertoire du job doit exister avant la première sortie possible.** `await mkdir(dir, { recursive: true })`
+est aujourd'hui après `signal.throwIfAborted()` et après la transition vers `triaging` : une annulation au
+tout début atteint le `catch` avec un `dir` inexistant, et la phase `jira` échoue en ENOENT sur l'écriture de
+son transcript. Hisser le `mkdir` au-dessus du premier `throwIfAborted()`, avant le `try`. Constaté en Task 7,
+qui a un test du cas dégradé — mais dégrader ici veut dire perdre la clôture Jira, pas un détail.
 
 **Deux variables à sortir du `try`.** `closeTicket` est appelée depuis les sorties les plus précoces comme
 depuis le `catch` ; ce qu'elle lit doit exister avant elles :

@@ -70,7 +70,9 @@ export interface Job {
   updatedAt: string;
 }
 
-export type PhaseName = 'triage' | 'implement' | 'verify' | 'deliver';
+/** Le CHECK de la table `phases` doit suivre cette liste : un nom absent du SQL fait échouer `phases.start`. */
+export const PHASE_NAMES = ['triage', 'implement', 'verify', 'deliver', 'jira'] as const;
+export type PhaseName = (typeof PHASE_NAMES)[number];
 export type PhaseOutcome = 'success' | 'failure';
 
 export interface Phase {

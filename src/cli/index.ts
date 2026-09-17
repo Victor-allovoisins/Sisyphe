@@ -2,6 +2,7 @@
 import { Command, Option } from 'commander';
 import { cancelCommand } from './commands/cancel.js';
 import { doctorCommand } from './commands/doctor.js';
+import { jiraCommand } from './commands/jira.js';
 import { logsCommand } from './commands/logs.js';
 import { reportCommand } from './commands/report.js';
 import { serviceCommand } from './commands/service.js';
@@ -12,7 +13,7 @@ import { uiCommand } from './commands/ui.js';
 import { DEFAULT_UI_PORT } from '../ui/server.js';
 
 /** Les seules valeurs que produit réellement le pipeline (voir jobs/pipeline.ts, verify/verify.ts) : pas de phase `deliver` (elle n'écrit pas de fichier dédié dans le jobDir). */
-const PHASES = ['triage', 'implement', 'setup', 'verify'] as const;
+const PHASES = ['triage', 'implement', 'setup', 'verify', 'jira'] as const;
 
 const program = new Command('sisyphe')
   .description('Transforme des issues GitHub en pull requests avec un agent Claude')
@@ -24,7 +25,7 @@ program
   .command('logs')
   .description("Transcript et logs d'un job")
   .argument('<jobId>', 'id complet ou préfixe')
-  .addOption(new Option('--phase <name>', 'triage | implement | setup | verify').choices(PHASES))
+  .addOption(new Option('--phase <name>', 'triage | implement | setup | verify | jira').choices(PHASES))
   .option('--raw', 'fichiers bruts')
   .action(logsCommand);
 program
@@ -44,6 +45,12 @@ program
   .description("Annule un job actif : via le daemon s'il tourne, sinon en retirant le label trigger")
   .argument('<jobId>')
   .action(cancelCommand);
+program
+  .command('jira')
+  .description('Lit et pilote un ticket Jira : show, transitions, transition, comment, assign, get')
+  .argument('<args...>', 'verbe et ses arguments')
+  .allowUnknownOption()
+  .action((args: string[]) => jiraCommand(args));
 program.command('doctor').description("Vérifie l'installation").action(doctorCommand);
 program
   .command('setup')

@@ -7,6 +7,7 @@ import { AmbiguousJobPrefixError, findJob } from '../cli/resolve-job.js';
 import { effectiveDailyBudget, type AgentBackend, type MachineConfig } from '../config/machine.js';
 import { jobDir, type DataPaths } from '../config/paths.js';
 import { DaemonUnreachableError } from '../daemon/control-client.js';
+import { browseUrl } from '../jira/links.js';
 import type { DaemonStatus, RestartRequiredField } from '../daemon/control-types.js';
 import { readLock } from '../daemon/lock.js';
 import type { ActionRow, ActionStore } from '../store/actions.js';
@@ -273,7 +274,7 @@ export function jiraLinksOf(machine: Pick<MachineConfig, 'jira'>): JiraLinks | n
  */
 export function issueUrlOf(links: JiraLinks | null, repo: string, issueNumber: number): string {
   const key = links?.keys[repo];
-  if (links && key) return `https://${links.site}/browse/${key}-${issueNumber}`;
+  if (links && key) return browseUrl(links.site, `${key}-${issueNumber}`);
   return `https://github.com/${repo}/issues/${issueNumber}`;
 }
 

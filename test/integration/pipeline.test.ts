@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import pino from 'pino';
 import { describe, expect, it } from 'vitest';
 import { jobDir } from '../../src/config/paths.js';
 import { runJob } from '../../src/jobs/pipeline.js';
@@ -45,6 +46,15 @@ describe('runJob', () => {
     expect(h.agent.calls[1].disallowedTools).toContain('Bash(git push:*)');
     expect(h.agent.calls[1].pathGuard).toEqual({ worktreePath: h.agent.calls[1].cwd, protectedPatterns: ['secrets/**'] });
     expect(h.agent.calls[1].prompt).toContain('1. créer src/feature.txt');
+  });
+
+  it('sous suivi GitHub, aucune phase jira : le chemin scripté reste en place', async () => {
+    const h = await makeHarness({ steps: [{ output: readyVerdict }, { output: report('Créé'), sideEffect: writeFeature('hello\n') }] });
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    const done = await runJob(job.id, h.deps, signal());
+
+    expect(done.state).toBe('done');
+    expect(h.deps.phases.listForJob(job.id).map((p) => p.name)).not.toContain('jira');
   });
 
   it('agentBackend codex : le runner reçoit le modèle surchargé par phase ; la phase garde le modèle sisyphe.yml', async () => {
@@ -96,6 +106,28 @@ describe('runJob', () => {
     expect(h.source.pulls).toHaveLength(0);
     expect(h.agent.calls).toHaveLength(1);
     expect(existsSync(done.worktreePath!)).toBe(false);
+  });
+
+  it('le chemin scripté loggue ses échecs de clôture au lieu de les avaler', async () => {
+    const h = await makeHarness({ steps: [{ output: { ...readyVerdict, verdict: 'needs_clarification', questions: ['Quel écran ?'] } }] });
+    const lines: string[] = [];
+    h.deps.log = pino({ level: 'warn' }, { write: (s) => { lines.push(s); } });
+    h.source.comment = async () => { throw new Error('502 Bad Gateway'); };
+    // Seule la pose du statut de fin tombe : `in-progress`, posé à l'ouverture du job, garde son
+    // comportement — le faire échouer ferait échouer le job avant même d'arriver à la clôture.
+    const setStatus = h.source.setStatus.bind(h.source);
+    h.source.setStatus = async (ref, status) => {
+      if (status === 'in-progress') return setStatus(ref, status);
+      throw new Error('502 Bad Gateway');
+    };
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    const done = await runJob(job.id, h.deps, signal());
+
+    // Une clôture ratée ne fait pas échouer le job, mais elle laisse une trace : sans commentaire ni label,
+    // l'issue reste muette et personne ne saurait pourquoi.
+    expect(done.state).toBe('blocked');
+    expect(lines.join('\n')).toContain('commentaire de fin non posté');
+    expect(lines.join('\n')).toContain('statut de fin non posé');
   });
 
   it('retry : la seconde tentative reprend la session avec le log d’échec', async () => {

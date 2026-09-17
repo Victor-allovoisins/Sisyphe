@@ -2,7 +2,15 @@ import { readFile } from 'node:fs/promises';
 import type { Logger } from 'pino';
 import type { MachineConfig } from '../config/machine.js';
 import { withRetry, type RetryOptions } from '../github/retry.js';
-import type { Issue, IssueRef, IssueTracker, RepoRef, StatusLabel, TriggerCheck } from '../github/source.js';
+import {
+  parseRepo,
+  type Issue,
+  type IssueRef,
+  type IssueTracker,
+  type RepoRef,
+  type StatusLabel,
+  type TriggerCheck,
+} from '../github/source.js';
 import { adfToMarkdown } from './adf.js';
 import { markdownToAdf } from './to-adf.js';
 import { walkTo, type JiraTransition } from './transitions.js';
@@ -79,10 +87,14 @@ export function jqlQuote(v: string): string {
  */
 export class JiraIssueTracker implements IssueTracker {
   private readonly byRepo = new Map<string, JiraProject>();
+  private readonly byKey = new Map<string, JiraProject>();
   private readonly auth: string;
 
   constructor(private readonly cfg: JiraClientConfig) {
-    for (const p of cfg.projects) this.byRepo.set(p.repo, p);
+    for (const p of cfg.projects) {
+      this.byRepo.set(p.repo, p);
+      this.byKey.set(p.key, p);
+    }
     this.auth = `Basic ${Buffer.from(`${cfg.email}:${cfg.apiToken}`).toString('base64')}`;
   }
 
@@ -110,6 +122,19 @@ export class JiraIssueTracker implements IssueTracker {
    */
   private key(ref: IssueRef): string {
     return `${this.project(ref.repo).key}-${ref.number}`;
+  }
+
+  /**
+   * Le chemin inverse de `key()` : la CLI reçoit `IOS-886`, le reste du code travaille en `IssueRef`.
+   * Un projet inconnu est une erreur de configuration, pas un cas courant — on le dit plutôt que de deviner.
+   */
+  refFromKey(key: string): IssueRef {
+    const number = numberFromKey(key);
+    const prefix = key.slice(0, key.lastIndexOf('-'));
+    if (number === null || !prefix) throw new Error(`Clé Jira invalide : ${key} (attendu PROJET-123)`);
+    const project = this.byKey.get(prefix);
+    if (!project) throw new Error(`Aucun projet Jira configuré pour la clé ${key}`);
+    return { repo: parseRepo(project.repo), number };
   }
 
   private async request<T>(method: string, path: string, body?: unknown, opts?: RetryOptions): Promise<T> {
@@ -312,6 +337,50 @@ export class JiraIssueTracker implements IssueTracker {
         await this.request('POST', `/rest/api/3/issue/${encodeURIComponent(key)}/transitions`, { transition: { id } }, { retryOnError: false });
       },
     });
+  }
+
+  /** Les transitions disponibles depuis le statut courant. Ce que `walkTo` consomme, exposé pour la CLI. */
+  async listTransitions(ref: IssueRef): Promise<JiraTransition[]> {
+    const r = await this.request<{ transitions?: JiraTransition[] }>(
+      'GET',
+      `/rest/api/3/issue/${encodeURIComponent(this.key(ref))}/transitions`,
+    );
+    return r.transitions ?? [];
+  }
+
+  /**
+   * Lecture brute de l'API Jira, pour ce que les verbes fixes ne couvrent pas. Strictement un GET sous
+   * `/rest/api/` : c'est la frontière entre « l'agent peut tout lire » et « l'agent peut écrire », et elle
+   * est tenue ici, pas dans la CLI — une deuxième porte d'entrée finirait par ne pas vérifier la même chose.
+   *
+   * La frontière se juge sur l'URL **normalisée**, jamais sur la chaîne reçue : c'est `fetch` qui parse, et
+   * le parseur WHATWG résout aussi les remontées écrites en pourcent — `/rest/api/.%2e/.%2e/wiki/rest/api/…`
+   * sort sur `/wiki/…`, c'est-à-dire Confluence, avec le jeton du compte dédié. On construit donc l'URL comme
+   * `request` le fera, on juge l'hôte et le chemin obtenus, et c'est ce chemin normalisé qu'on transmet : le
+   * vérifié et l'appelé sont alors le même.
+   */
+  async get<T = unknown>(path: string): Promise<T> {
+    const refuse = (): never => {
+      throw new Error(`Chemin refusé : ${path} (attendu un chemin de lecture sous /rest/api/)`);
+    };
+    let url: URL;
+    let base: URL;
+    try {
+      base = new URL(`https://${this.cfg.site}/`);
+      url = new URL(`https://${this.cfg.site}${path}`);
+    } catch {
+      return refuse();
+    }
+    // L'hôte compte autant que le chemin : un `path` sans `/` initial le déplace (`evil.com/x` donne
+    // `…atlassian.netevil.com`), et un `@` y logerait une tout autre autorité.
+    //
+    // `%2f`/`%5c` (les deux casses) restent un reste étroit : le parseur WHATWG ne les décode pas en `/` ou
+    // `\`, donc `..%2f..%2fwiki/rest/api/…` reste sous `/rest/api/` et passe les deux contrôles ci-dessus —
+    // mais rien ne dit comment le routeur d'Atlassian les décodera avant de router, et le garde ne doit pas
+    // reposer sur cette hypothèse-là. On les refuse donc explicitement, sur `pathname` seul : `search` — où
+    // vit un JQL légitimement porteur de `..` — n'est pas concerné.
+    if (url.origin !== base.origin || !url.pathname.startsWith('/rest/api/') || /%2f|%5c/i.test(url.pathname)) return refuse();
+    return this.request<T>('GET', url.pathname + url.search);
   }
 
   /**

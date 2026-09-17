@@ -1,7 +1,8 @@
 import { query as sdkQuery, type Options, type SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
 import { appendFile } from 'node:fs/promises';
 import { zeroUsage, type AgentUsage } from '../store/types.js';
-import { pathGuardHook } from './hooks.js';
+import { bashGuardHook, pathGuardHook } from './hooks.js';
+import { agentPluginPath, toolsWithSkill } from './plugin-path.js';
 import type { AgentResult, AgentRunOptions, AgentRunner, AgentStopReason } from './runner.js';
 
 /**
@@ -25,6 +26,14 @@ export const SANDBOX_ALLOWED_DOMAINS = [
   'registry.npmjs.org', 'cdn.cocoapods.org', 'repo1.maven.org', 'dl.google.com', 'services.gradle.org',
 ];
 
+/** Les hooks PreToolUse du run : garde de chemins pour les écritures, garde Bash pour la phase `jira`. */
+function buildHooks(o: AgentRunOptions): Options['hooks'] {
+  const entries: NonNullable<Options['hooks']>['PreToolUse'] = [];
+  if (o.pathGuard) entries.push({ matcher: 'Edit|Write', hooks: [pathGuardHook(o.pathGuard.worktreePath, o.pathGuard.protectedPatterns)] });
+  if (o.bashGuard) entries.push({ matcher: 'Bash', hooks: [bashGuardHook()] });
+  return entries.length ? { PreToolUse: entries } : undefined;
+}
+
 export function buildOptions(o: AgentRunOptions, cfg: SdkRunnerConfig, controller: AbortController, onStderr: (data: string) => void): Options {
   return {
     cwd: o.cwd,
@@ -33,14 +42,18 @@ export function buildOptions(o: AgentRunOptions, cfg: SdkRunnerConfig, controlle
     settingSources: [],
     managedSettings: { strictPluginOnlyCustomization: ['hooks', 'mcp'] },
     permissionMode: 'dontAsk',
-    tools: o.allowedTools,
+    // `tools` est le jeu d'outils qui existent, `allowedTools` ceux qui sont auto-approuvés : seul le
+    // premier gagne `Skill` quand des skills sont demandés. Voir `toolsWithSkill`.
+    tools: toolsWithSkill(o),
     allowedTools: o.allowedTools,
     disallowedTools: o.disallowedTools,
     maxTurns: o.maxTurns,
     maxBudgetUsd: o.maxBudgetUsd,
     outputFormat: o.outputSchema ? { type: 'json_schema', schema: o.outputSchema } : undefined,
     resume: o.resumeSessionId,
-    hooks: o.pathGuard ? { PreToolUse: [{ matcher: 'Edit|Write', hooks: [pathGuardHook(o.pathGuard.worktreePath, o.pathGuard.protectedPatterns)] }] } : undefined,
+    plugins: o.skills?.length ? [{ type: 'local', path: agentPluginPath() }] : undefined,
+    skills: o.skills,
+    hooks: buildHooks(o),
     abortController: controller,
     env: o.env,
     // `enabled: true` implique failIfUnavailable : sur une plateforme sans sandbox, échec explicite plutôt que dégradation silencieuse.

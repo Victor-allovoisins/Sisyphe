@@ -3,6 +3,7 @@ import { stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { zeroUsage } from '../../store/types.js';
+import { agentPluginPath, toolsWithSkill } from '../plugin-path.js';
 import type { AgentResult, AgentRunOptions, AgentRunner } from '../runner.js';
 import { summarizeResult } from '../sdk-runner.js';
 import { callSlug, runCliProcess } from './process.js';
@@ -15,7 +16,8 @@ import { callSlug, runCliProcess } from './process.js';
  *   (ni hooks perso, ni CLAUDE.md du repo — le CLAUDE.md est injecté par Sisyphe dans le system prompt) ;
  * - `--tools` (liste blanche stricte) doublé de `--allowedTools` (auto-approbation) et `--disallowedTools` ;
  * - `--permission-mode dontAsk --permission-prompts none` : rien ne peut demander une validation humaine ;
- * - `--settings` : le seul hook PreToolUse autorisé est le garde-fou de chemins de Sisyphe.
+ * - `--settings` : les seuls hooks PreToolUse autorisés sont les garde-fous de Sisyphe (chemins, et Bash
+ *   pour la phase `jira`).
  * Le cycle de vie du sous-processus (groupe détaché, timeout, kill) est dans `runCliProcess`.
  *
  * La parité avec le backend SDK n'est pas totale : il n'y a pas d'équivalent en ligne de commande de
@@ -28,6 +30,8 @@ export interface CliRunnerConfig {
   claudeBin?: string;
   /** Script Node du hook de garde. Défaut : `path-guard-cli.js` dans `dist/agent/` (un niveau au-dessus). */
   hookScript?: string;
+  /** Script Node du garde-fou Bash. Défaut : `bash-guard-cli.js`, à côté du précédent. */
+  bashHookScript?: string;
 }
 
 const HOOK_TIMEOUT_SECONDS = 15;
@@ -37,17 +41,14 @@ const HOOK_TIMEOUT_SECONDS = 15;
  * sous launchd le PATH est minimal, et un hook qui ne démarre pas sort en 1, ce que Claude Code traite
  * comme une erreur NON bloquante — le garde-fou disparaîtrait en silence.
  */
-export function buildCliSettings(hookScript: string, nodeBin: string = process.execPath): Record<string, unknown> {
-  return {
-    hooks: {
-      PreToolUse: [
-        {
-          matcher: 'Edit|Write',
-          hooks: [{ type: 'command', command: `"${nodeBin}" "${hookScript}"`, timeout: HOOK_TIMEOUT_SECONDS }],
-        },
-      ],
-    },
-  };
+export function buildCliSettings(hookScript: string, nodeBin: string = process.execPath, bashHookScript?: string): Record<string, unknown> {
+  const preToolUse: unknown[] = [
+    { matcher: 'Edit|Write', hooks: [{ type: 'command', command: `"${nodeBin}" "${hookScript}"`, timeout: HOOK_TIMEOUT_SECONDS }] },
+  ];
+  if (bashHookScript) {
+    preToolUse.push({ matcher: 'Bash', hooks: [{ type: 'command', command: `"${nodeBin}" "${bashHookScript}"`, timeout: HOOK_TIMEOUT_SECONDS }] });
+  }
+  return { hooks: { PreToolUse: preToolUse } };
 }
 
 export function buildCliArgs(o: AgentRunOptions, files: { appendPath: string; settingsPath?: string }): string[] {
@@ -64,14 +65,20 @@ export function buildCliArgs(o: AgentRunOptions, files: { appendPath: string; se
   ];
   if (files.settingsPath) args.push('--settings', files.settingsPath);
   // `--tools ""` est la façon documentée de n'autoriser aucun outil : une liste vide ne doit pas
-  // faire disparaître le drapeau, ce serait « tous les outils ».
-  args.push('--tools', ...(o.allowedTools.length ? o.allowedTools : ['']));
+  // faire disparaître le drapeau, ce serait « tous les outils ». `Skill` s'ajoute ici et pas à
+  // `--allowedTools`, qui reste la liste demandée par l'appelant (voir `toolsWithSkill`).
+  const tools = toolsWithSkill(o);
+  args.push('--tools', ...(tools.length ? tools : ['']));
   if (o.allowedTools.length) args.push('--allowedTools', ...o.allowedTools);
   if (o.disallowedTools.length) args.push('--disallowedTools', ...o.disallowedTools);
   // Absent = la CLI choisit son modèle par défaut.
   if (o.model !== undefined) args.push('--model', o.model);
   args.push('--max-turns', String(o.maxTurns));
   args.push('--max-budget-usd', String(o.maxBudgetUsd));
+  // La CLI n'a pas d'équivalent de l'option `skills` du SDK (vérifié : ni --skills, ni --allowed-skills).
+  // Elle n'en a pas besoin ici : `--setting-sources ''` coupe toute autre source, donc seuls les skills de
+  // ce plugin existent pour l'agent.
+  if (o.skills?.length) args.push('--plugin-dir', agentPluginPath());
   args.push('--append-system-prompt-file', files.appendPath);
   if (o.outputSchema) args.push('--json-schema', JSON.stringify(o.outputSchema));
   if (o.resumeSessionId) args.push('--resume', o.resumeSessionId);
@@ -87,10 +94,12 @@ function asResultMessage(raw: Record<string, unknown>): SDKResultMessage {
 export class ClaudeCodeAgentRunner implements AgentRunner {
   private readonly claudeBin: string;
   private readonly hookScript: string;
+  private readonly bashHookScript: string;
 
   constructor(cfg: CliRunnerConfig = {}) {
     this.claudeBin = cfg.claudeBin ?? 'claude';
     this.hookScript = cfg.hookScript ?? fileURLToPath(new URL('../path-guard-cli.js', import.meta.url));
+    this.bashHookScript = cfg.bashHookScript ?? fileURLToPath(new URL('../bash-guard-cli.js', import.meta.url));
   }
 
   async run<T>(o: AgentRunOptions): Promise<AgentResult<T>> {
@@ -101,11 +110,14 @@ export class ClaudeCodeAgentRunner implements AgentRunner {
 
     // Un hook qui ne démarre pas sort en 1, ce que Claude Code traite comme une erreur NON bloquante :
     // un dist incomplet donnerait un agent silencieusement non gardé. Mieux vaut ne pas lancer du tout.
-    if (o.pathGuard) {
+    // Le fichier de settings référence toujours le garde de chemins, donc il est vérifié dès qu'un garde
+    // est demandé — pas seulement quand c'est celui-là.
+    const guarded = Boolean(o.pathGuard || o.bashGuard);
+    for (const script of [...(guarded ? [this.hookScript] : []), ...(o.bashGuard ? [this.bashHookScript] : [])]) {
       try {
-        await stat(this.hookScript);
+        await stat(script);
       } catch {
-        throw new Error(`Garde-fou introuvable (${this.hookScript}) : run refusé plutôt que non gardé.`);
+        throw new Error(`Garde-fou introuvable (${script}) : run refusé plutôt que non gardé.`);
       }
     }
 
@@ -114,9 +126,13 @@ export class ClaudeCodeAgentRunner implements AgentRunner {
     const appendPath = join(dir, `system-append-${slug}.md`);
     await writeFile(appendPath, o.systemPromptAppend);
     let settingsPath: string | undefined;
-    if (o.pathGuard) {
+    // `bashGuard` sans `pathGuard` doit écrire le fichier quand même, sinon `--settings` disparaît et
+    // avec lui le garde Bash. L'entrée Edit|Write reste présente : privée de SISYPHE_GUARD_WORKTREE,
+    // elle refuse toute écriture — ce qui est le bon sens pour une phase qui n'écrit pas de fichier.
+    if (guarded) {
       settingsPath = join(dir, `cli-settings-${slug}.json`);
-      await writeFile(settingsPath, `${JSON.stringify(buildCliSettings(this.hookScript), null, 2)}\n`);
+      const settings = buildCliSettings(this.hookScript, process.execPath, o.bashGuard ? this.bashHookScript : undefined);
+      await writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
     }
 
     // o.env est déjà l'environnement épuré de l'agent (HOME et PATH compris : `claude` en a besoin

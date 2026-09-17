@@ -1,10 +1,11 @@
 import { existsSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { ACTION_OUTCOMES, ACTION_SOURCES } from './actions.js';
-import { JOB_STATES, TERMINAL_STATES } from './types.js';
+import { JOB_STATES, PHASE_NAMES, TERMINAL_STATES } from './types.js';
 
 export const sqlList = (values: Iterable<string>) => [...values].map((s) => `'${s}'`).join(',');
 const STATES = sqlList(JOB_STATES);
+const PHASE_NAMES_SQL = sqlList(PHASE_NAMES);
 const TERMINALS = sqlList(TERMINAL_STATES);
 const ACTION_SOURCES_SQL = sqlList(ACTION_SOURCES);
 const ACTION_OUTCOMES_SQL = sqlList(ACTION_OUTCOMES);
@@ -81,6 +82,33 @@ const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX actions_at ON actions(at);
   CREATE INDEX actions_job ON actions(job_id);
+  `,
+  // La phase `jira` s'ajoute à PHASE_NAMES : SQLite ne modifie pas un CHECK en place, il faut reconstruire
+  // la table. Aucune autre table ne référence `phases`, le DROP est donc sans effet de bord ; les index,
+  // eux, disparaissent avec elle et sont recréés à l'identique.
+  `
+  CREATE TABLE phases_v3 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL REFERENCES jobs(id),
+    name TEXT NOT NULL CHECK (name IN (${PHASE_NAMES_SQL})),
+    attempt INTEGER NOT NULL,
+    model TEXT,
+    session_id TEXT,
+    cost_usd REAL NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    num_turns INTEGER NOT NULL DEFAULT 0,
+    stop_reason TEXT,
+    outcome TEXT CHECK (outcome IS NULL OR outcome IN ('success','failure')),
+    started_at TEXT NOT NULL,
+    finished_at TEXT
+  );
+  INSERT INTO phases_v3 SELECT * FROM phases;
+  DROP TABLE phases;
+  ALTER TABLE phases_v3 RENAME TO phases;
+  CREATE INDEX phases_job ON phases(job_id);
+  CREATE INDEX phases_finished ON phases(finished_at);
   `,
 ];
 
