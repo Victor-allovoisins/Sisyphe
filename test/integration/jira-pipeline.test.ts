@@ -252,6 +252,24 @@ describe('pipeline sur Jira', () => {
     expect(j.state.assignee).toBe(ACCOUNT);
   });
 
+  it('ne fait pas reculer un ticket déjà avancé au-delà du statut de relecture', async () => {
+    const j = fakeJira();
+    const h = await harnessOn(j.tracker, [
+      { output: readyVerdict },
+      { output: report('Créé'), sideEffect: writeFeature('hello\n') },
+      // La phase jira ne dit rien, mais le ticket a déjà avancé au-delà de `doneStatus` — mesuré : un ticket
+      // sur « Developpement fini », toujours assigné au compte dédié, l'état normal après une livraison.
+      { output: jiraMuet, sideEffect: async () => { j.state.status = 'Developpement fini'; } },
+    ], ['release/8.42.0']);
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    const done = await runJob(job.id, h.deps, signal());
+
+    expect(done.state).toBe('done');
+    // Le ticket ne recule pas vers « En relecture » : il reste où il était.
+    expect(j.state.status).toBe('Developpement fini');
+    expect(j.state.assignee).toBe(ACCOUNT);
+  });
+
   /**
    * Les trois façons dont le filet sautait quand il était du code en ligne, conditionné au rapport de
    * l'agent et hors de tout `finally`. Chacune a été mesurée sur le ticket : statut « En développement »,

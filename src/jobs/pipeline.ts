@@ -21,6 +21,7 @@ import { deliver } from '../deliver/deliver.js';
 import type { Git } from '../git/git.js';
 import { issueRefOf, type Forge, type Issue, type IssueTracker, type StatusLabel } from '../github/source.js';
 import { browseUrl } from '../jira/links.js';
+import { sameStatus } from '../jira/transitions.js';
 import type { ActionStore } from '../store/actions.js';
 import type { JobPatch, JobStore } from '../store/jobs.js';
 import type { PhaseFinish, PhaseStore } from '../store/phases.js';
@@ -156,7 +157,7 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
    * Phase `jira` puis filet. Trois invariants, et rien d'autre :
    * 1. un job non livré ne laisse jamais le ticket assigné au compte dédié ;
    * 2. un job terminé laisse toujours un commentaire ;
-   * 3. un job livré laisse toujours le ticket sur le statut de relecture.
+   * 3. un job livré, dont le ticket est resté sur le statut « en cours », ne reste pas bloqué là.
    *
    * Le filet tient dans le `finally`, et il n'interroge que Jira. Ni le rapport de l'agent ni même la bonne
    * fin de la phase ne le conditionnent : un agent qui affirme avoir rendu la main sans l'avoir fait, un
@@ -205,13 +206,29 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
         // rendre celui qui aurait dû l'être est précisément la panne silencieuse à empêcher.
         const still = await source.canTrigger(issueRef).catch(() => ({ ok: true, login: null }));
         if (still.ok) await source.removeTriggerLabel(issueRef).catch((err) => log.warn({ err }, 'ticket non rendu'));
-      } else if (await source.isStillActive(issueRef).catch(() => true)) {
-        // Livré : seul l'agent posait le statut de relecture, et une phase muette laissait le ticket en
-        // développement. La réconciliation le rattrape, mais au seul démarrage du daemon — des semaines, sur
-        // un service qui tourne. La marche de `setStatus` ne déplace pas un ticket déjà arrivé, et
-        // `isStillActive` écarte celui qu'un humain a repris ou fermé entre-temps : on ne le fait pas reculer.
-        // Le ticket reste assigné au compte dédié — un travail soumis à relecture n'est pas abandonné.
-        await source.setStatus(issueRef, 'done').catch((err) => log.warn({ err }, 'statut de relecture non posé'));
+      } else {
+        // Livré : seul l'agent posait le statut de relecture, et une phase muette laissait le ticket sur le
+        // statut « en cours ». La réconciliation le rattrape, mais au seul démarrage du daemon — des semaines,
+        // sur un service qui tourne (`releaseStaleInProgressLabels`, qui s'appuie sur la PR ouverte).
+        //
+        // Resserré sur ce statut précis, et non sur « pas encore terminé » : un ticket avancé *au-delà* de
+        // `doneStatus` — par exemple sur « Developpement fini », toujours assigné au compte dédié, l'état
+        // normal d'une livraison puisque le skill garde volontairement l'assignation — passait l'ancien garde
+        // (`isStillActive` : assigné au compte dédié et catégorie ≠ done, rien de plus précis), et
+        // `setStatus(ref, 'done')` l'aurait fait *reculer* : `walkTo` marche à l'envers dès que la cible
+        // précède le statut courant dans `statusesInOrder`.
+        //
+        // Sur incertitude (lecture Jira en échec, ou état vide), on ne bouge pas : `?? ''` ne peut jamais
+        // égaler `inProgressStatus`, donc l'échec et l'inconnu retombent tous deux sur « ne pas agir ».
+        // Contrairement au rendu ci-dessus — un PUT assignee, idempotent, où pencher vers l'action ne coûte
+        // rien — celui-ci déplace le ticket sur le board, et se tromper y coûte un recul ; un faux négatif,
+        // lui, n'est pas définitif : la réconciliation au prochain démarrage du daemon le rattrape tant qu'une
+        // PR reste ouverte.
+        const fresh = await source.getIssue(issueRef).catch(() => null);
+        const stillInProgress = fresh ? sameStatus(fresh.tracker?.status ?? '', project.inProgressStatus) : false;
+        if (stillInProgress) {
+          await source.setStatus(issueRef, 'done').catch((err) => log.warn({ err }, 'statut de relecture non posé'));
+        }
       }
       await source.comment(issueRef, body).catch((err) => log.warn({ err }, 'commentaire de fin non posté'));
     }
