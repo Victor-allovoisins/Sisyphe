@@ -44,6 +44,11 @@ export async function remoteCommitParents(remotePath: string, sha: string): Prom
   return r.stdout.trim().split(' ').slice(1);
 }
 
+export async function remoteCommitTree(remotePath: string, sha: string): Promise<string> {
+  const r = await execa('git', ['rev-parse', `${sha}^{tree}`], { cwd: remotePath });
+  return r.stdout.trim();
+}
+
 export async function remoteCommitMessage(remotePath: string, sha: string): Promise<string> {
   const r = await execa('git', ['log', '-1', '--format=%B', sha], { cwd: remotePath });
   return r.stdout.trim();

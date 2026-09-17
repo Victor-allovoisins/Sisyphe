@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { FakeIssueSource } from '../../test/fakes/fake-issue-source.js';
-import { createRemoteRepo, remoteBranchSha, remoteCommitMessage, remoteCommitParents, writeFiles } from '../../test/helpers/git-fixture.js';
+import { createRemoteRepo, remoteBranchSha, remoteCommitMessage, remoteCommitParents, remoteCommitTree, writeFiles } from '../../test/helpers/git-fixture.js';
 import { dataPaths } from '../config/paths.js';
 import { parseRepoConfig, type RepoConfig } from '../config/repo.js';
 import { Git } from '../git/git.js';
@@ -12,7 +12,7 @@ import { openDatabase } from '../store/db.js';
 import { JobStore } from '../store/jobs.js';
 import { emptyFlags, type Job } from '../store/types.js';
 import type { VerifyResult } from '../verify/verify.js';
-import { cleanTitle, commitMessage, deliver, prTitle, shouldBeDraft } from './deliver.js';
+import { buildCommitMessage, cleanTitle, commitMessage, deliver, prTitle, shouldBeDraft, type TicketRef } from './deliver.js';
 
 const REPO = 'acme/demo';
 const repo = parseRepo(REPO);
@@ -52,12 +52,22 @@ describe('deliver', () => {
     });
   }
 
-  const run = (job: ReturnType<typeof makeJob>, v: VerifyResult = verify, cfg: RepoConfig = config) =>
-    deliver({ job, issue: { repo, number: 7, title: 'Titre', body: '', author: 'alice', state: 'open', labels: [], comments: [] }, config: cfg, report, verify: v, phases: [], forge: source, git, worktreePath, baseBranch: cfg.baseBranch, pushUrl: remotePath, prTemplate: null, durationMs: 5000, ticket: null });
+  const run = (job: ReturnType<typeof makeJob>, v: VerifyResult = verify, cfg: RepoConfig = config, ticket: TicketRef | null = null) =>
+    deliver({ job, issue: { repo, number: 7, title: 'Titre', body: '', author: 'alice', state: 'open', labels: [], comments: [] }, config: cfg, report, verify: v, phases: [], forge: source, git, worktreePath, baseBranch: cfg.baseBranch, pushUrl: remotePath, prTemplate: null, durationMs: 5000, ticket });
+
+  /** Tête du distant, résolue une bonne fois : toutes les preuves de livraison se lisent là. */
+  const remoteHead = async () => {
+    const sha = await remoteBranchSha(remotePath, 'feature/issue-7-x');
+    if (!sha) throw new Error('branche absente du distant');
+    return sha;
+  };
+
+  const ticket: TicketRef = { key: 'IOS-887', url: 'https://acme.atlassian.net/browse/IOS-887' };
 
   it('pousse un commit squashé et ouvre la PR', async () => {
     const job = makeJob();
     const r = await run(job);
+    // Suivi GitHub : pas de clé pour la note de version, donc pas de commit de build — la tête reste le travail.
     expect(await remoteBranchSha(remotePath, 'feature/issue-7-x')).toBe(r.commitSha);
     expect(await remoteCommitMessage(remotePath, r.commitSha)).toBe(commitMessage(job, null));
     expect(await remoteCommitParents(remotePath, r.commitSha)).toEqual([baseSha]);
@@ -127,5 +137,51 @@ describe('deliver', () => {
     await run(makeJob(), verify, cfg);
     expect(source.pulls[0].labels).toEqual(['sisyphe', 'ios']);
     expect(source.pulls[0].reviewers).toEqual(['bob']);
+  });
+
+  it('pousse en tête un commit de build vide qui porte la note de version', async () => {
+    const job = makeJob();
+    const r = await run(job, verify, config, ticket);
+    const head = await remoteHead();
+    expect(head).not.toBe(r.commitSha);
+    expect(await remoteCommitMessage(remotePath, head)).toBe('!build IOS-887 — Titre');
+    expect(buildCommitMessage({ ...job, issueTitle: "Le texte des bandeaux de réabonnement s'affiche en jaune" }, ticket))
+      .toBe("!build IOS-887 — Le texte des bandeaux de réabonnement s'affiche en jaune");
+    // Vide : même arbre que le commit de travail, lui-même l'arbre vérifié — le diff de la PR est intact.
+    expect(await remoteCommitTree(remotePath, head)).toBe(await remoteCommitTree(remotePath, r.commitSha));
+    expect(await remoteCommitTree(remotePath, r.commitSha)).toBe(verify.treeSha);
+    expect(await remoteCommitParents(remotePath, head)).toEqual([r.commitSha]);
+    // Le message du commit de travail vivra pour toujours dans la branche de base : aucun marqueur de CI dedans.
+    expect(await remoteCommitMessage(remotePath, r.commitSha)).toBe(commitMessage(job, ticket));
+  });
+
+  it("une seconde livraison n'empile pas les commits de build", async () => {
+    const job = makeJob();
+    await run(job, verify, config, ticket);
+    const r = await run(store.update(job.id, { costUsd: 9 }), verify, config, ticket);
+    const head = await remoteHead();
+    expect(await remoteCommitMessage(remotePath, head)).toBe('!build IOS-887 — Titre');
+    // Deux commits au-dessus de la base, pas quatre : le commit de travail est toujours refait sur baseSha.
+    expect(await remoteCommitParents(remotePath, head)).toEqual([r.commitSha]);
+    expect(await remoteCommitParents(remotePath, r.commitSha)).toEqual([baseSha]);
+  });
+
+  it('pas de build quand la vérification a échoué', async () => {
+    const r = await run(makeJob({ verificationFailed: true }), verify, config, ticket);
+    expect(await remoteHead()).toBe(r.commitSha);
+    expect(await remoteCommitMessage(remotePath, r.commitSha)).not.toContain('!build');
+  });
+
+  it('pas de build quand le diff est volumineux', async () => {
+    const r = await run(makeJob(), { ...verify, flags: { ...verify.flags, largeDiff: true } }, config, ticket);
+    expect(await remoteHead()).toBe(r.commitSha);
+    expect(await remoteCommitMessage(remotePath, r.commitSha)).not.toContain('!build');
+  });
+
+  it('le brouillon réglé en config ne prive pas le dépôt de son build', async () => {
+    const cfg = parseRepoConfig('baseBranch: main\ncommands:\n  build: "true"\npr:\n  draft: true\n');
+    const r = await run(makeJob(), verify, cfg, ticket);
+    expect(r.draft).toBe(true);
+    expect(await remoteCommitMessage(remotePath, await remoteHead())).toBe('!build IOS-887 — Titre');
   });
 });
