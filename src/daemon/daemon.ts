@@ -1,7 +1,8 @@
+import { rm } from 'node:fs/promises';
 import type { Logger } from 'pino';
 import { diffMachineConfig } from '../config/diff.js';
 import { effectiveDailyBudget, loadMachineConfig, type MachineConfig } from '../config/machine.js';
-import { machineConfigPath } from '../config/paths.js';
+import { jobDir, machineConfigPath } from '../config/paths.js';
 import { renderBudgetPauseComment } from '../deliver/comments.js';
 import { issueRefOf, parseRepo, type Issue } from '../github/source.js';
 import { CANCELLED, SHUTDOWN, runJob, type PipelineDeps } from '../jobs/pipeline.js';
@@ -512,6 +513,38 @@ export class Daemon {
       // La clé est reprise du job relancé, jamais redéduite : relancer un job d'avant la bascule ne doit pas
       // lui coller la clé Jira que son dépôt porte aujourd'hui.
       return this.createLabelled({ repo: job.repo, issueNumber: job.issueNumber, issueTitle: job.issueTitle, issueKey: job.issueKey }, ref);
+    });
+  }
+
+  /**
+   * Supprime définitivement un job terminé : sa ligne, ses phases et son répertoire `jobs/<id>`
+   * (transcripts, diff, logs de vérification). Le ticket n'est jamais touché : on efface une trace locale,
+   * pas un travail. Les lignes du journal des actions qui désignent ce job restent, celle-ci comprise.
+   *
+   * Id complet exigé, comme `cancelJob` et `retryJob` : aucune commande de la socket ne passe par la
+   * résolution de préfixe de `findJob`, réservée à la CLI, et l'interface envoie l'id que le détail lui a donné.
+   */
+  deleteJob(jobId: string, source: ActionSource): Promise<CommandResult<Job>> {
+    return this.command('delete', source, async (ref) => {
+      ref.jobId = jobId;
+      const job = this.d.store.get(jobId);
+      if (!job) return { ok: false, error: `job inconnu : ${jobId}` };
+      ref.repo = job.repo;
+      ref.issueNumber = job.issueNumber;
+      // Un job en cours a un agent qui écrit dans son répertoire et un worktree ouvert : les deux
+      // resteraient orphelins. L'annulation, elle, sait arrêter tout cela proprement.
+      if (!isTerminal(job.state)) return { ok: false, error: `job en cours (${job.state}) : l'annuler d'abord, puis le supprimer` };
+      // Le pipeline passe le job terminal *avant* de clore le ticket, et cette clôture écrit encore dans le
+      // répertoire (phase `jira`). Un job peut donc être terminal et toujours en vol : supprimer sous lui
+      // ferait renaître le répertoire effacé.
+      if (this.running.has(jobId)) return { ok: false, error: 'clôture du job encore en cours : réessayer dans un instant' };
+      // Le disque avant la base : une base vidée sur un `rm` en échec laisserait un répertoire que plus
+      // rien ne nomme, invisible et jamais nettoyé. Dans l'autre sens, la ligne survit à un répertoire déjà
+      // parti — l'interface l'affiche sans ses fichiers, et refaire la suppression achève le travail.
+      await rm(jobDir(this.d.paths, jobId), { recursive: true, force: true });
+      this.d.store.delete(jobId);
+      this.log.info({ jobId, source }, 'job supprimé');
+      return { ok: true, result: job };
     });
   }
 

@@ -187,6 +187,7 @@ describe('runAction : validation', () => {
       ['cancel', {}],
       ['cancel', { jobId: '' }],
       ['retry', { jobId: 42 }],
+      ['delete', {}],
       ['enqueue', { repo: 'acme/demo' }],
       ['enqueue', { repo: 'acme/demo', issueNumber: 0 }],
       ['enqueue', { repo: 'acme/demo', issueNumber: '7' }],

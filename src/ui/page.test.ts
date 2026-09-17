@@ -46,6 +46,33 @@ function guards(jira: unknown): {
   return Function('ui', 'el', source)({ jira }, el);
 }
 
+interface FakeButton { cls: string | null; text: string; attrs: Record<string, string> }
+
+/**
+ * Le vrai `deleteButton` de la page, extrait puis exécuté : une suppression ne doit apparaître ni en
+ * lecture seule ni sur un job en cours, et un test qui chercherait la chaîne `destructive` dans le
+ * HTML resterait vert le jour où l'une des deux gardes disparaîtrait.
+ */
+function deleteButtonOf(readOnly: boolean): (job: { id: string; repo: string; issueNumber: number; issueKey: string | null; state: string }) => FakeButton | null {
+  const source = [
+    ...['REPO_RE', 'JIRA_SITE_RE', 'JIRA_KEY_RE', 'JIRA_ISSUE_KEY_RE', 'TERMINAL'].map(constSource),
+    ...['jiraSite', 'jiraKey', 'deducedKey', 'issueLabel', 'deleteButton'].map(fnSource),
+    'return function (job) { return deleteButton(job, \'small\'); };',
+  ].join('\n');
+  const el = (_tag: string, cls: string | null, text: string) => ({
+    cls,
+    text,
+    attrs: {} as Record<string, string>,
+    setAttribute(k: string, v: string) {
+      this.attrs[k] = v;
+    },
+    addEventListener() {
+      /* le clic a ses propres tests */
+    },
+  });
+  return Function('ui', 'el', source)({ readOnly, jira: null }, el);
+}
+
 describe('PAGE_HTML', () => {
   it('est une page HTML complète et autonome', () => {
     expect(PAGE_HTML.startsWith('<!doctype html>')).toBe(true);
@@ -327,6 +354,26 @@ jira:
     expect(PAGE_HTML).toContain('Arrêter le daemon ?');
     expect(PAGE_HTML).toContain('button.disabled = true;');
     expect(PAGE_HTML).toContain('button.disabled = false;');
+  });
+
+  it('offre Supprimer sur un job terminé, jamais sur un job en cours ni en lecture seule', () => {
+    const job = { id: 'j1', repo: 'acme/demo', issueNumber: 7, issueKey: null, state: 'done' };
+
+    expect(deleteButtonOf(true)(job)).toBeNull();
+    expect(deleteButtonOf(false)({ ...job, state: 'implementing' })).toBeNull();
+    const button = deleteButtonOf(false)(job);
+    expect(button).toMatchObject({ text: 'Supprimer', cls: 'action small destructive' });
+    expect(button?.attrs).toEqual({ 'data-action': 'delete', 'data-job': 'j1' });
+  });
+
+  it('nomme le ticket avant de supprimer, referme le panneau et se distingue d’Annuler', () => {
+    expect(PAGE_HTML).toContain('Supprimer définitivement le job ');
+    expect(PAGE_HTML).toContain("run(button, 'delete', { jobId: job.id }, question, closeDetail);");
+    // `danger` (Annuler) n'est qu'un liseré : la suppression, elle, ne se rattrape pas.
+    expect(PAGE_HTML).toContain('button.destructive {');
+    expect(PAGE_HTML).toContain('background: rgba(248, 81, 73, 0.18)');
+    // Rendu dans le seul panneau de détail : les cartes et les lignes du tableau ne l'appellent pas.
+    expect(PAGE_HTML.split("= deleteButton(job, 'small');").length - 1).toBe(2); // renderDetail et refreshDetail, rien d'autre
   });
 
   it('affiche un toast par résultat et le journal des actions', () => {
