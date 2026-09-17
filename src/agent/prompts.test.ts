@@ -77,6 +77,17 @@ describe('prompts', () => {
     // La promesse d'avant : un filet général, qui dispensait de juger la nature du changement.
     expect(p).not.toMatch(/reprend la main dès que le diff dément la prévision/);
   });
+  it('triagePrompt dispense d’écrire un test quand seule une valeur affichée change', () => {
+    const p = triagePrompt(issue, config);
+    // IOS-887 : le triage a demandé `test` parce qu'il avait décidé d'écrire un test de non-régression
+    // sur une couleur. La règle « prévoir un test oblige à demander test » était respectée ; ce qui
+    // manquait, c'est la consigne en amont — ce test-là n'attrape rien et coûte la suite entière.
+    expect(p).toMatch(/ne prévois pas d'écrire un test/);
+    expect(p).toMatch(/valeur affichée/);
+    // Le critère est la condition ou le calcul, pas « est-ce visuel » : un thème choisi par une enum
+    // reste de la logique, et mérite son test.
+    expect(p).toMatch(/condition.*calcul/);
+  });
   it('implementPrompt contient plan et commandes', () => {
     const p = implementPrompt(issue, verdict, config);
     expect(p).toContain('1. créer la vue');
