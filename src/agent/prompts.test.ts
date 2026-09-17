@@ -70,6 +70,13 @@ describe('prompts', () => {
     expect(p).toMatch(/si tu y annonces un fichier de test.*demande `test`/);
     expect(p).toMatch(/ne pas demander `test`.*pas de test à écrire/i);
   });
+  it('triagePrompt borne le filet aux fichiers et ne promet rien sur la nature du changement', () => {
+    const p = triagePrompt(issue, config);
+    expect(p).toContain('ne compare que des listes de fichiers');
+    expect(p).toMatch(/jamais un changement plus risqué qu'annoncé/);
+    // La promesse d'avant : un filet général, qui dispensait de juger la nature du changement.
+    expect(p).not.toMatch(/reprend la main dès que le diff dément la prévision/);
+  });
   it('implementPrompt contient plan et commandes', () => {
     const p = implementPrompt(issue, verdict, config);
     expect(p).toContain('1. créer la vue');
