@@ -110,6 +110,12 @@ const MIGRATIONS: readonly string[] = [
   CREATE INDEX phases_job ON phases(job_id);
   CREATE INDEX phases_finished ON phases(finished_at);
   `,
+  // De quel traqueur vient ce job. Nullable, donc un simple ALTER : aucune contrainte ne change, contrairement
+  // à la migration de `phases` qui a dû reconstruire la table pour élargir un CHECK. Les lignes existantes
+  // restent à NULL — elles précèdent la bascule vers Jira, donc elles portent bien un numéro d'issue GitHub.
+  `
+  ALTER TABLE jobs ADD COLUMN issue_key TEXT;
+  `,
 ];
 
 /** Version de schéma attendue : `PRAGMA user_version` d'une base à jour. L'UI s'en sert pour savoir s'il faut migrer. */

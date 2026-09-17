@@ -21,6 +21,7 @@ interface SeedJob {
   repo?: string;
   issueNumber?: number;
   issueTitle?: string;
+  issueKey?: string | null;
   state?: JobState;
   createdAt?: string;
   costUsd?: number;
@@ -33,13 +34,14 @@ let nextIssueNumber = 1;
 function insertJob(db: DatabaseSync, j: SeedJob): void {
   const createdAt = j.createdAt ?? new Date().toISOString();
   db.prepare(
-    `INSERT INTO jobs (id, repo, issue_number, issue_title, state, flags_json, cost_usd, pr_url, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO jobs (id, repo, issue_number, issue_title, issue_key, state, flags_json, cost_usd, pr_url, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     j.id,
     j.repo ?? 'acme/demo',
     j.issueNumber ?? nextIssueNumber++,
     j.issueTitle ?? 'Un titre',
+    j.issueKey ?? null,
     j.state ?? 'queued',
     JSON.stringify(emptyFlags()),
     j.costUsd ?? 0,
@@ -354,13 +356,23 @@ describe('jobDetail', () => {
     return { ui, dir };
   }
 
-  it('issueUrl pointe sur le ticket Jira du projet qui sert ce dépôt', async () => {
+  it('issueUrl pointe sur le ticket Jira du job', async () => {
     const ui = await makeUi({ jira: true });
-    insertJob(ui.db, { id: 'abcdef01', repo: 'acme/demo', issueNumber: 42, state: 'blocked' });
+    insertJob(ui.db, { id: 'abcdef01', repo: 'acme/demo', issueNumber: 42, issueKey: 'DEMO-42', state: 'blocked' });
 
     const detail = await ui.data.jobDetail('abcdef01');
 
     expect(detail?.issueUrl).toBe('https://acme.atlassian.net/browse/DEMO-42');
+  });
+
+  it('issueUrl suit le traqueur du job, pas la configuration du dépôt', async () => {
+    const ui = await makeUi({ jira: true });
+    insertJob(ui.db, { id: 'avant', repo: 'acme/demo', issueNumber: 42, issueKey: null });
+    insertJob(ui.db, { id: 'apres', repo: 'acme/demo', issueNumber: 7, issueKey: 'DEMO-7' });
+
+    // Le dépôt est sur Jira aujourd'hui, mais ce job-là venait d'une issue GitHub.
+    expect((await ui.data.jobDetail('avant'))?.issueUrl).toBe('https://github.com/acme/demo/issues/42');
+    expect((await ui.data.jobDetail('apres'))?.issueUrl).toBe('https://acme.atlassian.net/browse/DEMO-7');
   });
 
   it('issueUrl reste sur GitHub pour un dépôt sans projet Jira', async () => {

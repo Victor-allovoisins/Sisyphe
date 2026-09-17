@@ -45,6 +45,11 @@ export interface Job {
   repo: string; // owner/name
   issueNumber: number;
   issueTitle: string;
+  /**
+   * Clé du ticket chez son traqueur (`IOS-885`), ou null : le job vient d'une issue GitHub. C'est le job qui
+   * dit d'où il vient, pas la configuration actuelle de son dépôt — elle a pu basculer depuis.
+   */
+  issueKey: string | null;
   state: JobState;
   attempt: number;
   requeues: number;

@@ -14,6 +14,7 @@ function rowToJob(r: Row): Job {
     repo: r.repo as string,
     issueNumber: r.issue_number as number,
     issueTitle: r.issue_title as string,
+    issueKey: (r.issue_key as string | null) ?? null,
     state: r.state as JobState,
     attempt: r.attempt as number,
     requeues: r.requeues as number,
@@ -43,7 +44,7 @@ function rowToJob(r: Row): Job {
 export type JobPatch = Partial<Omit<Job, 'id' | 'createdAt' | 'updatedAt' | 'state'>>;
 
 const COLUMNS: Record<keyof JobPatch, string> = {
-  repo: 'repo', issueNumber: 'issue_number', issueTitle: 'issue_title', attempt: 'attempt', requeues: 'requeues',
+  repo: 'repo', issueNumber: 'issue_number', issueTitle: 'issue_title', issueKey: 'issue_key', attempt: 'attempt', requeues: 'requeues',
   branch: 'branch', baseSha: 'base_sha', worktreePath: 'worktree_path',
   verdict: 'verdict_json', report: 'report_json', flags: 'flags_json',
   prNumber: 'pr_number', prUrl: 'pr_url', prState: 'pr_state', prMergedAt: 'pr_merged_at',
@@ -55,15 +56,15 @@ const JSON_KEYS = new Set<keyof JobPatch>(['verdict', 'report', 'flags']);
 export class JobStore {
   constructor(private readonly db: DatabaseSync) {}
 
-  create(input: { repo: string; issueNumber: number; issueTitle: string }): Job {
+  create(input: { repo: string; issueNumber: number; issueTitle: string; issueKey?: string | null }): Job {
     const id = randomUUID();
     const ts = nowIso();
     this.db
       .prepare(
-        `INSERT INTO jobs (id, repo, issue_number, issue_title, state, flags_json, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)`,
+        `INSERT INTO jobs (id, repo, issue_number, issue_title, issue_key, state, flags_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?)`,
       )
-      .run(id, input.repo, input.issueNumber, input.issueTitle, JSON.stringify(emptyFlags()), ts, ts);
+      .run(id, input.repo, input.issueNumber, input.issueTitle, input.issueKey ?? null, JSON.stringify(emptyFlags()), ts, ts);
     return this.must(id);
   }
 

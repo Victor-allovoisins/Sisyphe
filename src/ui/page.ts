@@ -368,6 +368,7 @@ export const PAGE_HTML = `<!doctype html>
   // Mêmes formes que le schéma de configuration : ce qui arrive par le snapshot est re-validé avant de servir d'URL.
   var JIRA_SITE_RE = /^[a-z0-9-]+\\.atlassian\\.net$/;
   var JIRA_KEY_RE = /^[A-Z][A-Z0-9_]*$/;
+  var JIRA_ISSUE_KEY_RE = /^[A-Z][A-Z0-9_]*-[0-9]+$/;
   /** États sur lesquels Relancer a un sens ; partout ailleurs c'est Annuler, ou rien pour un job terminé. */
   var RETRYABLE = { failed: true, blocked: true, cancelled: true };
   var TERMINAL = { done: true, blocked: true, failed: true, cancelled: true };
@@ -438,25 +439,45 @@ export const PAGE_HTML = `<!doctype html>
     return safeLink(url, label, 'https://github.com/');
   }
 
+  /** Site Jira utilisable dans une URL, ou null : suivi GitHub, ou site qui déplacerait l'origine du lien. */
+  function jiraSite() {
+    var j = ui.jira;
+    return j && JIRA_SITE_RE.test(String(j.site)) ? String(j.site) : null;
+  }
+
   /** Clé de projet Jira servant ce dépôt, ou null : tickets GitHub, site invalide, ou dépôt sans projet. */
   function jiraKey(repo) {
     var j = ui.jira;
-    if (!j || !JIRA_SITE_RE.test(String(j.site)) || !j.keys) return null;
+    if (!jiraSite() || !j.keys) return null;
     var key = Object.prototype.hasOwnProperty.call(j.keys, repo) ? j.keys[repo] : null;
     return typeof key === 'string' && JIRA_KEY_RE.test(key) ? key : null;
   }
 
-  /** Comment se nomme le ticket : IOS-885 sous Jira, owner/repo#885 sur GitHub. */
-  function issueLabel(repo, number) {
+  /**
+   * La clé déduite du dépôt, pour les seules lignes qui n'en portent pas : le journal d'actions ne garde
+   * que le dépôt et le numéro. C'est la déduction dont les jobs se sont affranchis ; elle se trompe encore
+   * sur une action antérieure à la bascule, et c'est tout ce que cette table sait dire.
+   */
+  function deducedKey(repo, number) {
     var key = jiraKey(repo);
-    return key ? key + '-' + String(number) : String(repo) + '#' + String(number);
+    return key && isFinite(Number(number)) ? key + '-' + Number(number) : null;
   }
 
-  function issueLink(repo, number) {
-    var label = issueLabel(repo, number);
+  /** Comment se nomme le ticket : IOS-885 sous Jira, owner/repo#885 sur GitHub. */
+  function issueLabel(repo, number, key) {
+    return typeof key === 'string' && JIRA_ISSUE_KEY_RE.test(key) ? key : String(repo) + '#' + String(number);
+  }
+
+  /**
+   * Le lien d'un ticket suit le job, pas la configuration du dépôt : un job créé avant la bascule vers Jira
+   * porte un numéro d'issue GitHub, et le dépôt qui est sur Jira aujourd'hui ne dit rien de ce qu'il était.
+   */
+  function issueLink(repo, number, key) {
+    var label = issueLabel(repo, number, key);
+    var site = jiraSite();
+    var usable = typeof key === 'string' && JIRA_ISSUE_KEY_RE.test(key);
+    if (site && usable) return safeLink('https://' + site + '/browse/' + key, label, 'https://' + site + '/browse/');
     if (!isFinite(Number(number))) return el('span', 'muted', label);
-    var key = jiraKey(repo);
-    if (key) return safeLink('https://' + ui.jira.site + '/browse/' + key + '-' + Number(number), label, 'https://' + ui.jira.site + '/browse/');
     if (!REPO_RE.test(String(repo))) return el('span', 'muted', label);
     return ghLink('https://github.com/' + repo + '/issues/' + Number(number), label);
   }
@@ -619,7 +640,7 @@ export const PAGE_HTML = `<!doctype html>
     button.type = 'button';
     button.setAttribute('data-action', kind);
     button.setAttribute('data-job', job.id);
-    var label = issueLabel(job.repo, job.issueNumber);
+    var label = issueLabel(job.repo, job.issueNumber, job.issueKey);
     var question = isCancel ? 'Annuler le job ' + label + ' ?' : 'Relancer le job ' + label + ' ?';
     button.addEventListener('click', function (event) {
       // Les lignes du tableau ouvrent le détail au clic : sans cela, annuler ouvrirait aussi le panneau.
@@ -703,7 +724,7 @@ export const PAGE_HTML = `<!doctype html>
       tr.appendChild(el('td', 'muted', fmtDate(a.at)));
       tr.appendChild(el('td', null, (ACTION_LABEL[a.action] || String(a.action)) + ' · ' + String(a.source)));
       var target = el('td');
-      if (a.repo && a.issueNumber) target.appendChild(issueLink(a.repo, a.issueNumber));
+      if (a.repo && a.issueNumber) target.appendChild(issueLink(a.repo, a.issueNumber, deducedKey(a.repo, a.issueNumber)));
       else if (a.jobId) target.appendChild(el('span', 'muted', String(a.jobId).slice(0, 8)));
       else target.appendChild(el('span', 'muted', '—'));
       tr.appendChild(target);
@@ -789,7 +810,7 @@ export const PAGE_HTML = `<!doctype html>
     var badgeNode = badge(job.state);
     var phaseNode = el('span', 'muted', '');
     head.appendChild(badgeNode);
-    head.appendChild(issueLink(job.repo, job.issueNumber));
+    head.appendChild(issueLink(job.repo, job.issueNumber, job.issueKey));
     head.appendChild(phaseNode);
     card.appendChild(head);
     var titleNode = el('div', 'card-title', job.issueTitle);
@@ -947,7 +968,7 @@ export const PAGE_HTML = `<!doctype html>
       stateCell.appendChild(badge(job.state));
       tr.appendChild(stateCell);
       var issueCell = el('td');
-      issueCell.appendChild(issueLink(job.repo, job.issueNumber));
+      issueCell.appendChild(issueLink(job.repo, job.issueNumber, job.issueKey));
       tr.appendChild(issueCell);
       tr.appendChild(el('td', 'title-cell', job.issueTitle));
       tr.appendChild(el('td', 'num', fmtUsd(job.costUsd)));
@@ -1063,7 +1084,7 @@ export const PAGE_HTML = `<!doctype html>
     var head = el('div', 'detail-head');
     var stateBadge = badge(job.state);
     head.appendChild(stateBadge);
-    head.appendChild(issueLink(job.repo, job.issueNumber));
+    head.appendChild(issueLink(job.repo, job.issueNumber, job.issueKey));
     if (job.prNumber) head.appendChild(ghLink(job.prUrl, 'PR #' + job.prNumber));
     head.appendChild(el('span', 'muted', job.id));
     detailJobId = job.id;

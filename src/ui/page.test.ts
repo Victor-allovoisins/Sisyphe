@@ -28,11 +28,14 @@ interface FakeNode { tag: string; text: string; href?: string; target?: string; 
  * pour de vrai. Un test qui se contenterait de chercher `'https://github.com/'` dans la chaîne
  * resterait vert le jour où la validation du site Jira disparaîtrait.
  */
-function guards(jira: unknown): { issueLink(repo: string, number: number): FakeNode } {
+function guards(jira: unknown): {
+  issueLink(repo: string, number: number, key?: string | null): FakeNode;
+  deducedKey(repo: string, number: number): string | null;
+} {
   const source = [
-    ...['REPO_RE', 'JIRA_SITE_RE', 'JIRA_KEY_RE'].map(constSource),
-    ...['safeLink', 'ghLink', 'jiraKey', 'issueLabel', 'issueLink'].map(fnSource),
-    'return { issueLink: issueLink };',
+    ...['REPO_RE', 'JIRA_SITE_RE', 'JIRA_KEY_RE', 'JIRA_ISSUE_KEY_RE'].map(constSource),
+    ...['safeLink', 'ghLink', 'jiraSite', 'jiraKey', 'deducedKey', 'issueLabel', 'issueLink'].map(fnSource),
+    'return { issueLink: issueLink, deducedKey: deducedKey };',
   ].join('\n');
   const el = (tag: string, _cls: string | null, text: string): FakeNode => ({ tag, text });
   return Function('ui', 'el', source)({ jira }, el);
@@ -60,21 +63,32 @@ describe('PAGE_HTML', () => {
   });
 
   it('ne fabrique un lien que vers GitHub ou le site Jira configuré', () => {
-    expect(guards(null).issueLink('acme/demo', 42)).toMatchObject({ tag: 'a', text: 'acme/demo#42', href: 'https://github.com/acme/demo/issues/42', target: '_blank', rel: 'noopener noreferrer' });
-    expect(guards(JIRA).issueLink('acme/demo', 42)).toMatchObject({ tag: 'a', text: 'DEMO-42', href: 'https://acme.atlassian.net/browse/DEMO-42' });
+    expect(guards(null).issueLink('acme/demo', 42, null)).toMatchObject({ tag: 'a', text: 'acme/demo#42', href: 'https://github.com/acme/demo/issues/42', target: '_blank', rel: 'noopener noreferrer' });
+    expect(guards(JIRA).issueLink('acme/demo', 42, 'DEMO-42')).toMatchObject({ tag: 'a', text: 'DEMO-42', href: 'https://acme.atlassian.net/browse/DEMO-42' });
     // Dépôt hors des projets Jira : la configuration peut être mixte, ses tickets restent sur GitHub.
-    expect(guards(JIRA).issueLink('acme/other', 7).href).toBe('https://github.com/acme/other/issues/7');
+    expect(guards(JIRA).issueLink('acme/other', 7, null).href).toBe('https://github.com/acme/other/issues/7');
+  });
+
+  it('le lien suit la clé du job, pas le projet Jira du dépôt', () => {
+    // Un job antérieur à la bascule porte un numéro d’issue GitHub, sur un dépôt aujourd’hui sur Jira.
+    expect(guards(JIRA).issueLink('acme/demo', 42, null)).toMatchObject({ text: 'acme/demo#42', href: 'https://github.com/acme/demo/issues/42' });
+    // Et la clé vaut pour elle-même : le numéro du ticket n’a pas à suivre celui de l’issue.
+    expect(guards(JIRA).issueLink('acme/demo', 42, 'DEMO-7').href).toBe('https://acme.atlassian.net/browse/DEMO-7');
   });
 
   it('ne suit pas un site Jira qui déplacerait l’origine du lien', () => {
     // Le site arrive par le snapshot : `@` ou `/` y suffirait à pointer ailleurs qu’Atlassian.
     for (const site of ['acme.atlassian.net@evil.example', 'evil.example', 'acme.atlassian.net/../evil']) {
-      const link = guards({ site, keys: { 'acme/demo': 'DEMO' } }).issueLink('acme/demo', 42);
+      const link = guards({ site, keys: { 'acme/demo': 'DEMO' } }).issueLink('acme/demo', 42, 'DEMO-42');
       expect(link.href).toBe('https://github.com/acme/demo/issues/42');
     }
-    // Même exigence sur la clé de projet, qui compose l’URL elle aussi.
-    expect(guards({ site: 'acme.atlassian.net', keys: { 'acme/demo': '../evil' } }).issueLink('acme/demo', 42).href)
-      .toBe('https://github.com/acme/demo/issues/42');
+    // Même exigence sur la clé que porte le job, qui compose l’URL elle aussi.
+    for (const key of ['../evil', 'DEMO-42/../..', 'demo-42', '@evil.example']) {
+      expect(guards(JIRA).issueLink('acme/demo', 42, key).href).toBe('https://github.com/acme/demo/issues/42');
+    }
+    // Et sur la clé de projet, dont le journal d’actions se sert encore faute de mieux.
+    expect(guards(JIRA).deducedKey('acme/demo', 42)).toBe('DEMO-42');
+    expect(guards({ site: 'acme.atlassian.net', keys: { 'acme/demo': '../evil' } }).deducedKey('acme/demo', 42)).toBeNull();
   });
 
   it('expose les trois onglets, le flux SSE et les routes JSON', () => {

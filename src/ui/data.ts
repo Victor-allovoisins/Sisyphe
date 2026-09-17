@@ -103,7 +103,10 @@ export interface ActiveJob extends Job {
  */
 export interface JiraLinks {
   site: string;
-  /** dépôt `owner/repo` → clé de projet Jira. */
+  /**
+   * dépôt `owner/repo` → clé de projet Jira. Les jobs portent désormais la clé de leur ticket et n'en ont
+   * plus besoin ; il reste le journal d'actions, dont les lignes ne gardent que dépôt et numéro.
+   */
   keys: Record<string, string>;
 }
 
@@ -268,14 +271,12 @@ export function jiraLinksOf(machine: Pick<MachineConfig, 'jira'>): JiraLinks | n
 }
 
 /**
- * Lien vers le ticket. La clé Jira est reconstruite `PROJET-numéro`, exactement comme
- * `JiraIssueTracker.key` (voir son commentaire : le store ne porte que le numéro). Un dépôt sans projet
- * Jira — configuration mixte — garde son lien GitHub.
+ * Le lien d'un ticket suit le job, pas la configuration du dépôt : un job créé avant la bascule vers Jira
+ * porte un numéro d'issue GitHub, et le dépôt qui est sur Jira aujourd'hui ne dit rien de ce qu'il était.
  */
-export function issueUrlOf(links: JiraLinks | null, repo: string, issueNumber: number): string {
-  const key = links?.keys[repo];
-  if (links && key) return browseUrl(links.site, `${key}-${issueNumber}`);
-  return `https://github.com/${repo}/issues/${issueNumber}`;
+export function issueUrlOf(job: Pick<Job, 'repo' | 'issueNumber' | 'issueKey'>, site: string | null): string {
+  if (job.issueKey && site) return browseUrl(site, job.issueKey);
+  return `https://github.com/${job.repo}/issues/${job.issueNumber}`;
 }
 
 export function createUiData(deps: UiDataDeps): UiData {
@@ -416,7 +417,7 @@ export function createUiData(deps: UiDataDeps): UiData {
     return {
       job,
       phases: phases.listForJob(job.id),
-      issueUrl: issueUrlOf(jiraLinksOf(machine), job.repo, job.issueNumber),
+      issueUrl: issueUrlOf(job, machine.jira?.site ?? null),
       files,
       transcript,
       verify,

@@ -30,6 +30,18 @@ describe('pollOnce', () => {
     expect(store.listActive()).toHaveLength(1);
   });
 
+  it('retient la clé du ticket quand le traqueur en donne une', async () => {
+    const source = new FakeIssueSource();
+    source.permissions.alice = 'write';
+    source.addIssue(repo, { number: 4, title: 'sur Jira', labeledBy: 'alice', tracker: { key: 'DEMO-4', issueType: 'Bug', fixVersions: [], status: 'Nouveau' } });
+    source.addIssue(repo, { number: 5, title: 'sur GitHub', labeledBy: 'alice' });
+    const store = new JobStore(openDatabase(':memory:'));
+
+    const created = await pollOnce({ source, store, machine, log: pino({ level: 'silent' }) });
+
+    expect(created.map((j) => [j.issueNumber, j.issueKey])).toEqual([[4, 'DEMO-4'], [5, null]]);
+  });
+
   it('label reposé par notre propre App : ni commentaire ni retrait de label, la relance a lieu', async () => {
     const source = new FakeIssueSource();
     source.permissions.alice = 'write';

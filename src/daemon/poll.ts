@@ -64,7 +64,7 @@ export async function pollOnce(d: PollDeps): Promise<Job[]> {
         step = 'getIssue';
         const issue = await d.source.getIssue(ref);
         step = 'create';
-        const job = d.store.create({ repo: full, issueNumber: ref.number, issueTitle: issue.title });
+        const job = d.store.create({ repo: full, issueNumber: ref.number, issueTitle: issue.title, issueKey: issue.tracker?.key ?? null });
         d.log.info({ jobId: job.id, repo: full, issue: ref.number }, 'poll : nouveau job');
         created.push(job);
       } catch (err) {

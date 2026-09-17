@@ -4,7 +4,7 @@ import { buildReport, parseSince, renderReportMarkdown } from './report.js';
 
 function job(over: Partial<Job>): Job {
   return {
-    id: 'id', repo: 'a/b', issueNumber: 1, issueTitle: 't', state: 'done', attempt: 1, requeues: 0, branch: null, baseSha: null,
+    id: 'id', repo: 'a/b', issueNumber: 1, issueTitle: 't', issueKey: null, state: 'done', attempt: 1, requeues: 0, branch: null, baseSha: null,
     worktreePath: null, verdict: null, report: null, flags: emptyFlags(), prNumber: null, prUrl: null, prState: null, prMergedAt: null,
     costUsd: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, durationMs: 0, error: null,
     createdAt: '2026-09-01T00:00:00Z', startedAt: null, finishedAt: null, updatedAt: '', ...over,

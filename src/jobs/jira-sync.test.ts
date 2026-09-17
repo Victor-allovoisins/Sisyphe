@@ -8,7 +8,7 @@ import { jiraOutcomeOf, runJiraPhase, type JiraSyncDeps } from './jira-sync.js';
 
 function makeJob(over: Partial<Job> = {}): Job {
   return {
-    id: 'job-1', repo: 'acme/ios', issueNumber: 42, issueTitle: 'Le bouton ne répond plus',
+    id: 'job-1', repo: 'acme/ios', issueNumber: 42, issueTitle: 'Le bouton ne répond plus', issueKey: 'IOS-42',
     state: 'done', attempt: 2, requeues: 0, branch: 'sisyphe/42', baseSha: 'abc', worktreePath: '/wt',
     verdict: null, report: null, flags: emptyFlags(),
     prNumber: 412, prUrl: 'https://github.com/acme/ios/pull/412', prState: 'open', prMergedAt: null,

@@ -83,10 +83,12 @@ describe('openUiDatabase', () => {
 
   it('base en retard d’une version : elle est migrée sans perdre les jobs', () => {
     const dbPath = join(dir, 'sisyphe.db');
-    // Base v1 authentique : ouverte en v2 puis redescendue en supprimant ce que la migration 2 a ajouté.
+    // Base v1 authentique : ouverte à jour puis redescendue en supprimant ce que les migrations suivantes
+    // ont ajouté — la reconstruction de `phases` (migration 3), elle, se rejoue telle quelle.
     const seed = openDatabase(dbPath);
     const job = new JobStore(seed).create({ repo: 'a/b', issueNumber: 1, issueTitle: 't' });
     seed.exec('DROP TABLE actions');
+    seed.exec('ALTER TABLE jobs DROP COLUMN issue_key');
     seed.exec('PRAGMA user_version = 1');
     seed.close();
 
