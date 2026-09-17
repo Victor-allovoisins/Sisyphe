@@ -1,8 +1,20 @@
 import { fileURLToPath } from 'node:url';
+import type { MachineConfig } from '../config/machine.js';
 import type { AgentRunOptions } from './runner.js';
 
 /** Nom du skill tel que l'option `skills` du SDK l'attend : qualifié par le plugin qui le porte. */
 export const JIRA_SKILL = 'sisyphe:sisyphe-jira';
+
+/**
+ * Les backends qui savent charger un plugin local. Les autres gardent le chemin scripté.
+ *
+ * Ici, auprès du plugin, plutôt qu'auprès de chacun de ses appelants : le pipeline décide par elle s'il
+ * fait tourner la phase `jira`, et `doctor` s'il contrôle la présence du plugin. Deux réponses divergentes
+ * donneraient un doctor vert sur une phase qui n'existe pas, ou l'inverse.
+ */
+export function supportsSkills(backend: MachineConfig['agentBackend']): boolean {
+  return backend === 'sdk' || backend === 'claude-code';
+}
 
 /**
  * Les outils natifs du run, `Skill` compris dès qu'un skill est demandé.

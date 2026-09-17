@@ -1,6 +1,7 @@
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Logger } from 'pino';
+import { supportsSkills } from '../agent/plugin-path.js';
 import { implementPrompt, retryPrompt, systemAppend, triagePrompt } from '../agent/prompts.js';
 import { readRepoContext } from '../agent/repo-context.js';
 import type { AgentResult, AgentRunner } from '../agent/runner.js';
@@ -67,11 +68,6 @@ const IMPLEMENT_MAX_TURNS = 200;
  */
 export const SHUTDOWN = 'shutdown';
 export const CANCELLED = 'cancelled';
-
-/** Les backends qui savent charger un plugin local. Les autres gardent le chemin scripté. */
-function supportsSkills(backend: MachineConfig['agentBackend']): boolean {
-  return backend === 'sdk' || backend === 'claude-code';
-}
 
 /** Le statut que le chemin scripté posait pour chaque issue. */
 function statusFor(state: JobState): StatusLabel | null {

@@ -2,7 +2,7 @@ import { execa } from 'execa';
 import { access, readFile, statfs } from 'node:fs/promises';
 import { userInfo } from 'node:os';
 import { join } from 'node:path';
-import { agentPluginPath } from '../../agent/plugin-path.js';
+import { agentPluginPath, supportsSkills } from '../../agent/plugin-path.js';
 import { createApp, machineConfigPath, type App } from '../../app.js';
 import { loadMachineConfig, MachineConfigError, type MachineConfig } from '../../config/machine.js';
 import { dataPaths, type DataPaths } from '../../config/paths.js';
@@ -339,13 +339,13 @@ export function buildChecks(input: BuildChecksInput): Check[] {
     }
   }
 
-  // Le plugin n'est utile que si la phase `jira` peut charger un skill : suivi Jira, backend sdk/claude-code
-  // (même critère que `supportsSkills` dans jobs/pipeline.ts — dupliqué ici faute de pouvoir l'importer sans
-  // toucher à un quatrième fichier). Ailleurs (issues GitHub, ou codex/opencode) son absence ne change rien
-  // au comportement du daemon : un doctor rouge y serait un faux positif. Bloquant, pas `warn`, une fois le
-  // contrôle jugé pertinent : contrairement au workflow ci-dessus (dont l'effet se voit plus tard, à la
-  // livraison), un plugin manquant laisse l'agent improviser en silence sur un ticket réel.
-  if (input.machine?.jira && (backend === 'sdk' || backend === 'claude-code')) {
+  // Le plugin n'est utile que si la phase `jira` peut charger un skill : suivi Jira, et un backend que
+  // `supportsSkills` reconnaît — le même critère que celui par lequel le pipeline décide de faire tourner
+  // cette phase. Ailleurs (issues GitHub, ou codex/opencode) son absence ne change rien au comportement du
+  // daemon : un doctor rouge y serait un faux positif. Bloquant, pas `warn`, une fois le contrôle jugé
+  // pertinent : contrairement au workflow ci-dessus (dont l'effet se voit plus tard, à la livraison), un
+  // plugin manquant laisse l'agent improviser en silence sur un ticket réel.
+  if (input.machine?.jira && supportsSkills(backend)) {
     const root = input.pluginPath ?? agentPluginPath();
     checks.push({ name: 'plugin agent (sisyphe-jira)', run: () => checkAgentPlugin(root) });
   }
