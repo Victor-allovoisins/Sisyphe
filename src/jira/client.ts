@@ -430,7 +430,11 @@ export class JiraIssueTracker implements IssueTracker {
     if (!r) return;
     const known = new Set((r.values ?? []).map((s) => (s.name ?? '').toLowerCase()));
     if (known.size === 0) return;
-    const missing = [...p.statusesInOrder, p.inProgressStatus, p.doneStatus].filter((s) => !known.has(s.toLowerCase()));
+    // `blockedStatus` est du lot bien qu'il soit hors de `statusesInOrder` : mal orthographié, il ne se
+    // verrait qu'à la fin d'un job bloqué, dans un `log.warn` que personne ne lit — et le ticket resterait
+    // dans la colonne de travail, exactement comme si le statut n'était pas configuré.
+    const configures = [...p.statusesInOrder, p.inProgressStatus, p.doneStatus, ...(p.blockedStatus ? [p.blockedStatus] : [])];
+    const missing = configures.filter((s) => !known.has(s.toLowerCase()));
     if (missing.length > 0) {
       this.cfg.log?.warn({ project: p.key, missing }, 'statuts configurés absents du projet Jira');
     }
