@@ -616,7 +616,66 @@ git commit -m "feat(store): chaque job porte la clé de son ticket, les liens la
 
 ---
 
-## Task 9 : vérification d'ensemble
+## Task 9 : un ticket bloqué quitte la colonne de travail
+
+Aujourd'hui, un job bloqué rend le ticket **sans le déplacer** : il reste « En développement », sans assigné. Le board affiche du travail en cours sur lequel personne n'est — la panne silencieuse contre laquelle tout le reste a été conçu.
+
+Jira a un statut pour ça, tenu **hors** du chemin d'avancement (« En attente d'informations » sur le projet BACK, documenté comme *side status* dans `av-shared/reference/jira-back.yml`). `walkTo` sait l'atteindre sans rien changer : il essaie le **saut direct** avant de marcher le long de `statusesInOrder`.
+
+Périmètre : les jobs **bloqués** seulement. Un échec — secret détecté, chemin protégé touché, vérification rouge — n'attend aucune information ; il garde le comportement actuel.
+
+**Files:**
+- Modify: `src/config/machine.ts`, `src/config/machine.test.ts`
+- Modify: `src/jobs/jira-sync.ts`, `src/agent/prompts.ts` (le prompt de la phase `jira`)
+- Modify: `agent-plugin/skills/sisyphe-jira/SKILL.md`
+- Modify: `src/jobs/pipeline.ts` (le filet), `test/integration/jira-pipeline.test.ts`
+
+- [ ] **Step 1 : le champ de configuration**
+
+`jira.projects[]` gagne `blockedStatus: z.string().min(1).optional()`. Optionnel : un projet qui ne l'a pas garde le comportement actuel, et c'est le cas de tous ceux qui existent aujourd'hui.
+
+Son commentaire doit dire ce qu'il est — un statut **de côté**, hors de `statusesInOrder`, atteint par saut direct — sinon quelqu'un tentera de l'ajouter au chemin d'avancement et cassera la marche.
+
+Test : le champ est facultatif ; présent, il est lu.
+
+- [ ] **Step 2 : la phase `jira` le reçoit**
+
+`JiraOutcome` gagne `blockedStatus: string | null`, rempli par `closeTicket` depuis le projet. `jiraSyncPrompt` le nomme quand il existe, à côté du statut de relecture déjà présent.
+
+- [ ] **Step 3 : le skill apprend à s'en servir**
+
+Dans `agent-plugin/skills/sisyphe-jira/SKILL.md`, section « Où laisser le ticket », la branche « rien à livrer » devient : poser le ticket sur le statut de blocage **quand le prompt en donne un**, puis `assign --back`. Sans statut de blocage dans le prompt, le comportement actuel — rendre sans déplacer.
+
+Dire aussi quoi faire quand la transition n'est pas offerte depuis la colonne courante : ne pas insister, rendre la main, et le signaler dans le commentaire. C'est la même règle que pour les autres transitions.
+
+- [ ] **Step 4 : le filet le pose lui-même**
+
+Dans `closeTicket` (`src/jobs/pipeline.ts`), quand l'état est `blocked`, qu'un `blockedStatus` est configuré et que le ticket est encore sur `inProgressStatus`, poser le statut avant de rendre la main.
+
+Le garde est le même que celui du rattrapage du job livré, et pour la même raison : un ticket qu'un humain a déjà déplacé ne doit pas être ramené en arrière. Et comme lui, l'échec de la lecture ne doit pas pencher vers l'action — ici on déplace un ticket, ce n'est pas idempotent au sens où une réassignation l'est.
+
+Ne fais pas échouer le job si la transition est refusée : le ticket rendu vaut mieux qu'un job perdu, et le commentaire porte l'information.
+
+- [ ] **Step 5 : les tests**
+
+Dans `test/integration/jira-pipeline.test.ts`, avec le faux Jira :
+- un triage bloqué, `blockedStatus` configuré, phase `jira` muette → le ticket est sur le statut de blocage **et** rendu ;
+- le même sans `blockedStatus` configuré → comportement actuel, rendu sans déplacement ;
+- un ticket qu'un humain a déjà déplacé hors de `inProgressStatus` → le filet n'y touche pas ;
+- un job **échoué** (secrets) avec `blockedStatus` configuré → le ticket n'y va pas.
+
+Le faux Jira construit son graphe de transitions depuis `statuses_in_order` : un statut de côté n'y est pas. Il faudra lui apprendre à offrir une transition latérale, sinon le test prouverait le contraire de ce qu'on veut.
+
+- [ ] **Step 6 : commit**
+
+```bash
+git add src/config src/jobs src/agent agent-plugin test
+git commit -m "feat(jira): un ticket bloqué passe sur le statut d'attente du projet"
+```
+
+---
+
+## Task 10 : vérification d'ensemble
 
 - [ ] **Step 1 : la suite complète**
 
@@ -635,7 +694,7 @@ Relis-le comme si tu étais le modèle qui le reçoit : la consigne sur le péri
 
 Vérifie de visu que « hors périmètre : *raison* » se distingue bien de « non exécutée (étape précédente en échec) ».
 
-- [ ] **Step 4 : consigner**
+- [ ] **Step 5 : consigner**
 
 Ajouter à la fin de la spec ce qui a été vérifié, et la date.
 
