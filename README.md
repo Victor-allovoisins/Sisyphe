@@ -158,7 +158,10 @@ backends », plus bas), chaque job se termine par un tour d'agent dédié à la 
   2. un job terminé laisse toujours un texte posté en commentaire — celui rédigé par l'agent s'il y en a un,
      sinon le message qu'aurait posté l'ancien chemin scripté. Le daemon *tente* toujours de le poster : une
      panne Jira au moment de commenter finit en avertissement dans les logs, pas en exception qui priverait
-     le job du reste de sa clôture.
+     le job du reste de sa clôture ;
+  3. un job livré laisse toujours le ticket sur le statut de relecture : personne d'autre ne l'y met, et une
+     phase `jira` muette le laissait sinon en développement jusqu'au prochain démarrage du daemon.
+     L'assignation, elle, ne bouge pas — un travail soumis à relecture n'est pas un travail abandonné.
 
 - **La commande `sisyphe jira`**, six verbes :
   - `show <clé>` : titre, statut, type, versions visées, corps et commentaires du ticket, en JSON.

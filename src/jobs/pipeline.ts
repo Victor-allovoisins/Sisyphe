@@ -157,9 +157,10 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
   };
 
   /**
-   * Phase `jira` puis filet. Deux invariants, et rien d'autre :
+   * Phase `jira` puis filet. Trois invariants, et rien d'autre :
    * 1. un job non livré ne laisse jamais le ticket assigné au compte dédié ;
-   * 2. un job terminé laisse toujours un commentaire.
+   * 2. un job terminé laisse toujours un commentaire ;
+   * 3. un job livré laisse toujours le ticket sur le statut de relecture.
    *
    * Le filet tient dans le `finally`, et il n'interroge que Jira. Ni le rapport de l'agent ni même la bonne
    * fin de la phase ne le conditionnent : un agent qui affirme avoir rendu la main sans l'avoir fait, un
@@ -204,6 +205,13 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
         // rendre celui qui aurait dû l'être est précisément la panne silencieuse à empêcher.
         const still = await source.canTrigger(issueRef).catch(() => ({ ok: true, login: null }));
         if (still.ok) await source.removeTriggerLabel(issueRef).catch((err) => log.warn({ err }, 'ticket non rendu'));
+      } else if (await source.isStillActive(issueRef).catch(() => true)) {
+        // Livré : seul l'agent posait le statut de relecture, et une phase muette laissait le ticket en
+        // développement. La réconciliation le rattrape, mais au seul démarrage du daemon — des semaines, sur
+        // un service qui tourne. La marche de `setStatus` ne déplace pas un ticket déjà arrivé, et
+        // `isStillActive` écarte celui qu'un humain a repris ou fermé entre-temps : on ne le fait pas reculer.
+        // Le ticket reste assigné au compte dédié — un travail soumis à relecture n'est pas abandonné.
+        await source.setStatus(issueRef, 'done').catch((err) => log.warn({ err }, 'statut de relecture non posé'));
       }
       await source.comment(issueRef, body).catch((err) => log.warn({ err }, 'commentaire de fin non posté'));
     }
