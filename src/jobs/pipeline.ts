@@ -13,7 +13,7 @@ import { phaseModel, type MachineConfig } from '../config/machine.js';
 import { jobDir as jobDirFor, repoCachePath, type DataPaths } from '../config/paths.js';
 import { REPO_CONFIG_FILENAME, RepoConfigError, parseRepoConfig, type RepoConfig } from '../config/repo.js';
 import {
-  labelRelaunch, renderBlockedComment, renderCancelledComment, renderConfigProblemComment, renderDoneComment,
+  renderBlockedComment, renderCancelledComment, renderConfigProblemComment, renderDoneComment,
   renderMissingVersionComment, renderFailedComment,
   renderNoChangesComment, renderProtectedPathsComment, renderSecretsComment, type Relaunch,
 } from '../deliver/comments.js';
@@ -31,7 +31,7 @@ import { agentEnv, repoEnv, runRepoCommand } from '../verify/commands.js';
 import { runVerification, type ScanFn, type VerifyResult } from '../verify/verify.js';
 import { resolveBaseBranch } from './base-branch.js';
 import { jiraOutcomeOf, runJiraPhase } from './jira-sync.js';
-import { relaunchFor } from './relaunch.js';
+import { relaunchFor, relaunchKindFor } from './relaunch.js';
 import { branchName } from './slug.js';
 
 export interface PipelineDeps {
@@ -89,9 +89,10 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
    * La consigne de relance imprimée par les commentaires. Elle interroge le traqueur, donc elle attend :
    * sa résolution est repoussée après la transition vers `triaging`, qui ne souffre aucun await avant elle.
    * Le repli couvre la fenêtre qui précède — la transition et le `mkdir` peuvent échouer, et le `catch`
-   * commente quand même. C'est aussi ce que `relaunchFor` rend pour un dépôt hors Jira.
+   * commente quand même. Il porte déjà le bon genre de consigne : sur un dépôt Jira il parle d'assignation,
+   * seul le nom du compte manque encore.
    */
-  let trigger: Relaunch = labelRelaunch(deps.machine.triggerLabel);
+  let trigger: Relaunch = relaunchKindFor(deps.machine, job.repo);
   const dir = jobDirFor(deps.paths, job.id);
   const startedAt = Date.now();
   const elapsed = () => Date.now() - startedAt;

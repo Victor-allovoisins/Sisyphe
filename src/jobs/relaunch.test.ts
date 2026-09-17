@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { JIRA_STATUSES_DEFAULT, type MachineConfig } from '../config/machine.js';
 import { renderFailedComment } from '../deliver/comments.js';
-import { relaunchFor } from './relaunch.js';
+import { relaunchFor, relaunchKindFor } from './relaunch.js';
 
 const REPO = 'ILokYou/ILokYou-iOS';
 
@@ -48,6 +48,20 @@ describe('relaunchFor', () => {
 
   it('un dépôt hors périmètre Jira retombe sur le label', async () => {
     expect(await relaunchFor(withJira, 'ILokYou/autre', named('Sisyphe iOS'))).toEqual({ kind: 'label', trigger: 'sisyphe' });
+  });
+});
+
+describe('relaunchKindFor', () => {
+  it('porte le bon genre de consigne sans interroger personne', () => {
+    // Valeur de départ du prologue de `runJob`, qui ne souffre aucun await : elle doit déjà parler
+    // d'assignation sur un dépôt Jira, sinon un échec précoce imprimerait un label sur un ticket.
+    expect(relaunchKindFor(withJira, REPO)).toEqual({ kind: 'assignee', who: null });
+    expect(relaunchKindFor(withJira, 'ILokYou/autre')).toEqual({ kind: 'label', trigger: 'sisyphe' });
+    expect(relaunchKindFor(machine(), REPO)).toEqual({ kind: 'label', trigger: 'sisyphe' });
+  });
+
+  it('ne promet jamais de label au lecteur d’un ticket Jira', () => {
+    expect(renderFailedComment('job-1', 'échec', relaunchKindFor(withJira, REPO))).not.toContain('label');
   });
 });
 
