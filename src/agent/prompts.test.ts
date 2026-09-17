@@ -65,6 +65,11 @@ describe('prompts', () => {
     expect(p).toMatch(/setup.*(n'est pas à choisir|jamais sauté|toujours)/i);
     expect(p).toMatch(/files_likely_touched[\s\S]*créer[\s\S]*test/);
   });
+  it('triagePrompt lie la prévision d’un test à la demande de le lancer, dans les deux sens', () => {
+    const p = triagePrompt(issue, config);
+    expect(p).toMatch(/si tu y annonces un fichier de test.*demande `test`/);
+    expect(p).toMatch(/ne pas demander `test`.*pas de test à écrire/i);
+  });
   it('implementPrompt contient plan et commandes', () => {
     const p = implementPrompt(issue, verdict, config);
     expect(p).toContain('1. créer la vue');

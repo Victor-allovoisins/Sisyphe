@@ -29,7 +29,14 @@ export const TriageVerdictSchema = z.object({
    * remplit mal, et un verdict non `ready` n'atteint jamais la vérification.
    */
   verification: z.object({
-    steps: z.array(z.enum(['build', 'test', 'lint'])).describe('Les vérifications que ce changement mérite. Tableau vide : aucune au-delà de setup.'),
+    // Les deux champs se tiennent, et c'est au modèle de les garder cohérents : un test prévu qu'on ne
+    // demande pas de lancer ne prouve rien, et depuis que le triage prévoit ses tests, il n'est même
+    // plus la surprise qui élargissait le périmètre.
+    steps: z
+      .array(z.enum(['build', 'test', 'lint']))
+      .describe(
+        "Les vérifications que ce changement mérite. Tableau vide : aucune au-delà de setup. Doit contenir test dès que files_likely_touched annonce un fichier de test, créé ou modifié : un test que personne ne lance ne prouve rien. Ne pas demander test, c'est annoncer qu'il n'y aura pas de test à écrire.",
+      ),
     why: z.string().describe('En une phrase, pourquoi ce périmètre suffit. Lu par un relecteur humain dans la pull request, pas par une machine.'),
   }),
 });

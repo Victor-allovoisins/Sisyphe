@@ -78,7 +78,10 @@ describe('JSON Schema', () => {
   });
 
   it('propage les descriptions dans le contrat du modèle', () => {
-    const props = triageJsonSchema.properties as Record<string, { description?: string }>;
+    const props = triageJsonSchema.properties as Record<string, { description?: string; properties?: Record<string, { description?: string }> }>;
     expect(props.questions.description).toContain('needs_clarification');
+    // Le modèle lit le schéma autant que le prompt : la règle qui lie les deux champs doit être dans les deux.
+    expect(props.files_likely_touched.description).toContain('créer');
+    expect(props.verification.properties?.steps.description).toContain('files_likely_touched');
   });
 });
