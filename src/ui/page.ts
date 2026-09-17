@@ -124,6 +124,8 @@ export const PAGE_HTML = `<!doctype html>
   .sysbar .hint { font-size: 12px; color: var(--muted); }
   button.primary { border-color: rgba(63, 185, 80, 0.55); color: #56d364; }
   button.danger { border-color: rgba(248, 81, 73, 0.45); color: #ff7b72; }
+  /* Plein, là où danger n'est qu'un liseré : annuler se relance, supprimer ne se rattrape pas. */
+  button.destructive { border-color: #f85149; background: rgba(248, 81, 73, 0.18); color: #ff7b72; }
   .banner {
     border-radius: 10px; padding: 10px 14px; margin-bottom: 16px; font-size: 14px; font-weight: 600;
     border: 1px solid rgba(210, 153, 34, 0.5); background: rgba(210, 153, 34, 0.12); color: #e3b341;
@@ -373,7 +375,7 @@ export const PAGE_HTML = `<!doctype html>
   var RETRYABLE = { failed: true, blocked: true, cancelled: true };
   var TERMINAL = { done: true, blocked: true, failed: true, cancelled: true };
   var ACTION_LABEL = {
-    cancel: 'annulation', retry: 'relance', enqueue: 'nouveau job', poll: 'poll',
+    cancel: 'annulation', retry: 'relance', delete: 'suppression', enqueue: 'nouveau job', poll: 'poll',
     pause: 'pause', resume: 'reprise', stop: 'arrêt', start: 'démarrage'
   };
   /**
@@ -652,6 +654,28 @@ export const PAGE_HTML = `<!doctype html>
     if (!TERMINAL[job.state]) return jobButton(job, 'cancel', cls);
     if (RETRYABLE[job.state]) return jobButton(job, 'retry', cls);
     return null;
+  }
+
+  /**
+   * Suppression définitive, offerte dans le seul panneau de détail : la ligne du job, ses phases et son
+   * répertoire de travail. Plein et non simplement bordé comme Annuler : annuler se relance, supprimer non.
+   */
+  function deleteButton(job, cls) {
+    if (ui.readOnly) return null;
+    // Un job en cours écrit encore dans son répertoire : le daemon refuse, autant ne rien proposer.
+    if (!TERMINAL[job.state]) return null;
+    var button = el('button', 'action' + (cls ? ' ' + cls : '') + ' destructive', 'Supprimer');
+    button.type = 'button';
+    button.setAttribute('data-action', 'delete');
+    button.setAttribute('data-job', job.id);
+    var label = issueLabel(job.repo, job.issueNumber, job.issueKey);
+    var question = 'Supprimer définitivement le job ' + label + ' ? Transcripts, diff et journaux de vérification partent avec lui, et rien ne les retrouve.';
+    button.addEventListener('click', function (event) {
+      event.stopPropagation();
+      // Le panneau de détail n'a plus d'objet une fois la ligne partie : il se referme, la liste se recharge.
+      run(button, 'delete', { jobId: job.id }, question, closeDetail);
+    });
+    return button;
   }
 
   /**
@@ -1031,7 +1055,7 @@ export const PAGE_HTML = `<!doctype html>
   }
 
   /**
-   * Après une action, seuls l'état du job et son bouton changent dans l'en-tête : les mettre à jour sur
+   * Après une action, seuls l'état du job et ses boutons changent dans l'en-tête : les mettre à jour sur
    * place évite de reconstruire le panneau, ce qui ramènerait le défilement en haut et perdrait le focus.
    * Le reste du panneau (phases, transcript, liste d'actions) attend la prochaine ouverture.
    */
@@ -1051,7 +1075,10 @@ export const PAGE_HTML = `<!doctype html>
       detailHead.badge.textContent = STATE_LABEL[job.state] || String(job.state);
       var keepFocus = detailHead.action !== null && document.activeElement === detailHead.action;
       if (detailHead.action && detailHead.action.parentNode) detailHead.action.parentNode.removeChild(detailHead.action);
+      if (detailHead.remove && detailHead.remove.parentNode) detailHead.remove.parentNode.removeChild(detailHead.remove);
       detailHead.action = jobButtonFor(job, 'small');
+      // Refait lui aussi : un job annulé depuis ce panneau devient supprimable sans avoir à le rouvrir.
+      detailHead.remove = deleteButton(job, 'small');
       if (detailHead.action) {
         detailHead.node.insertBefore(detailHead.action, detailHead.close);
         if (keepFocus) detailHead.action.focus();
@@ -1059,6 +1086,7 @@ export const PAGE_HTML = `<!doctype html>
         // Plus aucune action possible sur ce job : le focus va au bouton voisin plutôt que sur body.
         detailHead.close.focus();
       }
+      if (detailHead.remove) detailHead.node.insertBefore(detailHead.remove, detailHead.close);
     }, function () {
       // L'action a réussi ; seul l'affichage est en retard, le panneau reste tel quel.
     });
@@ -1087,11 +1115,13 @@ export const PAGE_HTML = `<!doctype html>
     detailJobId = job.id;
     var jobAction = jobButtonFor(job, 'small');
     if (jobAction) head.appendChild(jobAction);
+    var removeAction = deleteButton(job, 'small');
+    if (removeAction) head.appendChild(removeAction);
     var close = el('button', 'action close', 'Fermer');
     close.type = 'button';
     close.addEventListener('click', closeDetail);
     head.appendChild(close);
-    detailHead = { node: head, badge: stateBadge, action: jobAction, close: close };
+    detailHead = { node: head, badge: stateBadge, action: jobAction, remove: removeAction, close: close };
     panel.appendChild(head);
     panel.appendChild(el('p', 'detail-title', job.issueTitle));
 

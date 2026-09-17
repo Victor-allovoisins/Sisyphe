@@ -1,7 +1,8 @@
-import { mkdir, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { effectiveDailyBudget } from '../../src/config/machine.js';
+import { jobDir } from '../../src/config/paths.js';
 import { Daemon } from '../../src/daemon/daemon.js';
 import { pollOnce } from '../../src/daemon/poll.js';
 import type { JobStore } from '../../src/store/jobs.js';
@@ -39,6 +40,15 @@ function gate(): { wait: Promise<void>; release: () => void } {
   });
   return { wait, release };
 }
+
+/** Le répertoire d'un job tel que le pipeline le laisse : des transcripts, un diff, des logs de vérification. */
+async function seedJobDir(dir: string): Promise<void> {
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, 'triage-1.jsonl'), '{}\n', 'utf8');
+  await writeFile(join(dir, 'diff.patch'), 'diff\n', 'utf8');
+}
+
+const exists = (p: string): Promise<boolean> => stat(p).then(() => true, () => false);
 
 describe('Daemon : pause, tick immédiat, statut', () => {
   it('pause bloque le démarrage d’un job queued, resume le libère', async () => {
@@ -239,6 +249,80 @@ describe('Daemon.retryJob', () => {
     expect(created.state).toBe('cancelled');
     expect(created.flags.earlyStop).toBe('label impossible : boom');
     expect(h.actions.listRecent(1)[0]).toMatchObject({ action: 'retry', jobId: created.id, outcome: 'error', error: 'label impossible : boom' });
+  });
+});
+
+describe('Daemon.deleteJob', () => {
+  it('supprime la ligne, ses phases et son répertoire', async () => {
+    const h = await makeHarness({ steps: [] });
+    const daemon = new Daemon(h.deps, QUIET);
+    await pollOnce(h.deps);
+    const job = h.store.listByStates(['queued'])[0];
+    h.phases.start({ jobId: job.id, name: 'triage', attempt: 1 });
+    const dir = jobDir(h.paths, job.id);
+    await seedJobDir(dir);
+    finishAs(h.store, job.id, 'done');
+
+    expect(await daemon.deleteJob(job.id, 'ui')).toMatchObject({ ok: true, result: { id: job.id } });
+    expect(h.store.get(job.id)).toBeNull();
+    expect(h.phases.listForJob(job.id)).toEqual([]);
+    // Le disque, pas seulement la base : c'est là que vivent transcripts, diff et logs de vérification.
+    expect(await exists(dir)).toBe(false);
+  });
+
+  it('refuse un job non terminé en disant de l’annuler d’abord, et ne touche à rien', async () => {
+    const h = await makeHarness({ steps: [] });
+    const daemon = new Daemon(h.deps, QUIET);
+    await pollOnce(h.deps);
+    const job = h.store.listByStates(['queued'])[0];
+    const dir = jobDir(h.paths, job.id);
+    await seedJobDir(dir);
+
+    expect(await daemon.deleteJob(job.id, 'ui')).toEqual({
+      ok: false,
+      error: "job en cours (queued) : l'annuler d'abord, puis le supprimer",
+    });
+    expect(h.store.get(job.id)).not.toBeNull();
+    expect(await exists(dir)).toBe(true);
+  });
+
+  it('refuse un job inconnu', async () => {
+    const h = await makeHarness({ steps: [] });
+    const daemon = new Daemon(h.deps, QUIET);
+
+    expect(await daemon.deleteJob('nope', 'ui')).toEqual({ ok: false, error: 'job inconnu : nope' });
+  });
+
+  it('journalise la suppression et laisse le journal du job intact', async () => {
+    const h = await makeHarness({ steps: [] });
+    const daemon = new Daemon(h.deps, QUIET);
+    await pollOnce(h.deps);
+    const job = h.store.listByStates(['queued'])[0];
+    // Une première action sur ce job : c'est elle qui doit survivre à la disparition de la ligne.
+    await daemon.cancelJob(job.id, 'cli');
+
+    expect(await daemon.deleteJob(job.id, 'ui')).toMatchObject({ ok: true });
+    expect(h.actions.listForJob(job.id).map((a) => [a.action, a.source, a.outcome])).toEqual([
+      ['cancel', 'cli', 'ok'],
+      ['delete', 'ui', 'ok'],
+    ]);
+    expect(h.actions.listForJob(job.id)[1]).toMatchObject({ repo: REPO, issueNumber: 7 });
+  });
+
+  it('refuse un job terminal dont la clôture tourne encore : le pipeline écrit toujours dans son répertoire', async () => {
+    const h = await makeHarness({ steps: [] });
+    const daemon = new Daemon(h.deps, QUIET);
+    await pollOnce(h.deps);
+    const job = h.store.listByStates(['queued'])[0];
+    finishAs(h.store, job.id, 'done');
+    // Le pipeline passe le job terminal avant de clore le ticket : entre les deux, il est encore en vol.
+    (daemon as unknown as { running: Map<string, AbortController> }).running.set(job.id, new AbortController());
+
+    expect(await daemon.deleteJob(job.id, 'ui')).toEqual({
+      ok: false,
+      error: 'clôture du job encore en cours : réessayer dans un instant',
+    });
+    expect(h.store.get(job.id)).not.toBeNull();
   });
 });
 

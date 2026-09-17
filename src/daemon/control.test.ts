@@ -57,6 +57,7 @@ function slowCancelTarget(daemon: Daemon, delayMs: number): ControlTarget {
     reload: (s) => daemon.reload(s),
     purgeBuildCache: (s) => daemon.purgeBuildCache(s),
     retryJob: (id, s) => daemon.retryJob(id, s),
+    deleteJob: (id, s) => daemon.deleteJob(id, s),
     enqueueIssue: (i, s) => daemon.enqueueIssue(i, s),
     stop: () => daemon.stop(),
     cancelJob: async (id) => {
@@ -279,6 +280,23 @@ describe('socket de contrôle : commandes', () => {
     expect(h.actions.listRecent(1)[0]).toMatchObject({ action: 'cancel', source: 'ui', jobId: job.id, outcome: 'ok' });
 
     expect(await client.send('cancel', { jobId: 'nope' })).toEqual({ ok: false, error: 'job inconnu : nope' });
+  });
+
+  it('delete : job terminé effacé par la socket ; job en file refusé', async () => {
+    const h = await makeHarness({ steps: [] });
+    const { client } = await startDaemon(h, { paused: true });
+    await waitFor(() => h.store.listByStates(['queued']).length === 1);
+    const job = h.store.listByStates(['queued'])[0];
+
+    expect(await client.send('delete', { jobId: job.id })).toEqual({
+      ok: false,
+      error: "job en cours (queued) : l'annuler d'abord, puis le supprimer",
+    });
+
+    await client.send('cancel', { jobId: job.id });
+    expect(await client.send('delete', { jobId: job.id }, 'ui')).toMatchObject({ ok: true });
+    expect(h.store.get(job.id)).toBeNull();
+    expect(h.actions.listRecent(1)[0]).toMatchObject({ action: 'delete', source: 'ui', jobId: job.id, outcome: 'ok' });
   });
 
   it('retry : nouveau job queued après une annulation ; refusé sur un job encore en file', async () => {

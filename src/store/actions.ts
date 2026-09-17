@@ -13,6 +13,7 @@ export type ActionOutcome = (typeof ACTION_OUTCOMES)[number];
 export type ActionName =
   | 'cancel'
   | 'retry'
+  | 'delete'
   | 'enqueue'
   | 'poll'
   | 'pause'

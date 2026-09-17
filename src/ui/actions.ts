@@ -48,7 +48,7 @@ const TIMEOUT_MESSAGE = "Le daemon n'a pas répondu à temps ; l'action a peut-�
  * enregistrement se journalise en `reload` et une purge en `purge`, et seulement quand le daemon répond.
  */
 export const UI_ACTIONS = [
-  'cancel', 'retry', 'enqueue', 'poll', 'pause', 'resume', 'stop', 'start', 'settings', 'purge-cache', 'jira-accounts',
+  'cancel', 'retry', 'delete', 'enqueue', 'poll', 'pause', 'resume', 'stop', 'start', 'settings', 'purge-cache', 'jira-accounts',
 ] as const satisfies readonly (ActionName | 'settings' | 'purge-cache' | 'jira-accounts')[];
 export type UiActionName = (typeof UI_ACTIONS)[number];
 
@@ -130,6 +130,7 @@ const emptyBody = z.strictObject({});
 const BODY_SCHEMAS = {
   cancel: jobIdBody,
   retry: jobIdBody,
+  delete: jobIdBody,
   enqueue: z.strictObject({ repo: z.string().min(1), issueNumber: z.number().int().positive() }),
   poll: emptyBody,
   pause: emptyBody,

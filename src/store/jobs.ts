@@ -172,6 +172,29 @@ export class JobStore {
     return this.must(id);
   }
 
+  /**
+   * Efface le job et ses phases. Les phases d'abord : `phases.job_id` référence `jobs(id)` sans
+   * ON DELETE CASCADE et les clés étrangères sont actives (voir `openDatabase`). Les deux dans une même
+   * transaction, sinon un échec entre les deux laisserait des phases orphelines, que plus rien ne relie
+   * à un job. Le journal des actions, lui, n'est pas touché : il dit qui a demandé quoi, et garde sa
+   * valeur quand l'objet a disparu.
+   */
+  delete(id: string): void {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare('DELETE FROM phases WHERE job_id = ?').run(id);
+      this.db.prepare('DELETE FROM jobs WHERE id = ?').run(id);
+      this.db.exec('COMMIT');
+    } catch (err) {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {
+        /* aucune transaction ouverte */
+      }
+      throw err;
+    }
+  }
+
   transition(id: string, to: JobState, patch: JobPatch = {}): Job {
     const job = this.must(id);
     assertTransition(job.state, to);
