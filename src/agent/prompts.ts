@@ -145,9 +145,12 @@ export interface JiraOutcome {
  * Prompt de la phase `jira`. Le contenu du ticket n'est **pas** rappelé ici : l'agent le lit lui-même avec
  * `sisyphe jira show`, ce qui évite d'injecter du texte de tiers dans un prompt dont le rôle est d'agir.
  *
- * Le brouillon fait exception sans contredire cette règle : ce n'est pas du texte de tiers mais celui de
- * Sisyphe, déjà passé par `sanitizeModelText`. Sans lui, l'agent ne recevait du blocage que `reason` — la
- * chaîne « triage : needs_clarification » — et les questions posées à la personne se perdaient dès qu'il
+ * Le brouillon n'élargit pas ce rayon d'action : `sisyphe jira show` rend déjà, verbatim, le titre, le corps
+ * et les commentaires du ticket — dont vient une partie de ce que porte le brouillon (les questions d'un
+ * triage bloqué, par exemple, sont écrites par le modèle de triage à partir du ticket, pas par Sisyphe). Le
+ * skill dit déjà à l'agent comment traiter ce qui vient du ticket ; le brouillon ne lui fait rien lire de
+ * nouveau, il le lui résume. Sans lui, l'agent ne recevait du blocage que `reason` — la chaîne
+ * « triage : needs_clarification » — et les questions posées à la personne se perdaient dès qu'il
  * écrivait un commentaire, puisque le sien remplace le brouillon.
  */
 export function jiraSyncPrompt(o: JiraOutcome): string {
