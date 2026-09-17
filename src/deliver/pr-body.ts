@@ -25,6 +25,8 @@ const STEP_LABEL: Record<VerifyStep['status'], (s: VerifyStep) => string> = {
   failed: (s) => `❌ code ${s.exitCode} (${fmtDuration(s.durationMs)})`,
   timeout: (s) => `⏱️ délai de vérification dépassé après ${fmtDuration(s.durationMs)}`,
   skipped: () => '⏭️ non exécutée (étape précédente en échec ou délai de vérification épuisé)',
+  // La raison est écrite par le modèle de triage : un relecteur doit pouvoir la contester, donc la lire.
+  'out-of-scope': (s) => `🚫 hors périmètre${s.reason ? ` : ${sanitizeModelText(s.reason)}` : ''}`,
 };
 
 /** Copie du rapport dont tout texte venant du modèle est passé par sanitizeModelText. */
@@ -54,6 +56,9 @@ export function renderPrBody(i: PrBodyInput): string {
   lines.push('## Tests', '', "Exécutés par l'agent :", '');
   lines.push(...(report.tests_run.length ? bullets(report.tests_run) : ['- aucun déclaré']), '');
   lines.push('Vérification indépendante par Sisyphe :', '');
+  // Le triage avait annoncé moins : dire que Sisyphe a repris la main, et sur quel fait, avant de lister
+  // des étapes que le relecteur croirait sinon choisies par le triage.
+  if (verify.scope.widened) lines.push(`ℹ️ Périmètre élargi au-delà de ce que le triage demandait — ${sanitizeModelText(verify.scope.reason)}`, '');
   lines.push(...verify.steps.map((s) => `- ${s.name} : ${STEP_LABEL[s.status](s)}`), '');
 
   const attention: string[] = [];

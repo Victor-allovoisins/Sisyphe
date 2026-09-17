@@ -28,7 +28,10 @@ export function safeText(s: string, max: number): string {
 export function formatJobLine(j: Job): string {
   const pr = j.prUrl ? ` · ${j.prUrl}` : '';
   const title = safeText(j.issueTitle, 48);
-  return `${j.id.slice(0, 8)}  ${j.state.padEnd(12)} ${j.repo}#${j.issueNumber} · ${title} · $${j.costUsd.toFixed(2)} · ${fmtDuration(j.durationMs)} · ${j.attempt} tentative(s)${pr}`;
+  // Comme dans l'UI : le nom du ticket suit le job, pas la configuration du dépôt. Un job créé avant la
+  // bascule vers Jira n'a pas de clé et reste nommé par son numéro d'issue GitHub.
+  const ticket = j.issueKey ?? `${j.repo}#${j.issueNumber}`;
+  return `${j.id.slice(0, 8)}  ${j.state.padEnd(12)} ${ticket} · ${title} · $${j.costUsd.toFixed(2)} · ${fmtDuration(j.durationMs)} · ${j.attempt} tentative(s)${pr}`;
 }
 
 type Json = Record<string, unknown>;

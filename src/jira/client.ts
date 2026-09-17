@@ -88,6 +88,8 @@ export function jqlQuote(v: string): string {
 export class JiraIssueTracker implements IssueTracker {
   private readonly byRepo = new Map<string, JiraProject>();
   private readonly byKey = new Map<string, JiraProject>();
+  /** Nom affiché par `accountId`, garni au fil de l'eau : voir `accountName`. */
+  private readonly displayNames = new Map<string, string>();
   private readonly auth: string;
 
   constructor(private readonly cfg: JiraClientConfig) {
@@ -308,6 +310,11 @@ export class JiraIssueTracker implements IssueTracker {
    * mais « ce ticket n'est plus à moi ». Sans cela, un job annulé ou orphelin laisserait le ticket en cours et
    * assigné au compte dédié : hors des statuts candidats, donc jamais repris, et assigné au bot, donc invisible.
    *
+   * Ce verbe ne déplace rien sur `blocked`, mais le ticket, lui, a pu bouger : quand le projet configure un
+   * `blockedStatus`, un job bloqué pose le ticket sur ce statut d'attente avant d'être rendu. Tenu hors du
+   * chemin d'avancement, ce n'est pas un recul ; et ce n'est pas ici que ça se décide, mais dans `closeTicket`
+   * — avec le garde qui va avec — et dans le skill, à qui le prompt nomme le statut.
+   *
    * Cas assumé : après une PR ouverte dont la vérification échoue, le ticket est rendu sans quitter la colonne
    * de travail. Le commentaire porte le lien de la PR, et c'est à la personne qui reprend la main de décider
    * si elle passe en relecture ou repart en arrière.
@@ -423,9 +430,38 @@ export class JiraIssueTracker implements IssueTracker {
     if (!r) return;
     const known = new Set((r.values ?? []).map((s) => (s.name ?? '').toLowerCase()));
     if (known.size === 0) return;
-    const missing = [...p.statusesInOrder, p.inProgressStatus, p.doneStatus].filter((s) => !known.has(s.toLowerCase()));
+    // `blockedStatus` est du lot bien qu'il soit hors de `statusesInOrder` : mal orthographié, il ne se
+    // verrait qu'à la fin d'un job bloqué, dans un `log.warn` que personne ne lit — et le ticket resterait
+    // dans la colonne de travail, exactement comme si le statut n'était pas configuré.
+    const configures = [...p.statusesInOrder, p.inProgressStatus, p.doneStatus, ...(p.blockedStatus ? [p.blockedStatus] : [])];
+    const missing = configures.filter((s) => !known.has(s.toLowerCase()));
     if (missing.length > 0) {
       this.cfg.log?.warn({ project: p.key, missing }, 'statuts configurés absents du projet Jira');
+    }
+  }
+
+  /**
+   * Nom affiché d'un compte. Mémorisé pour la durée du processus : un nom affiché ne change pas en
+   * pratique, et chaque message rendu le redemanderait sinon. Seul un succès est retenu — garder un échec
+   * priverait le daemon du nom jusqu'à son redémarrage pour un 503 passé.
+   *
+   * L'échec n'arrête rien : nommer le compte est un confort de lecture, pas une donnée, et un message qui
+   * ne part pas coûte infiniment plus cher qu'un message qui ne nomme personne.
+   */
+  async accountName(accountId: string): Promise<string | null> {
+    const known = this.displayNames.get(accountId);
+    if (known !== undefined) return known;
+    try {
+      const user = await this.request<{ displayName?: string }>(
+        'GET',
+        `/rest/api/3/user?accountId=${encodeURIComponent(accountId)}`,
+      );
+      const name = user.displayName ?? null;
+      if (name) this.displayNames.set(accountId, name);
+      return name;
+    } catch (err) {
+      this.cfg.log?.warn({ err, accountId }, 'nom du compte Jira illisible');
+      return null;
     }
   }
 

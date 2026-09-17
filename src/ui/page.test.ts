@@ -1,4 +1,9 @@
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { loadMachineConfig, parseMachineConfigAsWritten } from '../config/machine.js';
+import { validateMachineConfigInput, writeMachineConfig } from '../config/write.js';
 import { PAGE_HTML } from './page.js';
 
 const JIRA = { site: 'acme.atlassian.net', keys: { 'acme/demo': 'DEMO' } };
@@ -28,11 +33,14 @@ interface FakeNode { tag: string; text: string; href?: string; target?: string; 
  * pour de vrai. Un test qui se contenterait de chercher `'https://github.com/'` dans la chaîne
  * resterait vert le jour où la validation du site Jira disparaîtrait.
  */
-function guards(jira: unknown): { issueLink(repo: string, number: number): FakeNode } {
+function guards(jira: unknown): {
+  issueLink(repo: string, number: number, key?: string | null): FakeNode;
+  deducedKey(repo: string, number: number): string | null;
+} {
   const source = [
-    ...['REPO_RE', 'JIRA_SITE_RE', 'JIRA_KEY_RE'].map(constSource),
-    ...['safeLink', 'ghLink', 'jiraKey', 'issueLabel', 'issueLink'].map(fnSource),
-    'return { issueLink: issueLink };',
+    ...['REPO_RE', 'JIRA_SITE_RE', 'JIRA_KEY_RE', 'JIRA_ISSUE_KEY_RE'].map(constSource),
+    ...['safeLink', 'ghLink', 'jiraSite', 'jiraKey', 'deducedKey', 'issueLabel', 'issueLink'].map(fnSource),
+    'return { issueLink: issueLink, deducedKey: deducedKey };',
   ].join('\n');
   const el = (tag: string, _cls: string | null, text: string): FakeNode => ({ tag, text });
   return Function('ui', 'el', source)({ jira }, el);
@@ -60,21 +68,32 @@ describe('PAGE_HTML', () => {
   });
 
   it('ne fabrique un lien que vers GitHub ou le site Jira configuré', () => {
-    expect(guards(null).issueLink('acme/demo', 42)).toMatchObject({ tag: 'a', text: 'acme/demo#42', href: 'https://github.com/acme/demo/issues/42', target: '_blank', rel: 'noopener noreferrer' });
-    expect(guards(JIRA).issueLink('acme/demo', 42)).toMatchObject({ tag: 'a', text: 'DEMO-42', href: 'https://acme.atlassian.net/browse/DEMO-42' });
+    expect(guards(null).issueLink('acme/demo', 42, null)).toMatchObject({ tag: 'a', text: 'acme/demo#42', href: 'https://github.com/acme/demo/issues/42', target: '_blank', rel: 'noopener noreferrer' });
+    expect(guards(JIRA).issueLink('acme/demo', 42, 'DEMO-42')).toMatchObject({ tag: 'a', text: 'DEMO-42', href: 'https://acme.atlassian.net/browse/DEMO-42' });
     // Dépôt hors des projets Jira : la configuration peut être mixte, ses tickets restent sur GitHub.
-    expect(guards(JIRA).issueLink('acme/other', 7).href).toBe('https://github.com/acme/other/issues/7');
+    expect(guards(JIRA).issueLink('acme/other', 7, null).href).toBe('https://github.com/acme/other/issues/7');
+  });
+
+  it('le lien suit la clé du job, pas le projet Jira du dépôt', () => {
+    // Un job antérieur à la bascule porte un numéro d’issue GitHub, sur un dépôt aujourd’hui sur Jira.
+    expect(guards(JIRA).issueLink('acme/demo', 42, null)).toMatchObject({ text: 'acme/demo#42', href: 'https://github.com/acme/demo/issues/42' });
+    // Et la clé vaut pour elle-même : le numéro du ticket n’a pas à suivre celui de l’issue.
+    expect(guards(JIRA).issueLink('acme/demo', 42, 'DEMO-7').href).toBe('https://acme.atlassian.net/browse/DEMO-7');
   });
 
   it('ne suit pas un site Jira qui déplacerait l’origine du lien', () => {
     // Le site arrive par le snapshot : `@` ou `/` y suffirait à pointer ailleurs qu’Atlassian.
     for (const site of ['acme.atlassian.net@evil.example', 'evil.example', 'acme.atlassian.net/../evil']) {
-      const link = guards({ site, keys: { 'acme/demo': 'DEMO' } }).issueLink('acme/demo', 42);
+      const link = guards({ site, keys: { 'acme/demo': 'DEMO' } }).issueLink('acme/demo', 42, 'DEMO-42');
       expect(link.href).toBe('https://github.com/acme/demo/issues/42');
     }
-    // Même exigence sur la clé de projet, qui compose l’URL elle aussi.
-    expect(guards({ site: 'acme.atlassian.net', keys: { 'acme/demo': '../evil' } }).issueLink('acme/demo', 42).href)
-      .toBe('https://github.com/acme/demo/issues/42');
+    // Même exigence sur la clé que porte le job, qui compose l’URL elle aussi.
+    for (const key of ['../evil', 'DEMO-42/../..', 'demo-42', '@evil.example']) {
+      expect(guards(JIRA).issueLink('acme/demo', 42, key).href).toBe('https://github.com/acme/demo/issues/42');
+    }
+    // Et sur la clé de projet, dont le journal d’actions se sert encore faute de mieux.
+    expect(guards(JIRA).deducedKey('acme/demo', 42)).toBe('DEMO-42');
+    expect(guards({ site: 'acme.atlassian.net', keys: { 'acme/demo': '../evil' } }).deducedKey('acme/demo', 42)).toBeNull();
   });
 
   it('expose les trois onglets, le flux SSE et les routes JSON', () => {
@@ -103,6 +122,61 @@ describe('PAGE_HTML', () => {
     // Un null explicite : sans lui le serveur reporterait l'ancienne section, et le retrait serait impossible.
     expect(PAGE_HTML).toContain('config.jira = (site && email && token && settings.jira.projects.length)');
     expect(PAGE_HTML).toContain(': null;');
+  });
+
+  /**
+   * L'aller-retour complet d'un champ que la page n'affiche pas : lu du fichier, reposté par la page,
+   * validé, réécrit, relu. Joué de bout en bout plutôt que par une recherche de `blockedStatus` dans le
+   * HTML — ce qui se perd ici se perd en silence, et le seul contrôle qui morde est celui qui rejoue la
+   * chaîne entière : un troisième chemin de reconstruction qui oublierait le champ le ferait tomber.
+   */
+  it('n’efface pas un statut de blocage configuré à la main : aller-retour par les réglages', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sisyphe-page-'));
+    try {
+      const keyPath = join(dir, 'app.pem');
+      const tokenPath = join(dir, 'jira-token.txt');
+      const configPath = join(dir, 'config.yml');
+      await writeFile(keyPath, 'clé factice');
+      await writeFile(tokenPath, 'jeton');
+      const ecrit = `github: { appId: 12, installationId: 34, privateKeyPath: ${keyPath} }
+repos: [ILokYou/ILokYou-iOS, ILokYou/back]
+dataDir: ${dir}
+jira:
+  site: allovoisins.atlassian.net
+  email: bot@example.test
+  apiTokenPath: ${tokenPath}
+  projects:
+    - key: IOS
+      accountId: acc-1
+      repo: ILokYou/ILokYou-iOS
+      blockedStatus: En attente d'informations
+    - key: BACK
+      accountId: acc-1
+      repo: ILokYou/back
+`;
+      // Ce que la page reçoit de `settingsView`, puis ce qu'elle reposte — la vraie fonction, extraite du
+      // HTML et exécutée, et le passage par JSON qui efface les `undefined` comme le ferait `fetch`.
+      const vue = parseMachineConfigAsWritten(ecrit);
+      const clean = Function(`${fnSource('cleanJiraProject')}\nreturn cleanJiraProject;`)() as (p: unknown) => unknown;
+      const poste: unknown = JSON.parse(JSON.stringify({
+        ...vue,
+        jira: { ...vue.jira, projects: vue.jira?.projects.map(clean) },
+      }));
+
+      const valide = await validateMachineConfigInput(poste, vue);
+      if (!valide.ok) throw new Error(`refus inattendu : ${JSON.stringify(valide.issues)}`);
+      await writeMachineConfig(configPath, valide.config);
+
+      const relu = await loadMachineConfig(configPath);
+      expect(relu.jira?.projects[0].blockedStatus).toBe("En attente d'informations");
+      // L'autre moitié : un projet qui n'en a pas ne doit pas se retrouver avec la clé posée à vide. Le
+      // schéma refuse `null` et la chaîne vide — le fichier réécrit deviendrait illisible au démarrage
+      // suivant, et la page aurait cassé la configuration en enregistrant autre chose.
+      expect(relu.jira?.projects[1].blockedStatus).toBeUndefined();
+      expect(await readFile(configPath, 'utf8')).not.toContain('blockedStatus: null');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('ajoute un quatrième onglet Réglages, avec son formulaire groupé', () => {

@@ -33,6 +33,7 @@ limits:
 export const readyVerdict = {
   verdict: 'ready', confidence: 0.9, summary: 'Écrire hello dans src/feature.txt', note: '', change_type: 'feat',
   plan: ['créer src/feature.txt'], files_likely_touched: ['src/feature.txt'], questions: [], reasons: [],
+  verification: { steps: ['build', 'test', 'lint'], why: 'périmètre complet' },
 };
 
 export const report = (summary: string) => ({
@@ -89,6 +90,8 @@ export interface HarnessOptions {
   dailyBudgetUsd?: number | null | 'absent';
   /** Backend de la config machine ; absent, le schéma retombe sur `sdk`. Ne change pas l'agent du harness, toujours scripté. */
   agentBackend?: 'sdk' | 'cli' | 'claude-code' | 'codex' | 'opencode';
+  /** Concurrence de la config machine ; absente, le schéma retombe sur 1 — un seul job à la fois. */
+  maxConcurrentJobs?: number;
   /** Surcharge machine des modèles par phase (codex/opencode). */
   agentModels?: { triage?: string; implement?: string };
   issues?: Array<{ number: number; title: string; author?: string; labeledBy?: string; tracker?: Issue['tracker'] }>;
@@ -131,6 +134,7 @@ export async function makeHarness(o: HarnessOptions) {
     dataDir: paths.root,
     dailyBudgetUsd: o.dailyBudgetUsd === undefined ? 60 : o.dailyBudgetUsd,
     ...(o.agentBackend === undefined ? {} : { agentBackend: o.agentBackend }),
+    ...(o.maxConcurrentJobs === undefined ? {} : { maxConcurrentJobs: o.maxConcurrentJobs }),
     ...(o.agentModels === undefined ? {} : { agentModels: o.agentModels }),
   };
   const configPath = join(root, 'config.yml');

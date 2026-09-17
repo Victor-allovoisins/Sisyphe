@@ -1,3 +1,4 @@
+import type { Logger } from 'pino';
 import { describe, expect, it } from 'vitest';
 import { JIRA_STATUSES_DEFAULT } from '../config/machine.js';
 import { parseRepo, type IssueRef } from '../github/source.js';
@@ -291,6 +292,22 @@ describe('isStillActive', () => {
   });
 });
 
+describe('accountName', () => {
+  it('résout le nom affiché et ne le redemande pas', async () => {
+    const h = harness({ 'GET /rest/api/3/user': { accountId: ACCOUNT, displayName: 'Sisyphe iOS' } });
+    expect(await h.tracker.accountName(ACCOUNT)).toBe('Sisyphe iOS');
+    expect(await h.tracker.accountName(ACCOUNT)).toBe('Sisyphe iOS');
+    const asked = h.calls.filter((c) => c.path.startsWith('/rest/api/3/user'));
+    expect(asked).toHaveLength(1);
+    expect(asked[0].path).toContain(`accountId=${encodeURIComponent(ACCOUNT)}`);
+  });
+
+  it('rend null plutôt que de lever : nommer le compte est un confort, pas une donnée', async () => {
+    const h = harness({});
+    expect(await h.tracker.accountName(ACCOUNT)).toBeNull();
+  });
+});
+
 describe('refFromKey', () => {
   it('résout une clé vers le dépôt du projet qui la sert', () => {
     const tracker = new JiraIssueTracker({
@@ -367,5 +384,44 @@ describe('configuration', () => {
   it('refuse explicitement un dépôt sans projet Jira configuré', async () => {
     const h = harness({});
     await expect(h.tracker.listCandidates(parseRepo('ILokYou/inconnu'))).rejects.toThrow(/Aucun projet Jira configuré/);
+  });
+});
+
+describe('ensureLabels', () => {
+  /** Le même Jira miniature, mais avec un journal à écouter et un projet qu'on fait varier. */
+  function withStatuses(known: string[], over: Partial<JiraProject>) {
+    const warnings: { missing: string[] }[] = [];
+    const fetchImpl = (async (url: string | URL) => {
+      const u = new URL(String(url));
+      if (u.pathname !== '/rest/api/3/project/IOS/statuses') return new Response('not found', { status: 404 });
+      return new Response(JSON.stringify({ values: known.map((name) => ({ name })) }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+    const tracker = new JiraIssueTracker({
+      site: 'allovoisins.atlassian.net',
+      email: 'bot@example.test',
+      apiToken: 'jeton',
+      projects: [{ ...PROJECT, ...over }],
+      fetchImpl,
+      retry: { attempts: 1, sleep: async () => {} },
+      log: { warn: (o: { missing: string[] }) => warnings.push(o) } as unknown as Logger,
+    });
+    return { tracker, warnings };
+  }
+
+  it('signale au démarrage un statut de blocage mal orthographié, comme les autres statuts configurés', async () => {
+    // Sinon la faute ne se verrait qu'à la fin d'un job bloqué, et le ticket resterait dans la colonne de
+    // travail exactement comme si aucun statut n'était configuré.
+    const h = withStatuses([...JIRA_STATUSES_DEFAULT], { blockedStatus: "En attente d'infos" });
+    await h.tracker.ensureLabels(REPO);
+    expect(h.warnings).toEqual([{ project: 'IOS', missing: ["En attente d'infos"] }]);
+  });
+
+  it('ne signale rien quand tous les statuts configurés existent, statut de blocage compris', async () => {
+    const attente = "En attente d'informations";
+    const h = withStatuses([...JIRA_STATUSES_DEFAULT, attente], { blockedStatus: attente });
+    await h.tracker.ensureLabels(REPO);
+    expect(h.warnings).toEqual([]);
   });
 });

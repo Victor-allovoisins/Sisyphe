@@ -87,4 +87,12 @@ limits:
   it('refuse un document qui n’est pas un objet', () => {
     expect(() => parseRepoConfig('- a\n- b\n')).toThrow(/racine/);
   });
+
+  it('verify.alwaysRun vaut [] par défaut et accepte les étapes connues', () => {
+    const base = 'baseBranch: main\ncommands:\n  build: "true"\n';
+    expect(parseRepoConfig(base).verify.alwaysRun).toEqual([]);
+    expect(parseRepoConfig(`${base}verify:\n  alwaysRun: [build, lint]\n`).verify.alwaysRun).toEqual(['build', 'lint']);
+    expect(() => parseRepoConfig(`${base}verify:\n  alwaysRun: [setup]\n`)).toThrow();
+    expect(() => parseRepoConfig(`${base}verify:\n  alwaysRun: [nawak]\n`)).toThrow();
+  });
 });

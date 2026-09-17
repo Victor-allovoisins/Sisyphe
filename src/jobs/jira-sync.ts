@@ -11,7 +11,15 @@ export type { JiraOutcome };
 const JIRA_MAX_TURNS = 20;
 const JIRA_MAX_BUDGET_USD = 1;
 
-export function jiraOutcomeOf(job: Job, state: JobState, targetHint: string, key = '', draft = ''): JiraOutcome {
+/**
+ * `blockedHint` n'est repris que sur un job **bloqué**, jamais sur un échec : un secret détecté, un chemin
+ * protégé touché ou une vérification rouge n'attendent aucune information — c'est un refus, pas une attente.
+ * La branche « rien à livrer » du skill couvrant les deux cas, c'est ce filtre-ci qui tient la distinction :
+ * ne pas nommer le statut à l'agent est le seul moyen sûr qu'il n'y pose pas un ticket en échec.
+ */
+export function jiraOutcomeOf(
+  job: Job, state: JobState, targetHint: string, key = '', draft = '', blockedHint: string | null = null,
+): JiraOutcome {
   const flags: string[] = [];
   if (job.flags.secretsFound.length) flags.push('secrets détectés dans le diff');
   if (job.flags.protectedPathsTouched.length) flags.push('chemins protégés modifiés');
@@ -20,7 +28,7 @@ export function jiraOutcomeOf(job: Job, state: JobState, targetHint: string, key
   return {
     key, state, verificationFailed: job.flags.verificationFailed, prUrl: job.prUrl,
     attempts: job.attempt, costUsd: job.costUsd, duration: fmtDuration(job.durationMs),
-    targetHint, reason: job.error, flags, draft,
+    targetHint, blockedStatus: state === 'blocked' ? blockedHint : null, reason: job.error, flags, draft,
   };
 }
 

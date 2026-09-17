@@ -104,6 +104,17 @@ export interface IssueTracker {
   /** Ouverte et label trigger toujours présent. */
   isStillActive(ref: IssueRef): Promise<boolean>;
   ensureLabels(repo: RepoRef): Promise<void>;
+  /**
+   * Nom affiché d'un compte, pour l'écrire dans un message lu par un humain. Optionnel : le suivi par
+   * label n'en a pas besoin, ses consignes nomment un label et non une personne.
+   */
+  accountName?(accountId: string): Promise<string | null>;
+  /**
+   * Emmène le ticket sur ce statut, nommé tel quel. Optionnel comme `accountName` : le suivi par label n'a
+   * aucun statut arbitraire à viser, ses trois labels tiennent dans `setStatus`. Lève quand le chemin
+   * n'existe pas — c'est à l'appelant de décider ce que vaut une transition refusée.
+   */
+  transitionTo?(ref: IssueRef, target: string): Promise<{ hops: string[] }>;
 }
 
 /**

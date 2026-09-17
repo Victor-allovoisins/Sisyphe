@@ -509,7 +509,9 @@ export class Daemon {
       if (!RETRYABLE_STATES.has(job.state)) {
         return { ok: false, error: `job non relançable (${job.state}) : seuls failed, blocked et cancelled le sont` };
       }
-      return this.createLabelled({ repo: job.repo, issueNumber: job.issueNumber, issueTitle: job.issueTitle }, ref);
+      // La clé est reprise du job relancé, jamais redéduite : relancer un job d'avant la bascule ne doit pas
+      // lui coller la clé Jira que son dépôt porte aujourd'hui.
+      return this.createLabelled({ repo: job.repo, issueNumber: job.issueNumber, issueTitle: job.issueTitle, issueKey: job.issueKey }, ref);
     });
   }
 
@@ -529,7 +531,7 @@ export class Daemon {
         return { ok: false, error: `issue illisible : ${messageOf(err)}` };
       }
       if (issue.state === 'closed') return { ok: false, error: `issue fermée : ${input.repo}#${input.issueNumber}` };
-      return this.createLabelled({ repo: input.repo, issueNumber: input.issueNumber, issueTitle: issue.title }, ref);
+      return this.createLabelled({ repo: input.repo, issueNumber: input.issueNumber, issueTitle: issue.title, issueKey: issue.tracker?.key ?? null }, ref);
     });
   }
 
@@ -539,7 +541,7 @@ export class Daemon {
    * déjà un actif — il doit le trouver et passer son chemin. Et comme `watchCancellations`
    * annule un job actif sans label, la séquence entière tient sous la porte de sérialisation.
    */
-  private async createLabelled(input: { repo: string; issueNumber: number; issueTitle: string }, ref: ActionRef): Promise<CommandResult<Job>> {
+  private async createLabelled(input: { repo: string; issueNumber: number; issueTitle: string; issueKey: string | null }, ref: ActionRef): Promise<CommandResult<Job>> {
     const active = this.d.store.findActiveByIssue(input.repo, input.issueNumber);
     if (active) return { ok: false, error: `un job est déjà actif sur ${input.repo}#${input.issueNumber} (${active.id}, ${active.state})` };
     const job = this.d.store.create(input);

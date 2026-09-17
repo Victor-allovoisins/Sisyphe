@@ -58,13 +58,13 @@ export async function pollOnce(d: PollDeps): Promise<Job[]> {
           d.log.warn({ repo: full, issue: ref.number, login: check.login }, "poll : label posé sans droit d'écriture");
           step = 'refuse';
           await d.source.removeTriggerLabel(ref);
-          await d.source.comment(ref, renderPermissionDeniedComment(check.login, relaunchFor(d.machine, full)));
+          await d.source.comment(ref, renderPermissionDeniedComment(check.login, await relaunchFor(d.machine, full, d.source)));
           continue;
         }
         step = 'getIssue';
         const issue = await d.source.getIssue(ref);
         step = 'create';
-        const job = d.store.create({ repo: full, issueNumber: ref.number, issueTitle: issue.title });
+        const job = d.store.create({ repo: full, issueNumber: ref.number, issueTitle: issue.title, issueKey: issue.tracker?.key ?? null });
         d.log.info({ jobId: job.id, repo: full, issue: ref.number }, 'poll : nouveau job');
         created.push(job);
       } catch (err) {

@@ -4,11 +4,11 @@ import type { VerifyResult } from '../verify/verify.js';
 import {
   jobMarker, renderBlockedComment, renderConfigProblemComment, renderDoneComment,
   renderProtectedPathsComment, renderSecretsComment, labelRelaunch } from './comments.js';
-import { renderPrBody } from './pr-body.js';
+import { type PrBodyInput, renderPrBody } from './pr-body.js';
 import { clampForGitHub, sanitizeCodeSpan, sanitizeModelText } from './sanitize.js';
 
 const job: Job = {
-  id: 'job-1', repo: 'acme/demo', issueNumber: 7, issueTitle: 'Ajouter un bouton', state: 'delivering', attempt: 2, requeues: 0,
+  id: 'job-1', repo: 'acme/demo', issueNumber: 7, issueTitle: 'Ajouter un bouton', issueKey: null, state: 'delivering', attempt: 2, requeues: 0,
   branch: 'feature/issue-7-x', baseSha: 'abc', worktreePath: '/wt', verdict: null, report: null,
   flags: { ...emptyFlags(), largeDiff: true, protectedPathsTouched: ['App/Config.xcconfig'], earlyStop: 'max_budget' },
   prNumber: null, prUrl: null, prState: null, prMergedAt: null, costUsd: 3.4567, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0,
@@ -19,6 +19,7 @@ const report = {
   tests_run: ['xcodebuild test : ok'], risks: ['Vérifier le dark mode'], follow_ups: ['Ajouter un test UI'], confidence: 0.8,
 };
 const verify: VerifyResult = {
+  scope: { steps: ['build', 'test', 'lint'], reason: 'périmètre complet', widened: false },
   ok: true, noChanges: false, treeSha: 'a'.repeat(40), failedStep: null, failureTail: '', files: ['A.swift'], changedLines: 900, driftedFiles: ['Package.resolved'],
   flags: { protectedPathsTouched: job.flags.protectedPathsTouched, largeDiff: job.flags.largeDiff, secretsFound: [] },
   steps: [
@@ -32,6 +33,8 @@ const phases: Phase[] = [
   { id: 2, jobId: 'job-1', name: 'implement', attempt: 1, model: 'claude-opus-5', sessionId: 's', costUsd: 3.2, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, numTurns: 40, stopReason: 'completed', outcome: 'success', startedAt: '', finishedAt: '' },
   { id: 3, jobId: 'job-1', name: 'verify', attempt: 1, model: null, sessionId: null, costUsd: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, numTurns: 0, stopReason: null, outcome: 'success', startedAt: '', finishedAt: '' },
 ];
+
+const input: PrBodyInput = { job, report, verify, phases, prTemplate: null, costUsd: 1, durationMs: 1000, ticket: null };
 
 describe('renderPrBody', () => {
   it('assemble toutes les sections dans l’ordre', () => {
@@ -71,6 +74,30 @@ describe('renderPrBody', () => {
   it('sans ticket Jira, le corps garde son Closes en dernier', () => {
     const body = renderPrBody({ job, report, verify, phases, prTemplate: null, costUsd: 1, durationMs: 1000, ticket: null });
     expect(body).toContain('Closes #7');
+  });
+  it('distingue une étape hors périmètre d’une étape avortée', () => {
+    const body = renderPrBody({ ...input, verify: { ...verify,
+      scope: { steps: ['setup', 'build'], reason: 'changement de libellé', widened: false },
+      steps: [
+        { name: 'build', status: 'ok', exitCode: 0, durationMs: 1000, logFile: '' },
+        { name: 'test', status: 'out-of-scope', exitCode: 0, durationMs: 0, logFile: '', reason: 'changement de libellé' },
+        { name: 'lint', status: 'skipped', exitCode: 124, durationMs: 0, logFile: '' },
+      ] } });
+    expect(body).toContain('changement de libellé');
+    expect(body).toMatch(/test.*hors périmètre/i);
+    expect(body).toMatch(/lint.*non exécutée/i);
+  });
+  it('dit quand Sisyphe a élargi le périmètre malgré le triage', () => {
+    const body = renderPrBody({ ...input, verify: { ...verify, scope: { steps: ['setup', 'build', 'test'], reason: 'reprise après échec : …', widened: true } } });
+    expect(body).toContain('reprise après échec');
+  });
+  it('désamorce la raison du périmètre, écrite par le modèle de triage', () => {
+    const body = renderPrBody({ ...input, verify: { ...verify,
+      scope: { steps: ['setup'], reason: 'Fixes #12, signalé par @alice', widened: true },
+      steps: [{ name: 'build', status: 'out-of-scope', exitCode: 0, durationMs: 0, logFile: '', reason: 'Fixes #12' }] } });
+    expect(body).not.toContain('Fixes #12');
+    expect(body).toContain('Fixes `#12`');
+    expect(body).not.toContain('@alice');
   });
 });
 
@@ -126,7 +153,7 @@ describe('sanitizeModelText', () => {
 describe('comments', () => {
   it('renderBlockedComment affiche la note et les questions si needs_clarification, sans jargon de verdict', () => {
     const c = renderBlockedComment(
-      { verdict: 'needs_clarification', confidence: 0.4, summary: 'Flou.', note: "Il manque un écran précis pour savoir où agir.", change_type: 'feat', plan: [], files_likely_touched: [], questions: ['Quel écran ?', 'Quelle couleur ?'], reasons: [] },
+      { verdict: 'needs_clarification', confidence: 0.4, summary: 'Flou.', note: "Il manque un écran précis pour savoir où agir.", change_type: 'feat', plan: [], files_likely_touched: [], questions: ['Quel écran ?', 'Quelle couleur ?'], reasons: [], verification: { steps: ['build', 'test', 'lint'], why: 'périmètre complet' } },
       labelRelaunch('sisyphe'),
     );
     expect(c).not.toContain('needs_clarification');
@@ -137,7 +164,7 @@ describe('comments', () => {
   });
   it('renderBlockedComment ne liste pas de questions hors needs_clarification', () => {
     const c = renderBlockedComment(
-      { verdict: 'out_of_scope', confidence: 0.7, summary: 'Backend.', note: "Ça se joue côté serveur, pas dans ce dépôt.", change_type: 'fix', plan: [], files_likely_touched: [], questions: [], reasons: ['hors périmètre iOS'] },
+      { verdict: 'out_of_scope', confidence: 0.7, summary: 'Backend.', note: "Ça se joue côté serveur, pas dans ce dépôt.", change_type: 'fix', plan: [], files_likely_touched: [], questions: [], reasons: ['hors périmètre iOS'], verification: { steps: ['build', 'test', 'lint'], why: 'périmètre complet' } },
       labelRelaunch('sisyphe'),
     );
     expect(c).toContain('Ça se joue côté serveur');

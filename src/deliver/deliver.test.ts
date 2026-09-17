@@ -18,7 +18,7 @@ const REPO = 'acme/demo';
 const repo = parseRepo(REPO);
 const config = parseRepoConfig('baseBranch: main\ncommands:\n  build: "true"\n'); // guillemets : en YAML nu, true est un booléen
 const report = { summary: 'ok', changes: [], decisions: [], tests_run: [], risks: [], follow_ups: [], confidence: 1 };
-const verifyBase: Omit<VerifyResult, 'treeSha'> = { ok: true, noChanges: false, steps: [], failedStep: null, failureTail: '', files: [], changedLines: 1, driftedFiles: [], flags: { protectedPathsTouched: [], largeDiff: false, secretsFound: [] } };
+const verifyBase: Omit<VerifyResult, 'treeSha'> = { ok: true, noChanges: false, scope: { steps: ['build'], reason: 'périmètre complet', widened: false }, steps: [], failedStep: null, failureTail: '', files: [], changedLines: 1, driftedFiles: [], flags: { protectedPathsTouched: [], largeDiff: false, secretsFound: [] } };
 
 describe('deliver', () => {
   let remotePath: string;
@@ -47,7 +47,7 @@ describe('deliver', () => {
     const j = store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Titre' });
     return store.update(j.id, {
       branch: 'feature/issue-7-x', baseSha, worktreePath, attempt: 1, costUsd: 2.5,
-      verdict: { verdict: 'ready', confidence: 1, summary: 's', note: '', change_type: 'fix', plan: [], files_likely_touched: [], questions: [], reasons: [] },
+      verdict: { verdict: 'ready', confidence: 1, summary: 's', note: '', change_type: 'fix', plan: [], files_likely_touched: [], questions: [], reasons: [], verification: { steps: ['build', 'test', 'lint'], why: 'périmètre complet' } },
       flags: { ...emptyFlags(), ...flags },
     });
   }

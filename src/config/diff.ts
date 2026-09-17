@@ -55,7 +55,7 @@ const SAME_RESTART: Record<RestartRequiredField, Same> = {
 function jiraKey(c: MachineConfig): string {
   if (!c.jira) return 'null';
   const projects = c.jira.projects.map((p) =>
-    [p.key, p.accountId, p.repo, p.candidateStatuses.join('|'), p.statusesInOrder.join('|'), p.inProgressStatus, p.doneStatus].join(':'));
+    [p.key, p.accountId, p.repo, p.candidateStatuses.join('|'), p.statusesInOrder.join('|'), p.inProgressStatus, p.doneStatus, p.blockedStatus ?? ''].join(':'));
   return [c.jira.site, c.jira.email, expandHome(c.jira.apiTokenPath), ...projects].join('\n');
 }
 

@@ -284,4 +284,32 @@ describe('Daemon', () => {
     await p;
     expect(h.store.listByStates(['queued'])).toHaveLength(0);
   });
+
+  it('doTick() ne reprend pas le job qu’il vient de démarrer, même avec deux emplacements libres', async () => {
+    const h = await makeHarness({
+      steps: [{ output: readyVerdict }, { output: report('a'), sideEffect: writeFeature('hello\n') }],
+      maxConcurrentJobs: 2,
+    });
+    // La concurrence doit venir de la config lue : à 1, `canStartJob` refuserait le second tour et ce test
+    // passerait sur du code cassé.
+    expect(h.deps.machine.maxConcurrentJobs).toBe(2);
+    await pollOnce(h.deps);
+    expect(h.store.listByStates(['queued'])).toHaveLength(1);
+
+    // `while (startNext())` est une boucle synchrone : un job qui n'a pas quitté `queued` avant le premier
+    // `await` de `runJob` se représente à chaque tour, et la boucle ne rend jamais la main. Le garde-fou la
+    // borne pour que la régression se lise sur `repris`, et non sur un timeout de soixante secondes.
+    const repris: string[] = [];
+    const nextQueued = h.store.nextQueued.bind(h.store);
+    h.store.nextQueued = () => {
+      const job = nextQueued();
+      if (job) repris.push(job.id);
+      return repris.length > 5 ? null : job;
+    };
+
+    const daemon = new Daemon(h.deps, QUIET);
+    await (daemon as unknown as { doTick(): Promise<void> }).doTick();
+    expect(repris).toHaveLength(1);
+    await daemon.stop();
+  });
 });

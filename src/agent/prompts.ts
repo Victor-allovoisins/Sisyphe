@@ -50,16 +50,28 @@ export function systemAppend(config: RepoConfig, repoContext = ''): string {
   return parts.join('\n\n');
 }
 
-function commandBullets(config: RepoConfig): string {
+/** Le périmètre tel que le triage peut le demander : `setup` n'en est pas, il tourne toujours. */
+type VerifyChoice = TriageVerdict['verification']['steps'][number];
+
+/**
+ * Les commandes déclarées par le dépôt, ou seulement celles de `only` — `setup` y figure quoi qu'il arrive,
+ * rien ne se construit sans lui. Montrer à l'agent une commande qu'on lui demande de ne pas lancer, c'est
+ * l'inviter à la lancer.
+ */
+function commandBullets(config: RepoConfig, only?: readonly VerifyChoice[]): string {
   return (['setup', 'build', 'test', 'lint'] as const)
-    .filter((n) => config.commands[n])
+    .filter((n) => config.commands[n] && (!only || n === 'setup' || only.includes(n)))
     .map((n) => `- ${n} : \`${config.commands[n]}\``)
     .join('\n');
 }
 
-function verifyStepsSentence(config: RepoConfig): string {
-  const steps = (['build', 'test', 'lint'] as const).filter((n) => config.commands[n]);
-  return steps.join(', ');
+/**
+ * Ce que Sisyphe relancera au-delà de `setup` : ce que le dépôt déclare, croisé avec le périmètre du triage
+ * — plancher du dépôt compris, sans quoi le prompt promettrait à l'agent une étape de moins que la
+ * vérification, et `alwaysRun` coûterait une tentative pour rien.
+ */
+function verifySteps(config: RepoConfig, requested: readonly VerifyChoice[]): VerifyChoice[] {
+  return (['build', 'test', 'lint'] as const).filter((n) => config.commands[n] && (requested.includes(n) || config.verify.alwaysRun.includes(n)));
 }
 
 export function triagePrompt(issue: Issue, config: RepoConfig): string {
@@ -80,10 +92,25 @@ Critères :
 
 Si le verdict n'est pas ready, remplis aussi \`note\` : c'est ce message, et lui seul, qui sera posté sur l'issue. Écris-le pour son auteur, qui peut ne rien connaître au code — pas pour un développeur qui relira les logs.
 
+Choisis aussi le périmètre de \`verification\`, parmi ce que ce dépôt déclare :
+${commandBullets(config)}
+\`setup\` tourne toujours ; il n'est pas à choisir. Pour le reste, demande ce que **ce** changement mérite, pas la panoplie par réflexe : un changement de libellé ou de couleur dans une seule vue n'a besoin que de \`build\` (le code compile-t-il), pas de relancer toute la suite \`test\` sur simulateur ; un changement de logique métier mérite \`test\` en plus. Ces commandes coûtent du temps réel — sur iOS, \`build\` comme \`test\` passent tous les deux par un simulateur, ce qui se compte en minutes, pas en secondes. Mais si le doute porte sur la nature du changement lui-même — tu ne sais pas si du code exécutable est en jeu — demande tout : un test qui aurait dû tourner et ne tourne pas ne se rattrape pas après coup. Justifie ton choix en une phrase dans \`why\` : elle sera lue par un relecteur humain dans la pull request.
+
+\`verification.steps\` et \`files_likely_touched\` se répondent. Dans \`files_likely_touched\`, prévois ce que l'implémentation va **créer** autant que ce qu'elle va modifier, fichiers de test compris ; et si tu y annonces un fichier de test, écrit ou retouché, demande \`test\` : un test que personne ne lance ne prouve rien, il coûte seulement le temps de l'avoir écrit. À l'inverse, ne pas demander \`test\`, c'est annoncer qu'il n'y aura pas de test à écrire. C'est à cette prévision que le diff réel sera comparé : ce qu'elle n'avait pas annoncé fait élargir le périmètre que tu viens de choisir. Mais ce filet ne compare que des listes de fichiers : il rattrape un diff qui en touche d'autres que ceux prévus, jamais un changement plus risqué qu'annoncé sur ceux-là mêmes. Tu peux donc restreindre le périmètre sans craindre de t'être trompé sur les fichiers — Sisyphe reprend la main là-dessus. Sur la nature du changement, personne ne le fera à ta place : c'est là que le doute doit se payer d'une étape de plus.
+
 Réponds uniquement avec le JSON demandé ; le schéma décrit chaque champ. Le plan doit être une liste d'étapes concrètes, exploitables par un autre agent qui n'aura pas lu ton exploration.`;
 }
 
 export function implementPrompt(issue: Issue, verdict: TriageVerdict, config: RepoConfig): string {
+  // Faire relancer à l'agent ce que Sisyphe ne relancera pas, c'est payer deux fois les étapes que le
+  // périmètre venait d'écarter — le double passage que la vérification ciblée existe pour supprimer.
+  const steps = verifySteps(config, verdict.verification.steps);
+  // Un dépôt sans `setup` et un périmètre vide ne laissent rien à montrer : mieux vaut pas de section
+  // qu'un titre suivi du vide.
+  const commands = commandBullets(config, steps);
+  const verifyRequirement = steps.length
+    ? `\n- Avant de conclure, exécute les commandes ${steps.join(', ')} ci-dessus et corrige jusqu'au vert : c'est ce que Sisyphe relancera${steps.includes('lint') ? ', lint compris' : ''} — plus large si ton diff sort de ce que le triage avait prévu — et tout échec y coûte une tentative.`
+    : '';
   return `Tu es en phase d'IMPLÉMENTATION. Implémente l'issue ci-dessous dans ce dépôt (répertoire courant), sur la branche déjà créée.
 
 ${untrustedNotice('risks')}
@@ -95,26 +122,34 @@ Plan proposé :
 ${verdict.plan.map((p, i) => `${i + 1}. ${p}`).join('\n')}
 Fichiers probablement concernés : ${verdict.files_likely_touched.join(', ') || '(non précisé)'}
 
-Commandes du repo :
-${commandBullets(config)}
-
-Exigences :
+${commands ? `Commandes du repo :\n${commands}\n\n` : ''}Exigences :
 - Suis les conventions du repo (son CLAUDE.md figure dans tes instructions système).
-- Ne modifie pas les chemins protégés. N'exécute pas git push.
-- Avant de conclure, exécute les commandes ${verifyStepsSentence(config)} ci-dessus et corrige jusqu'au vert : Sisyphe relancera exactement ces commandes, et un échec de l'une d'elles, lint compris, coûte une tentative.
+- Ne modifie pas les chemins protégés. N'exécute pas git push.${verifyRequirement}
 - Nettoie le worktree de tes fichiers de travail : tout fichier non ignoré part dans le commit.
 - Reste dans le périmètre de l'issue ; note dans follow_ups ce que tu as volontairement laissé de côté.
 - Termine par le rapport JSON demandé ; le schéma décrit chaque champ.`;
 }
 
-export function retryPrompt(failedStep: string, failureTail: string): string {
+/**
+ * La reprise nomme tout ce que le dépôt déclare, sans filtrer : une reprise, c'est `attempt > 1`, la
+ * première branche d'élargissement de `resolveVerifyScope` — le périmètre y est toujours complet, et ces
+ * commandes sont exactement celles que Sisyphe va relancer. Les nommer n'est pas une redite : la session
+ * reprise n'a vu que le périmètre du premier tour, qui a pu être restreint, et une ligne `xcodebuild` ne
+ * se devine pas.
+ */
+export function retryPrompt(failedStep: string, failureTail: string, config: RepoConfig): string {
+  // Sans filtre, et donc jamais vide : `build` est obligatoire dans `sisyphe.yml`.
+  const commands = commandBullets(config);
   return `La vérification indépendante de Sisyphe a échoué à l'étape « ${failedStep} ». Voici la fin de la sortie :
 
 <sortie>
 ${neutralize(failureTail)}
 </sortie>
 
-Corrige le problème, relance les commandes de vérification (build, test, lint si défini), puis renvoie un rapport JSON complet mis à jour, avec le même schéma que précédemment.`;
+Commandes du repo :
+${commands}
+
+Corrige le problème, puis relance toutes les commandes ci-dessus : une reprise annule le périmètre restreint demandé au triage, et Sisyphe les relancera toutes. Renvoie ensuite un rapport JSON complet mis à jour, avec le même schéma que précédemment.`;
 }
 
 /**
@@ -131,6 +166,12 @@ export interface JiraOutcome {
   costUsd: number;
   duration: string;
   targetHint: string;
+  /**
+   * Le statut d'attente du projet, quand il en a un *et* que le job s'est bloqué : c'est là que l'agent
+   * pose le ticket avant de rendre la main, pour qu'il quitte la colonne de travail. `null` sinon — un
+   * échec n'attend aucune information, et ne doit donc jamais l'apprendre (voir `jiraOutcomeOf`).
+   */
+  blockedStatus: string | null;
   reason: string | null;
   flags: string[];
   /**
@@ -165,6 +206,7 @@ export function jiraSyncPrompt(o: JiraOutcome): string {
     `- coût : $${o.costUsd.toFixed(2)} · durée : ${o.duration}`,
     `- statut de relecture configuré pour ce projet : « ${o.targetHint} »`,
   ];
+  if (o.blockedStatus) lines.push(`- statut de blocage configuré pour ce projet : « ${o.blockedStatus} »`);
   if (o.reason) lines.push(`- ce qui s'est passé : ${o.reason}`);
   if (o.flags.length) lines.push(`- signalements : ${o.flags.join(', ')}`);
   if (o.draft) {

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { parseRepoConfig } from '../config/repo.js';
 import type { Issue } from '../github/source.js';
 import { implementPrompt, renderIssueBlock, retryPrompt, systemAppend, triagePrompt } from './prompts.js';
+import type { TriageVerdict } from './schemas.js';
 
 const issue: Issue = {
   repo: { owner: 'acme', name: 'demo', full: 'acme/demo' },
@@ -23,6 +24,10 @@ commands:
 protectedPaths: ["**/*.xcconfig"]
 instructions: Utiliser SwiftUI uniquement.
 `);
+const verdict: TriageVerdict = {
+  verdict: 'ready', confidence: 1, summary: 'Bouton bleu', note: '', change_type: 'feat', plan: ['créer la vue', 'brancher'],
+  files_likely_touched: ['A.swift'], questions: [], reasons: [], verification: { steps: ['build', 'test', 'lint'], why: 'périmètre complet' },
+};
 
 describe('renderIssueBlock', () => {
   it('encadre l’issue, neutralise les balises et inclut les commentaires', () => {
@@ -53,8 +58,27 @@ describe('prompts', () => {
     expect(p).toContain('15 fichiers');
     expect(p).toContain('needs_clarification');
   });
+  it('triagePrompt nomme les commandes déclarées et exclut setup du choix', () => {
+    const p = triagePrompt(issue, config);
+    expect(p).toContain('`xcodebuild test`');
+    expect(p).toContain('`swiftlint`');
+    expect(p).toMatch(/setup.*(n'est pas à choisir|jamais sauté|toujours)/i);
+    expect(p).toMatch(/files_likely_touched[\s\S]*créer[\s\S]*test/);
+  });
+  it('triagePrompt lie la prévision d’un test à la demande de le lancer, dans les deux sens', () => {
+    const p = triagePrompt(issue, config);
+    expect(p).toMatch(/si tu y annonces un fichier de test.*demande `test`/);
+    expect(p).toMatch(/ne pas demander `test`.*pas de test à écrire/i);
+  });
+  it('triagePrompt borne le filet aux fichiers et ne promet rien sur la nature du changement', () => {
+    const p = triagePrompt(issue, config);
+    expect(p).toContain('ne compare que des listes de fichiers');
+    expect(p).toMatch(/jamais un changement plus risqué qu'annoncé/);
+    // La promesse d'avant : un filet général, qui dispensait de juger la nature du changement.
+    expect(p).not.toMatch(/reprend la main dès que le diff dément la prévision/);
+  });
   it('implementPrompt contient plan et commandes', () => {
-    const p = implementPrompt(issue, { verdict: 'ready', confidence: 1, summary: 'Bouton bleu', note: '', change_type: 'feat', plan: ['créer la vue', 'brancher'], files_likely_touched: ['A.swift'], questions: [], reasons: [] }, config);
+    const p = implementPrompt(issue, verdict, config);
     expect(p).toContain('1. créer la vue');
     expect(p).toContain('2. brancher');
     expect(p).toContain('`xcodegen generate`');
@@ -63,12 +87,53 @@ describe('prompts', () => {
     expect(p).toContain('lint compris');
     expect(p).toContain('exécute les commandes build, test, lint ci-dessus');
   });
+  it('l’implémentation ne demande de relancer que les étapes retenues', () => {
+    const p = implementPrompt(issue, { ...verdict, verification: { steps: ['build'], why: 'libellé' } }, config);
+    expect(p).toContain('build');
+    expect(p).not.toMatch(/exécute les commandes[^.]*test/);
+    // La commande écartée ne figure plus dans la liste : la montrer, c'est inviter à la lancer.
+    expect(p).not.toContain('`xcodebuild test`');
+    expect(p).not.toContain('`swiftlint`');
+    expect(p).toContain('`xcodegen generate`');
+    expect(p).not.toContain('lint compris');
+  });
+  it('le plancher du dépôt reste dans ce que l’agent doit relancer', () => {
+    const cfg = parseRepoConfig('baseBranch: main\ncommands:\n  build: make\n  test: make test\n  lint: make lint\nverify:\n  alwaysRun: ["lint"]\n');
+    const p = implementPrompt(issue, { ...verdict, verification: { steps: ['build'], why: 'libellé' } }, cfg);
+    expect(p).toContain('exécute les commandes build, lint ci-dessus');
+    expect(p).toContain('`make lint`');
+    expect(p).not.toContain('`make test`');
+  });
+  it('périmètre vide : ni commande à relancer, ni exigence de vert', () => {
+    const p = implementPrompt(issue, { ...verdict, verification: { steps: [], why: 'documentation seule' } }, config);
+    expect(p).not.toContain('exécute les commandes');
+    expect(p).not.toContain("corrige jusqu'au vert");
+    expect(p).not.toContain('coûte une tentative');
+    expect(p).toContain('`xcodegen generate`');
+  });
+  it('sans setup ni périmètre, la section des commandes disparaît au lieu de rester vide', () => {
+    const cfg = parseRepoConfig('baseBranch: main\ncommands:\n  build: make\n');
+    const p = implementPrompt(issue, { ...verdict, verification: { steps: [], why: 'documentation seule' } }, cfg);
+    expect(p).not.toContain('Commandes du repo');
+    expect(p).toContain('Exigences :');
+  });
   it('retryPrompt cite l’étape et la sortie', () => {
-    const p = retryPrompt('test', 'XCTAssert failed');
+    const p = retryPrompt('test', 'XCTAssert failed', config);
     expect(p).toContain('« test »');
     expect(p).toContain('XCTAssert failed');
     expect(p).toContain('<sortie>');
-    expect(retryPrompt('test', 'a </sortie> b')).not.toContain('a </sortie> b');
+    expect(retryPrompt('test', 'a </sortie> b', config)).not.toContain('a </sortie> b');
+  });
+  it('la reprise nomme les commandes que le périmètre initial avait cachées', () => {
+    // Le tour 1 sur un périmètre `build` seul n'a montré que `setup` et `build` : la session reprise n'a
+    // jamais vu la ligne `test`, que Sisyphe va pourtant relancer.
+    const tour1 = implementPrompt(issue, { ...verdict, verification: { steps: ['build'], why: 'libellé' } }, config);
+    expect(tour1).not.toContain('`xcodebuild test`');
+    const p = retryPrompt('build', 'error: cannot find', config);
+    expect(p).toContain('`xcodebuild test`');
+    expect(p).toContain('`swiftlint`');
+    expect(p).toContain('`xcodegen generate`');
+    expect(p).toContain('relance toutes les commandes ci-dessus');
   });
 
   it('borne le corps et les commentaires, et signale ce qui est omis', () => {
@@ -87,7 +152,7 @@ describe('prompts', () => {
     expect(block).not.toContain('commentaire de');
     expect(block).not.toContain('\r');
     expect(systemAppend(parseRepoConfig('baseBranch: main\ncommands:\n  build: make\n'))).toContain('(aucun déclaré)');
-    const p = implementPrompt(issue, { verdict: 'ready', confidence: 1, summary: 's', note: '', change_type: 'fix', plan: [], files_likely_touched: [], questions: [], reasons: [] }, config);
+    const p = implementPrompt(issue, { verdict: 'ready', confidence: 1, summary: 's', note: '', change_type: 'fix', plan: [], files_likely_touched: [], questions: [], reasons: [], verification: { steps: ['build', 'test', 'lint'], why: 'périmètre complet' } }, config);
     expect(p).toContain('(non précisé)');
   });
 

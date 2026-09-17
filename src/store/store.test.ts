@@ -27,6 +27,13 @@ describe('JobStore', () => {
     expect(jobs.get(job.id)?.issueTitle).toBe('Titre');
   });
 
+  it('retient la clé du ticket, absente quand le traqueur n’en a pas', () => {
+    const { jobs } = setup();
+    expect(jobs.create({ repo: 'a/b', issueNumber: 7, issueTitle: 't', issueKey: 'DEMO-7' }).issueKey).toBe('DEMO-7');
+    expect(jobs.get(jobs.create({ repo: 'a/b', issueNumber: 8, issueTitle: 't', issueKey: 'DEMO-8' }).id)?.issueKey).toBe('DEMO-8');
+    expect(jobs.create({ repo: 'a/b', issueNumber: 9, issueTitle: 't' }).issueKey).toBeNull();
+  });
+
   it('applique et refuse les transitions', () => {
     const { jobs } = setup();
     const job = jobs.create({ repo: 'a/b', issueNumber: 1, issueTitle: 't' });
@@ -42,7 +49,10 @@ describe('JobStore', () => {
   it('sérialise les colonnes JSON', () => {
     const { jobs } = setup();
     const job = jobs.create({ repo: 'a/b', issueNumber: 1, issueTitle: 't' });
-    const verdict = { verdict: 'ready' as const, confidence: 1, summary: 's', note: '', change_type: 'fix' as const, plan: ['p'], files_likely_touched: [], questions: [], reasons: [] };
+    const verdict = {
+      verdict: 'ready' as const, confidence: 1, summary: 's', note: '', change_type: 'fix' as const, plan: ['p'], files_likely_touched: [], questions: [], reasons: [],
+      verification: { steps: ['build', 'test', 'lint'] as ('build' | 'test' | 'lint')[], why: 'périmètre complet' },
+    };
     const u = jobs.update(job.id, { verdict, flags: { ...job.flags, largeDiff: true }, branch: 'feature/x' });
     expect(u.verdict?.plan).toEqual(['p']);
     expect(u.flags.largeDiff).toBe(true);
@@ -186,12 +196,13 @@ describe('openDatabase', () => {
   it('migre une base existante en version 1 jusqu’à la dernière sans toucher aux jobs/phases', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'sisyphe-db-'));
     const file = join(dir, 'sisyphe.db');
-    // Fabrique une base v1 authentique : ouvre en v2, puis redescend artificiellement à v1
-    // en supprimant ce que la migration 2 a ajouté.
+    // Fabrique une base v1 authentique : ouvre à jour, puis redescend artificiellement à v1 en supprimant
+    // ce que les migrations suivantes ont ajouté — la reconstruction de `phases` (migration 3) se rejoue telle quelle.
     const a = openDatabase(file);
     const job = new JobStore(a).create({ repo: 'a/b', issueNumber: 1, issueTitle: 't' });
     const phase = new PhaseStore(a).start({ jobId: job.id, name: 'triage', attempt: 1 });
     a.exec('DROP TABLE actions');
+    a.exec('ALTER TABLE jobs DROP COLUMN issue_key');
     a.exec('PRAGMA user_version = 1');
     a.close();
 
@@ -207,11 +218,33 @@ describe('openDatabase', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
+  it('ajoute issue_key à une base peuplée, dont les lignes existantes restent sans clé', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sisyphe-db-'));
+    const file = join(dir, 'sisyphe.db');
+    // Base à l'avant-dernière version, peuplée : on ouvre à jour, puis on retire ce que la dernière
+    // migration a ajouté. Une ligne écrite avant elle est ce qu'on veut voir survivre.
+    const a = openDatabase(file);
+    const before = new JobStore(a).create({ repo: 'a/b', issueNumber: 1, issueTitle: 't' });
+    a.exec('ALTER TABLE jobs DROP COLUMN issue_key');
+    a.exec(`PRAGMA user_version = ${SCHEMA_VERSION - 1}`);
+    a.close();
+
+    const b = openDatabase(file);
+    expect((b.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION);
+    // Renoncement assumé : les jobs d'avant la bascule restent sans clé, donc sur GitHub — ce qu'ils étaient.
+    expect(new JobStore(b).get(before.id)?.issueKey).toBeNull();
+    expect(new JobStore(b).get(before.id)?.issueTitle).toBe('t');
+    expect(new JobStore(b).create({ repo: 'a/b', issueNumber: 2, issueTitle: 't', issueKey: 'DEMO-2' }).issueKey).toBe('DEMO-2');
+    b.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
   it('deux migrateurs concurrents sur la même base : le second ne rejoue rien et les deux finissent à jour', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'sisyphe-db-'));
     const file = join(dir, 'sisyphe.db');
     const seed = openDatabase(file);
     seed.exec('DROP TABLE actions');
+    seed.exec('ALTER TABLE jobs DROP COLUMN issue_key');
     seed.exec('PRAGMA user_version = 1'); // base v1, comme avant la migration 2
     seed.close();
 

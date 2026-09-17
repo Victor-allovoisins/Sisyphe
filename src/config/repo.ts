@@ -84,6 +84,18 @@ export const RepoConfigSchema = z.strictObject({
       .prefault({}),
   ),
   instructions: nullable(z.string().max(20_000).default('')),
+  /**
+   * Ce que ce dépôt ne laisse jamais sauter, quoi que le triage demande. Vide par défaut : sur un projet
+   * où `build` coûte autant que `test` (iOS, xcodebuild sur simulateur), un plancher à `build` annulerait
+   * l'essentiel du gain. L'équipe qui veut cette garantie se la donne elle-même.
+   */
+  verify: section(
+    z
+      .strictObject({
+        alwaysRun: z.array(z.enum(['build', 'test', 'lint'])).default([]),
+      })
+      .prefault({}),
+  ),
 });
 export type RepoConfig = z.infer<typeof RepoConfigSchema>;
 
