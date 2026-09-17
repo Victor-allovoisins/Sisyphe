@@ -343,6 +343,8 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
           verdict: 'needs_clarification', confidence: 0, summary: "Le triage n'a pas produit de verdict exploitable.",
           note: "Sisyphe a rencontré un problème technique avant de pouvoir analyser cette issue, sans rapport avec son contenu.",
           change_type: 'chore', plan: [], files_likely_touched: [], questions: [], reasons: [`Arrêt du triage : ${tres.stopReason}`],
+          // Le triage n'a rien pu prévoir : périmètre complet, jamais l'occasion de vérifier moins.
+          verification: { steps: ['build', 'test', 'lint'], why: "aucune prévision de périmètre, le triage n'a pas abouti" },
         };
     job = store.update(job.id, { verdict });
     if (verdict.verdict !== 'ready') {

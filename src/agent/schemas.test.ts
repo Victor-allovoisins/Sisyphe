@@ -19,6 +19,7 @@ describe('TriageVerdictSchema', () => {
       files_likely_touched: ['Sources/A.swift'],
       questions: [],
       reasons: [],
+      verification: { steps: ['build'], why: 'ajout limité à une vue' },
     });
     expect(v.verdict).toBe('ready');
   });
@@ -26,6 +27,7 @@ describe('TriageVerdictSchema', () => {
   const valid = {
     verdict: 'ready', confidence: 0.8, summary: 'Ajouter un bouton', note: '', change_type: 'feat',
     plan: ['créer la vue'], files_likely_touched: ['Sources/A.swift'], questions: [], reasons: [],
+    verification: { steps: ['build'], why: 'ajout limité à une vue' },
   };
 
   it('refuse un verdict inconnu', () => {
@@ -36,6 +38,14 @@ describe('TriageVerdictSchema', () => {
     expect(TriageVerdictSchema.safeParse({ ...valid, confidence: 2 }).success).toBe(false);
     expect(TriageVerdictSchema.safeParse({ ...valid, confidence: -0.1 }).success).toBe(false);
     expect(TriageVerdictSchema.safeParse({ ...valid, summary: '' }).success).toBe(false);
+  });
+
+  it('le verdict de triage porte le périmètre de vérification', () => {
+    const v = TriageVerdictSchema.parse({ ...valid, verification: { steps: ['build', 'lint'], why: 'changement de libellé' } });
+    expect(v.verification.steps).toEqual(['build', 'lint']);
+    // Un périmètre vide est une réponse, pas une omission : aucune vérification au-delà de setup.
+    expect(TriageVerdictSchema.parse({ ...valid, verification: { steps: [], why: 'aucun code exécutable modifié' } }).verification.steps).toEqual([]);
+    expect(() => TriageVerdictSchema.parse({ ...valid, verification: { steps: ['setup'], why: 'x' } })).toThrow();
   });
 });
 
@@ -61,7 +71,7 @@ describe('JSON Schema', () => {
     const draft07 = 'http://json-schema.org/draft-07/schema#';
     expect(triageJsonSchema.$schema).toBe(draft07);
     expect(reportJsonSchema.$schema).toBe(draft07);
-    expect(triageJsonSchema.required).toEqual(['verdict', 'confidence', 'summary', 'note', 'change_type', 'plan', 'files_likely_touched', 'questions', 'reasons']);
+    expect(triageJsonSchema.required).toEqual(['verdict', 'confidence', 'summary', 'note', 'change_type', 'plan', 'files_likely_touched', 'questions', 'reasons', 'verification']);
     expect(reportJsonSchema.required).toEqual(['summary', 'changes', 'decisions', 'tests_run', 'risks', 'follow_ups', 'confidence']);
     expect(triageJsonSchema.additionalProperties).toBe(false);
     expect(reportJsonSchema.additionalProperties).toBe(false);

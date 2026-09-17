@@ -126,7 +126,7 @@ describe('sanitizeModelText', () => {
 describe('comments', () => {
   it('renderBlockedComment affiche la note et les questions si needs_clarification, sans jargon de verdict', () => {
     const c = renderBlockedComment(
-      { verdict: 'needs_clarification', confidence: 0.4, summary: 'Flou.', note: "Il manque un écran précis pour savoir où agir.", change_type: 'feat', plan: [], files_likely_touched: [], questions: ['Quel écran ?', 'Quelle couleur ?'], reasons: [] },
+      { verdict: 'needs_clarification', confidence: 0.4, summary: 'Flou.', note: "Il manque un écran précis pour savoir où agir.", change_type: 'feat', plan: [], files_likely_touched: [], questions: ['Quel écran ?', 'Quelle couleur ?'], reasons: [], verification: { steps: ['build', 'test', 'lint'], why: 'périmètre complet' } },
       labelRelaunch('sisyphe'),
     );
     expect(c).not.toContain('needs_clarification');
@@ -137,7 +137,7 @@ describe('comments', () => {
   });
   it('renderBlockedComment ne liste pas de questions hors needs_clarification', () => {
     const c = renderBlockedComment(
-      { verdict: 'out_of_scope', confidence: 0.7, summary: 'Backend.', note: "Ça se joue côté serveur, pas dans ce dépôt.", change_type: 'fix', plan: [], files_likely_touched: [], questions: [], reasons: ['hors périmètre iOS'] },
+      { verdict: 'out_of_scope', confidence: 0.7, summary: 'Backend.', note: "Ça se joue côté serveur, pas dans ce dépôt.", change_type: 'fix', plan: [], files_likely_touched: [], questions: [], reasons: ['hors périmètre iOS'], verification: { steps: ['build', 'test', 'lint'], why: 'périmètre complet' } },
       labelRelaunch('sisyphe'),
     );
     expect(c).toContain('Ça se joue côté serveur');

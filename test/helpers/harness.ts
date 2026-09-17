@@ -33,6 +33,7 @@ limits:
 export const readyVerdict = {
   verdict: 'ready', confidence: 0.9, summary: 'Écrire hello dans src/feature.txt', note: '', change_type: 'feat',
   plan: ['créer src/feature.txt'], files_likely_touched: ['src/feature.txt'], questions: [], reasons: [],
+  verification: { steps: ['build', 'test', 'lint'], why: 'périmètre complet' },
 };
 
 export const report = (summary: string) => ({

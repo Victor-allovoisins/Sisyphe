@@ -47,7 +47,7 @@ describe('deliver', () => {
     const j = store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Titre' });
     return store.update(j.id, {
       branch: 'feature/issue-7-x', baseSha, worktreePath, attempt: 1, costUsd: 2.5,
-      verdict: { verdict: 'ready', confidence: 1, summary: 's', note: '', change_type: 'fix', plan: [], files_likely_touched: [], questions: [], reasons: [] },
+      verdict: { verdict: 'ready', confidence: 1, summary: 's', note: '', change_type: 'fix', plan: [], files_likely_touched: [], questions: [], reasons: [], verification: { steps: ['build', 'test', 'lint'], why: 'périmètre complet' } },
       flags: { ...emptyFlags(), ...flags },
     });
   }
