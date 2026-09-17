@@ -92,6 +92,12 @@ C'est le seul moyen d'avoir un texte sur plusieurs lignes — la ligne de comman
 aucun verbe ne poste de commentaire. Un `comment` vide veut dire « ne rien poster », et Sisyphe posera alors
 son propre message de secours : ne le laisse vide que si tu n'as vraiment rien à dire.
 
+Le prompt te donne d'ailleurs ce message-là, en brouillon. **Ton texte le remplace, il ne s'y ajoute pas** :
+tout ce que tu n'y reprends pas est perdu pour la personne qui lit le ticket. Le brouillon porte ce que tu
+n'as aucun moyen de retrouver — les questions que le triage lui pose, le secret ou le chemin protégé qui a
+arrêté le job, ce qu'elle doit faire pour relancer Sisyphe. Reformule-le, enrichis-le de ce que tu sais,
+mais n'en laisse tomber aucune de ces informations.
+
 Il est lu par la personne qui a signalé le problème, pas par un développeur qui relira les logs.
 
 - Commence par `🪨 `.

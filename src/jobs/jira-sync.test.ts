@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { JIRA_SKILL } from '../agent/plugin-path.js';
+import { jiraSyncPrompt } from '../agent/prompts.js';
 import type { AgentResult, AgentRunOptions, AgentRunner } from '../agent/runner.js';
 import type { JiraSyncReport } from '../agent/schemas.js';
 import { emptyFlags, zeroUsage, type Job, type JobFlags } from '../store/types.js';
@@ -55,7 +56,7 @@ describe('jiraOutcomeOf', () => {
     expect(o).toEqual({
       key: 'IOS-886', state: 'done', verificationFailed: false,
       prUrl: 'https://github.com/acme/ios/pull/412', attempts: 2, costUsd: 3.5,
-      duration: '2 min 5 s', targetHint: 'En relecture', reason: null, flags: [],
+      duration: '2 min 5 s', targetHint: 'En relecture', reason: null, flags: [], draft: '',
     });
   });
 
@@ -80,6 +81,13 @@ describe('jiraOutcomeOf', () => {
 
   it('la clé est optionnelle et vaut la chaîne vide par défaut', () => {
     expect(jiraOutcomeOf(makeJob(), 'done', 'En relecture').key).toBe('');
+  });
+
+  it('porte le brouillon jusqu’au prompt : c’est là que vivent les questions du triage', () => {
+    const draft = '🪨 Sisyphe met cette issue en pause.\n\nPour avancer :\n- Quel écran ?';
+    const o = jiraOutcomeOf(makeJob({ state: 'blocked', error: 'triage : needs_clarification' }), 'blocked', 'En relecture', 'IOS-887', draft);
+    expect(o.draft).toBe(draft);
+    expect(jiraSyncPrompt(o)).toContain('Quel écran ?');
   });
 });
 

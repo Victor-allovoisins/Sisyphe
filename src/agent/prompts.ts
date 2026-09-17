@@ -133,11 +133,22 @@ export interface JiraOutcome {
   targetHint: string;
   reason: string | null;
   flags: string[];
+  /**
+   * Le commentaire que le pipeline posterait à défaut. Il porte ce que l'agent ne peut pas retrouver seul —
+   * les questions du triage, les secrets détectés, les chemins protégés touchés, la marche à suivre pour
+   * relancer Sisyphe — et sert de brouillon ici, de repli si l'agent n'écrit rien.
+   */
+  draft: string;
 }
 
 /**
  * Prompt de la phase `jira`. Le contenu du ticket n'est **pas** rappelé ici : l'agent le lit lui-même avec
  * `sisyphe jira show`, ce qui évite d'injecter du texte de tiers dans un prompt dont le rôle est d'agir.
+ *
+ * Le brouillon fait exception sans contredire cette règle : ce n'est pas du texte de tiers mais celui de
+ * Sisyphe, déjà passé par `sanitizeModelText`. Sans lui, l'agent ne recevait du blocage que `reason` — la
+ * chaîne « triage : needs_clarification » — et les questions posées à la personne se perdaient dès qu'il
+ * écrivait un commentaire, puisque le sien remplace le brouillon.
  */
 export function jiraSyncPrompt(o: JiraOutcome): string {
   const lines = [
@@ -153,6 +164,18 @@ export function jiraSyncPrompt(o: JiraOutcome): string {
   ];
   if (o.reason) lines.push(`- ce qui s'est passé : ${o.reason}`);
   if (o.flags.length) lines.push(`- signalements : ${o.flags.join(', ')}`);
+  if (o.draft) {
+    lines.push(
+      '',
+      "Voici ce que Sisyphe dirait à la place, s'il devait écrire seul — un brouillon, pas un texte à recopier :",
+      '',
+      o.draft,
+      '',
+      "Reformule-le et enrichis-le de ce que tu sais du job, mais n'en perds aucune information destinée à la",
+      'personne qui a signalé le problème : les questions qui lui sont posées, la raison du blocage, ce qu’elle',
+      'doit faire pour relancer Sisyphe.',
+    );
+  }
   lines.push('', 'Termine par le rapport JSON demandé ; le schéma décrit chaque champ.');
   return lines.join('\n');
 }

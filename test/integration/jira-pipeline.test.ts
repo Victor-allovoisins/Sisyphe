@@ -215,6 +215,25 @@ describe('pipeline sur Jira', () => {
     expect(j.state.comments.join('\n')).toContain('🪨');
   });
 
+  it('porte la question du triage jusqu’au ticket, via le brouillon donné à la phase jira', async () => {
+    const j = fakeJira();
+    const blocked = { ...readyVerdict, verdict: 'needs_clarification', note: 'Il manque un écran.', questions: ['Quel écran ?'] };
+    // Un agent qui reprend le brouillon reçu, comme le skill le lui demande. `output` et la closure partagent
+    // le même objet : c'est le seul moyen, avec un runner scripté, de faire dépendre la sortie de l'entrée.
+    const repris = { status: '', comment: '', note: '' };
+    const h = await harnessOn(j.tracker, [
+      { output: blocked },
+      { output: repris, sideEffect: async (opts) => { repris.comment = `🪨 Reformulé par l’agent.\n\n${opts.prompt}`; } },
+    ]);
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    await runJob(job.id, h.deps, signal());
+
+    // Le commentaire posté est celui de l'agent — et il ne mange plus la question du triage. Son jumeau
+    // GitHub (`test/integration/pipeline.test.ts`) attend la même question sur l'issue.
+    expect(j.state.comments).toHaveLength(1);
+    expect(j.state.comments.join('\n')).toContain('Quel écran ?');
+  });
+
   it('pose lui-même le statut de relecture quand la phase jira ne l’a pas fait', async () => {
     const j = fakeJira();
     const h = await harnessOn(j.tracker, [

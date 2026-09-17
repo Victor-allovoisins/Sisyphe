@@ -11,7 +11,7 @@ export type { JiraOutcome };
 const JIRA_MAX_TURNS = 20;
 const JIRA_MAX_BUDGET_USD = 1;
 
-export function jiraOutcomeOf(job: Job, state: JobState, targetHint: string, key = ''): JiraOutcome {
+export function jiraOutcomeOf(job: Job, state: JobState, targetHint: string, key = '', draft = ''): JiraOutcome {
   const flags: string[] = [];
   if (job.flags.secretsFound.length) flags.push('secrets détectés dans le diff');
   if (job.flags.protectedPathsTouched.length) flags.push('chemins protégés modifiés');
@@ -20,7 +20,7 @@ export function jiraOutcomeOf(job: Job, state: JobState, targetHint: string, key
   return {
     key, state, verificationFailed: job.flags.verificationFailed, prUrl: job.prUrl,
     attempts: job.attempt, costUsd: job.costUsd, duration: fmtDuration(job.durationMs),
-    targetHint, reason: job.error, flags,
+    targetHint, reason: job.error, flags, draft,
   };
 }
 

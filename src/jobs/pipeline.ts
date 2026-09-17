@@ -168,7 +168,9 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
    * au compte dédié et hors des statuts candidats, c'est-à-dire repris par personne et vu par personne.
    *
    * `comment` est le texte que la sortie avait rédigé pour elle-même (verdict de triage, secrets, chemins
-   * protégés…) : lui seul dit *pourquoi* le job s'arrête là, et le message générique ne le remplace pas.
+   * protégés…) : lui seul dit *pourquoi* le job s'arrête là, et le message générique ne le remplace pas. Il
+   * part donc en brouillon à l'agent, qui le reformule sans en perdre la substance, et sert de repli s'il
+   * n'écrit rien — son texte, quand il en écrit un, remplace le brouillon plutôt que de s'y ajouter.
    */
   const closeTicket = async (finished: Job, state: JobState, comment?: string): Promise<void> => {
     const scripted = comment ?? scriptedComment(state, finished);
@@ -191,7 +193,7 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
         runJiraPhase(
           { agent: deps.agent, env: jiraEnv, transcriptPath: join(dir, `transcript-jira-${finished.attempt}.jsonl`), cwd: dir, timeoutMs: minutes(5), signal },
           finished,
-          jiraOutcomeOf(finished, state, project.doneStatus, key),
+          jiraOutcomeOf(finished, state, project.doneStatus, key, scripted),
         ),
         (out) => ({ outcome: out.report.note ? 'failure' : 'success', costUsd: out.result.costUsd, usage: out.result.usage, numTurns: out.result.numTurns, stopReason: out.result.stopReason }),
       );
