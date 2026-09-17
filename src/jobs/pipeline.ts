@@ -13,9 +13,9 @@ import { phaseModel, type MachineConfig } from '../config/machine.js';
 import { jobDir as jobDirFor, repoCachePath, type DataPaths } from '../config/paths.js';
 import { REPO_CONFIG_FILENAME, RepoConfigError, parseRepoConfig, type RepoConfig } from '../config/repo.js';
 import {
-  renderBlockedComment, renderCancelledComment, renderConfigProblemComment, renderDoneComment,
+  labelRelaunch, renderBlockedComment, renderCancelledComment, renderConfigProblemComment, renderDoneComment,
   renderMissingVersionComment, renderFailedComment,
-  renderNoChangesComment, renderProtectedPathsComment, renderSecretsComment,
+  renderNoChangesComment, renderProtectedPathsComment, renderSecretsComment, type Relaunch,
 } from '../deliver/comments.js';
 import { deliver } from '../deliver/deliver.js';
 import type { Git } from '../git/git.js';
@@ -85,7 +85,13 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
   let job = initial;
   const log = deps.log.child({ jobId, repo: job.repo, issue: job.issueNumber });
   const issueRef = issueRefOf(job);
-  const trigger = await relaunchFor(deps.machine, job.repo, deps.source);
+  /**
+   * La consigne de relance imprimée par les commentaires. Elle interroge le traqueur, donc elle attend :
+   * sa résolution est repoussée après la transition vers `triaging`, qui ne souffre aucun await avant elle.
+   * Le repli couvre la fenêtre qui précède — la transition et le `mkdir` peuvent échouer, et le `catch`
+   * commente quand même. C'est aussi ce que `relaunchFor` rend pour un dépôt hors Jira.
+   */
+  let trigger: Relaunch = labelRelaunch(deps.machine.triggerLabel);
   const dir = jobDirFor(deps.paths, job.id);
   const startedAt = Date.now();
   const elapsed = () => Date.now() - startedAt;
@@ -270,11 +276,13 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
   };
 
   try {
-    // Synchrone, avant tout await : le daemon s'appuie dessus pour ne pas redémarrer le même job.
+    // Synchrone, avant tout await : tant que le job reste `queued`, le `while (startNext())` du daemon le
+    // reprend à chaque tour — boucle infinie dès que `maxConcurrentJobs` dépasse 1.
     job = store.transition(job.id, 'triaging');
     // Avant la première sortie possible, `throwIfAborted` compris : toute sortie passe par `finish`, qui
     // fait tourner la phase `jira` dans `dir`. Une annulation au tout début l'y trouverait sinon absent.
     await mkdir(dir, { recursive: true });
+    trigger = await relaunchFor(deps.machine, job.repo, deps.source);
     signal.throwIfAborted();
     await source.setStatus(issueRef, 'in-progress');
     issue = await source.getIssue(issueRef);
