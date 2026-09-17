@@ -102,7 +102,9 @@ L'agent ne les verra pas. Toi si.
 
 Quand la personne en envoie une, **transcris-la en mots** dans le ticket : le message d'erreur **mot pour mot**, les valeurs affichées, ce qui est vide ou grisé, ce qui devrait être là et ne l'est pas. Ne mets jamais « voir la capture » dans le corps du ticket — c'est un cul-de-sac pour l'agent.
 
-Joins quand même l'image au ticket : elle sert aux humains qui reliront.
+**Tu ne peux pas joindre l'image toi-même.** Une capture collée dans la conversation n'est pas un fichier : tu la vois, mais tu n'as aucun chemin à donner à Jira. N'essaie pas — demande-le à la personne, à la fin, avec le lien du ticket. Elle l'a déjà sous les yeux, c'est un glisser-déposer.
+
+L'image ne remplace jamais la transcription : elle sert aux humains qui reliront, la transcription fait travailler l'agent. Un ticket dont la capture n'a pas été jointe reste exploitable ; un ticket dont elle n'a pas été transcrite ne l'est pas.
 
 ### 6. La relance unique
 
@@ -275,6 +277,10 @@ Si la création échoue, ne perds pas le travail : affiche le titre et le corps 
 Cette personne t'a parlé dans un chat. Elle n'ira pas d'elle-même relire un ticket. Termine toujours par :
 
 > C'est créé : <lien>. Sisyphe va le prendre en charge, tu verras le ticket avancer dans le board. S'il a besoin d'une précision, il te le **réassignera** avec un commentaire — c'est ta notification. Reviens me voir avec sa question, on y répondra ensemble, et il suffira de le réassigner à « Agent IA » pour qu'il reprenne.
+
+Et quand la personne t'a envoyé une capture, ajoute une phrase — une seule, sans insister, le ticket est déjà complet sans elle :
+
+> Si tu peux, glisse ta capture sur le ticket : elle ne sert pas à Sisyphe, mais au dev qui relira.
 
 Cette phrase est la seule chose qui empêche un ticket rendu de mourir : personne ne surveille une réassignation qu'on ne lui a pas annoncée.
 
