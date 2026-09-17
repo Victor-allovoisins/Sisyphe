@@ -468,10 +468,7 @@ export const PAGE_HTML = `<!doctype html>
     return typeof key === 'string' && JIRA_ISSUE_KEY_RE.test(key) ? key : String(repo) + '#' + String(number);
   }
 
-  /**
-   * Le lien d'un ticket suit le job, pas la configuration du dépôt : un job créé avant la bascule vers Jira
-   * porte un numéro d'issue GitHub, et le dépôt qui est sur Jira aujourd'hui ne dit rien de ce qu'il était.
-   */
+  /** Où mène le nom du ticket : Jira quand le job porte une clé, GitHub sinon — comme issueUrlOf, côté serveur. */
   function issueLink(repo, number, key) {
     var label = issueLabel(repo, number, key);
     var site = jiraSite();
