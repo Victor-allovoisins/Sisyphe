@@ -9,7 +9,7 @@ import {
   type HotReloadField,
   type RestartRequiredField,
 } from '../daemon/control-types.js';
-import type { MachineConfig } from './machine.js';
+import { resolveAvTools, type MachineConfig } from './machine.js';
 import { expandHome } from './paths.js';
 
 export type MachineConfigField = HotReloadField | RestartRequiredField;
@@ -48,6 +48,9 @@ const SAME_RESTART: Record<RestartRequiredField, Same> = {
   // Comparé sur une forme normalisée : le chemin du jeton passe par samePath comme la clé privée GitHub,
   // le reste est structurel et se compare par valeur. Absent des deux côtés = identique.
   jira: (a, b) => jiraKey(a) === jiraKey(b),
+  // Comparé sur la forme résolue : une section absente et une section qui recopie les valeurs par défaut
+  // désignent le même fichier, elles ne doivent pas réclamer un redémarrage pour rien.
+  avTools: (a, b) => JSON.stringify(resolveAvTools(a)) === JSON.stringify(resolveAvTools(b)),
   dataDir: (a, b) => samePath(a.dataDir, b.dataDir),
 };
 

@@ -3,7 +3,16 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { stringify } from 'yaml';
-import { AGENT_BACKENDS, effectiveDailyBudget, loadMachineConfig, MachineConfigError, parseMachineConfig, phaseModel } from './machine.js';
+import {
+  AGENT_BACKENDS,
+  AV_TOOLS_DEFAULTS,
+  effectiveDailyBudget,
+  loadMachineConfig,
+  MachineConfigError,
+  parseMachineConfig,
+  phaseModel,
+  resolveAvTools,
+} from './machine.js';
 
 const minimal = `
 github:
@@ -148,5 +157,22 @@ describe('loadMachineConfig', () => {
       kind: 'missing',
       message: expect.stringContaining('sisyphe setup'),
     });
+  });
+});
+
+describe('avTools', () => {
+  const base = { github: { appId: 1, installationId: 1, privateKeyPath: '/k.pem' }, repos: ['a/b'] };
+
+  it('absente : les valeurs par défaut', () => {
+    expect(resolveAvTools(parseMachineConfig(stringify(base)))).toEqual(AV_TOOLS_DEFAULTS);
+  });
+
+  it('partielle : seule la branche change', () => {
+    const m = parseMachineConfig(stringify({ ...base, avTools: { branch: 'feature/delivery-templates' } }));
+    expect(resolveAvTools(m)).toEqual({ ...AV_TOOLS_DEFAULTS, branch: 'feature/delivery-templates' });
+  });
+
+  it('une clé inconnue est refusée', () => {
+    expect(() => parseMachineConfig(stringify({ ...base, avTools: { bogus: 1 } }))).toThrow(MachineConfigError);
   });
 });

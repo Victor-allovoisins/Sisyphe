@@ -94,9 +94,43 @@ export const MachineConfigSchema = z.strictObject({
     // de la clé, elle, veut dire « je ne gère pas ce champ » et fait reporter la section en place.
     .nullish()
     .transform((v) => v ?? undefined),
+  /**
+   * Où lire les conventions de livraison d'av-tools. Facultative, même partiellement : `resolveAvTools`
+   * complète avec les valeurs par défaut, à l'usage, pour que le fichier ne se voie jamais réécrit avec des
+   * valeurs que personne n'a saisies. Ne sert que sous suivi Jira : av-tools ne parle que de tickets Jira.
+   */
+  avTools: z
+    .strictObject({
+      repo: z.string().regex(REPO_PATTERN, 'format attendu : owner/repo').optional(),
+      branch: z.string().min(1).optional(),
+      path: z.string().min(1).optional(),
+    })
+    .optional(),
   dataDir: homeOrAbsolute.default('~/.sisyphe'),
 });
 export type MachineConfig = z.infer<typeof MachineConfigSchema>;
+
+/** Le dépôt, la branche et le fichier d'av-tools qu'un job lit, faute de réglage contraire. */
+export const AV_TOOLS_DEFAULTS = {
+  repo: 'ILokYou/IA-Claude-Marketplace',
+  branch: 'main',
+  path: 'plugins/av-tools/skills/av-shared/reference/delivery-templates.yml',
+} as const;
+
+export interface AvToolsLocation {
+  repo: string;
+  branch: string;
+  path: string;
+}
+
+/** La section `avTools`, complétée des valeurs par défaut. */
+export function resolveAvTools(machine: Pick<MachineConfig, 'avTools'>): AvToolsLocation {
+  return {
+    repo: machine.avTools?.repo ?? AV_TOOLS_DEFAULTS.repo,
+    branch: machine.avTools?.branch ?? AV_TOOLS_DEFAULTS.branch,
+    path: machine.avTools?.path ?? AV_TOOLS_DEFAULTS.path,
+  };
+}
 
 /** Plafond historique, appliqué à une config `sdk` muette : sous clé API, le coût est facturé pour de bon. */
 const SDK_DEFAULT_DAILY_BUDGET_USD = 60;
