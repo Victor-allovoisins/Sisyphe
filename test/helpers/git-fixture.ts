@@ -53,3 +53,22 @@ export async function remoteCommitMessage(remotePath: string, sha: string): Prom
   const r = await execa('git', ['log', '-1', '--format=%B', sha], { cwd: remotePath });
   return r.stdout.trim();
 }
+
+/**
+ * Ajoute un commit sur `branch` au distant créé par `createRemoteRepo(root, …)`, depuis son dépôt source.
+ * `amend: true` réécrit le dernier commit et force le push : vu du miroir, c'est un force-push.
+ */
+export async function addCommit(
+  root: string,
+  files: Record<string, string>,
+  opts: { branch?: string; message?: string; amend?: boolean } = {},
+): Promise<string> {
+  const src = join(root, 'src-repo');
+  const branch = opts.branch ?? 'main';
+  const git = (args: string[]) => execa('git', args, { cwd: src, env: TEST_ENV });
+  await writeFiles(src, files);
+  await git(['add', '-A']);
+  await git(['commit', '-q', ...(opts.amend ? ['--amend'] : []), '-m', opts.message ?? 'update']);
+  await git(['push', '-q', '--force', join(root, 'remote.git'), `HEAD:refs/heads/${branch}`]);
+  return (await git(['rev-parse', 'HEAD'])).stdout.trim();
+}

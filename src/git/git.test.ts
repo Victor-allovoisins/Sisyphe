@@ -3,9 +3,9 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { TEST_ENV, createRemoteRepo, remoteBranchSha, remoteCommitMessage, remoteCommitParents } from '../../test/helpers/git-fixture.js';
+import { TEST_ENV, addCommit, createRemoteRepo, remoteBranchSha, remoteCommitMessage, remoteCommitParents } from '../../test/helpers/git-fixture.js';
 import { dataPaths, mirrorPath, type DataPaths } from '../config/paths.js';
-import { BASE_REF_PREFIX, Git, GitError, redact } from './git.js';
+import { AVTOOLS_PIN_REF, BASE_REF_PREFIX, Git, GitError, redact } from './git.js';
 
 const PUBLIC_URL = 'https://github.com/acme/demo.git';
 const BRANCH = 'feature/issue-7-x';
@@ -28,6 +28,31 @@ describe('Git', () => {
 
   afterEach(async () => {
     await rm(root, { recursive: true, force: true });
+  });
+
+  describe('resolveRef, readFileAtSha, pinRef', () => {
+    it('résout la branche rafraîchie et lit un fichier à ce SHA', async () => {
+      expect(await git.resolveRef(repo, `${BASE_REF_PREFIX}main`)).toBe(headSha);
+      expect(await git.readFileAtSha(repo, headSha, 'README.md')).toBe('# demo');
+      expect(await git.readFileAtSha(repo, headSha, 'absent.txt')).toBeNull();
+    });
+
+    it('une ref inconnue rend null', async () => {
+      expect(await git.resolveRef(repo, 'refs/sisyphe/nope')).toBeNull();
+    });
+
+    it("l'épingle retient un commit que main a perdu par un force-push", async () => {
+      await git.pinRef(repo, AVTOOLS_PIN_REF, headSha);
+      await addCommit(root, { 'README.md': '# réécrit\n' }, { amend: true });
+      await git.ensureMirror(repo, remotePath, PUBLIC_URL, ['main']);
+      expect(await git.resolveRef(repo, `${BASE_REF_PREFIX}main`)).not.toBe(headSha);
+      expect(await git.resolveRef(repo, AVTOOLS_PIN_REF)).toBe(headSha);
+      expect(await git.readFileAtSha(repo, headSha, 'README.md')).toBe('# demo');
+    });
+
+    it('refuse autre chose qu’un SHA complet', async () => {
+      await expect(git.readFileAtSha(repo, 'main', 'README.md')).rejects.toThrow(GitError);
+    });
   });
 
   /** Un clone tiers fait avancer une branche côté remote. */
