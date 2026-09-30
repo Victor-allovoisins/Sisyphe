@@ -4,14 +4,15 @@ import { userInfo } from 'node:os';
 import { join } from 'node:path';
 import { agentPluginPath, supportsSkills } from '../../agent/plugin-path.js';
 import { createApp, machineConfigPath, type App } from '../../app.js';
-import { loadMachineConfig, MachineConfigError, type MachineConfig } from '../../config/machine.js';
+import { parseDeliveryTemplates } from '../../avtools/templates.js';
+import { loadMachineConfig, MachineConfigError, resolveAvTools, type AvToolsLocation, type MachineConfig } from '../../config/machine.js';
 import { dataPaths, type DataPaths } from '../../config/paths.js';
 import { REPO_CONFIG_FILENAME, parseRepoConfig } from '../../config/repo.js';
 import { assertSocketPathLength, MAX_SOCKET_PATH_BYTES } from '../../daemon/control.js';
 import { parseRepo, type RepoRef } from '../../github/source.js';
 import { isStaleLaunchAgentPlist, plistPath, STALE_PLIST_MESSAGE } from '../../service/launchd.js';
 import type { ServiceStatus } from '../../service/index.js';
-import { firstWord, runChecks, which, whichOrHint, withHint, type Check } from '../checks.js';
+import { firstWord, runChecks, which, whichOrHint, withHint, type Check, type CheckWarnResult } from '../checks.js';
 import { serviceManagerFor } from './service.js';
 
 const BYTES_PER_GB = 1024 ** 3;
@@ -58,6 +59,8 @@ export interface BuildChecksInput {
    * celui du service, et contredirait le daemon qui tourne ; `doctor` et `setup` gardent ces contrôles.
    */
   apiKeyChecks?: boolean;
+  /** SHA épinglé d'av-tools sur cette machine ; absent quand on ne sait pas le lire (pas d'app initialisée). */
+  avToolsPin?: () => Promise<string | null>;
 }
 
 async function checkApiKeyLive(key: string): Promise<string | { warn: true; message: string }> {
@@ -205,6 +208,30 @@ async function checkAgentPlugin(root: string): Promise<string> {
   return root;
 }
 
+/**
+ * Ce que le prochain job trouvera dans av-tools. La lecture passe par l'API, pas par le miroir : doctor
+ * n'écrit rien sur le disque. Si la branche est valide, le prochain job l'épinglera, donc pas de retard à
+ * signaler. Si elle ne l'est pas, les jobs gardent l'épingle, et c'est ce retard qu'on signale.
+ */
+export async function checkAvTools(
+  github: DoctorGitHub,
+  loc: AvToolsLocation,
+  pin?: () => Promise<string | null>,
+): Promise<string | CheckWarnResult> {
+  const access = await github.checkAccess();
+  if (!access.repos.includes(loc.repo)) {
+    throw new Error(`l'installation ${access.appSlug} n'a pas accès à ${loc.repo} : l'ajouter dans GitHub → Settings → Applications → ${access.appSlug} → Repository access`);
+  }
+  const pinned = pin ? await pin().catch(() => null) : null;
+  const pinText = pinned ? `épingle ${pinned.slice(0, 7)}` : 'aucune épingle';
+  const text = await github.getFileContent(parseRepo(loc.repo), loc.path, loc.branch);
+  const parsed = text === null ? null : parseDeliveryTemplates(text);
+  const problem = parsed === null ? `${loc.path} absent sur ${loc.branch}` : parsed.ok ? null : parsed.reason;
+  if (!problem) return `${loc.branch} valide, ${pinText}`;
+  if (pinned) return { warn: true, message: `${problem} — les jobs gardent la dernière version validée (${pinText})` };
+  throw new Error(`${problem}, et aucune version validée`);
+}
+
 /** Construit la liste des checks, sans en exécuter aucun (fonction pure côté construction). */
 export function buildChecks(input: BuildChecksInput): Check[] {
   const platform = input.platform ?? process.platform;
@@ -339,6 +366,14 @@ export function buildChecks(input: BuildChecksInput): Check[] {
     }
   }
 
+  // Les conventions de livraison ne servent que sous suivi Jira : av-tools ne parle que de tickets Jira.
+  if (input.machine?.jira && input.github) {
+    const github = input.github;
+    const loc = resolveAvTools(input.machine);
+    const pin = input.avToolsPin;
+    checks.push({ name: 'av-tools', run: () => checkAvTools(github, loc, pin) });
+  }
+
   // Le plugin n'est utile que si la phase `jira` peut charger un skill : suivi Jira, et un backend que
   // `supportsSkills` reconnaît — le même critère que celui par lequel le pipeline décide de faire tourner
   // cette phase. Ailleurs (issues GitHub, ou codex/opencode) son absence ne change rien au comportement du
@@ -368,7 +403,11 @@ export async function doctorCommand(): Promise<void> {
   // Sans config, ni racine de données ni gestionnaire de service : le check « config machine » dit déjà tout.
   const paths = app?.paths ?? (machine ? dataPaths(machine.dataDir) : undefined);
   const service = machine && paths ? await serviceManagerFor(paths, machine) : undefined;
-  const checks = buildChecks({ machine, github: app?.github, jira: app?.jira, env: process.env, paths, service });
+  const avTools = app?.deps.avTools;
+  const checks = buildChecks({
+    machine, github: app?.github, jira: app?.jira, env: process.env, paths, service,
+    ...(avTools ? { avToolsPin: () => avTools.pinnedSha() } : {}),
+  });
 
   // La config invalide est déjà signalée par le check « config machine » : ne pas la répéter ici.
   if (initError && !(initError instanceof MachineConfigError)) {

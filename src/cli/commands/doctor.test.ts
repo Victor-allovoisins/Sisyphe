@@ -1,6 +1,7 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { stringify } from 'yaml';
 import { parseMachineConfig, type MachineConfig } from '../../config/machine.js';
@@ -445,3 +446,41 @@ describe('buildChecks — clé API (appel minimal), fetch simulé (jamais de ré
 // Volontairement non exercés (au-delà de la sonde de clé API ci-dessus, mockée) : lecture du vrai
 // config.yml (config machine), `statfs` réel (espace disque) et `loginctl` (linger, Linux seulement).
 // Ces checks sont couverts par leur seule présence dans buildChecks ; leur .run() n'est jamais invoqué ici.
+
+describe('buildChecks — av-tools', () => {
+  const AV = 'ILokYou/IA-Claude-Marketplace';
+  const machine = machineWithJira('sdk');
+  const fixture = () => readFile(fileURLToPath(new URL('../../../test/fixtures/av-tools/delivery-templates.yml', import.meta.url)), 'utf8');
+
+  it('absent sans suivi Jira', () => {
+    const names = buildChecks({ env: {}, machine: machineWith(['acme/one']), github: fakeGithub(async () => null) }).map((c) => c.name);
+    expect(names).not.toContain('av-tools');
+  });
+
+  it("échoue quand l'app ne voit pas le dépôt, et dit où l'ajouter", async () => {
+    const github = fakeGithub(async () => null, { appSlug: 'allo-sisyphe', repos: ['acme/one'] });
+    const r = await run(buildChecks({ env: {}, machine, github }), 'av-tools');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.message).toContain('Repository access');
+  });
+
+  it('réussit sur une branche valide', async () => {
+    const text = await fixture();
+    const github = fakeGithub(async (repo, path, ref) => (repo.full === AV && ref === 'main' ? text : null), { appSlug: 'a', repos: ['acme/one', AV] });
+    const r = await run(buildChecks({ env: {}, machine, github, avToolsPin: async () => 'b'.repeat(40) }), 'av-tools');
+    expect(r).toEqual({ ok: true, detail: 'main valide, épingle bbbbbbb' });
+  });
+
+  it('avertit quand la branche est inutilisable mais qu’une épingle existe', async () => {
+    const github = fakeGithub(async () => null, { appSlug: 'a', repos: [AV] });
+    const check = buildChecks({ env: {}, machine, github, avToolsPin: async () => 'b'.repeat(40) }).find((c) => c.name === 'av-tools');
+    expect(await check?.run()).toEqual({ warn: true, message: expect.stringContaining('absent sur main') });
+  });
+
+  it('échoue quand rien n’est valide, ni la branche ni une épingle', async () => {
+    const github = fakeGithub(async () => 'schema_version: 2\n', { appSlug: 'a', repos: [AV] });
+    const r = await run(buildChecks({ env: {}, machine, github }), 'av-tools');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.message).toContain('aucune version validée');
+  });
+});
