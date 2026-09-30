@@ -421,3 +421,33 @@ describe('pipeline sur Jira', () => {
     expect(j.state.comments[0]).toContain('https://example.test/pr/1');
   });
 });
+
+describe('pipeline sur Jira — version d’av-tools', () => {
+  const blocked = { ...readyVerdict, verdict: 'needs_clarification', note: 'Il manque un écran.', questions: ['Quel écran ?'] };
+
+  it('note le SHA de la version lue', async () => {
+    const j = fakeJira();
+    const h = await harnessOn(j.tracker, [{ output: blocked }, { output: jiraMuet }]);
+    const calls: string[] = [];
+    h.deps.avTools = {
+      load: async () => { calls.push('load'); return { sha: 'a'.repeat(40), templates: { gitmoji: {}, forbidden: [], templates: {} }, fresh: true }; },
+      pinnedSha: async () => null,
+    };
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    const done = await runJob(job.id, h.deps, signal());
+    expect(calls).toEqual(['load']);
+    expect(done.avToolsSha).toBe('a'.repeat(40));
+  });
+
+  it('en phase A, une version illisible ne bloque rien', async () => {
+    const j = fakeJira();
+    const h = await harnessOn(j.tracker, [{ output: blocked }, { output: jiraMuet }]);
+    h.deps.avTools = { load: async () => null, pinnedSha: async () => null };
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    const done = await runJob(job.id, h.deps, signal());
+    // Le triage a tourné et décidé : le blocage vient de lui, pas d'av-tools.
+    expect(done.state).toBe('blocked');
+    expect(done.error).toBe('triage : needs_clarification');
+    expect(done.avToolsSha).toBeNull();
+  });
+});

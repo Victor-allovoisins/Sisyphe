@@ -387,3 +387,16 @@ describe('runJob', () => {
     expect(implementPhase?.finishedAt).not.toBeNull();
   });
 });
+
+describe('pipeline sous suivi GitHub — av-tools', () => {
+  it("ne lit pas av-tools : il ne parle que de tickets Jira", async () => {
+    const blocked = { ...readyVerdict, verdict: 'needs_clarification', note: 'x', questions: ['?'] };
+    const h = await makeHarness({ steps: [{ output: blocked }] });
+    const calls: string[] = [];
+    h.deps.avTools = { load: async () => { calls.push('load'); return null; }, pinnedSha: async () => null };
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    const done = await runJob(job.id, h.deps, new AbortController().signal);
+    expect(done.state).toBe('blocked');
+    expect(calls).toEqual([]);
+  });
+});
