@@ -71,9 +71,10 @@ avTools:
   path: plugins/av-tools/skills/av-shared/reference/delivery-templates.yml
 ```
 
-Elle n'est **requise que si `jira` est configuré**. Doctor le vérifie ; le schéma, lui, reste permissif.
-`config/write.ts` doit la reporter à l'écriture comme il reporte `jira` à la main (`write.ts:43-49`), sinon
-la page de réglages l'efface.
+Absente, ou partiellement remplie, elle prend ces valeurs par défaut, résolues à l'usage par
+`resolveAvTools(machine)` : le fichier de config n'est jamais réécrit avec des valeurs que personne n'a
+saisies. Elle ne sert que sous suivi Jira. `config/write.ts` doit la reporter à l'écriture comme il reporte
+`jira` à la main (`write.ts:43-49`), sinon la page de réglages l'efface.
 
 ### 3.2 Miroir et épingle — `src/avtools/source.ts`
 
@@ -122,9 +123,13 @@ force-push sur `main`, le dernier SHA validé ne serait plus référencé, et `g
 - **Une version par job** : les modèles restent en mémoire pour tout le job. Leur SHA est noté dans le job,
   grâce à la migration 5 (`ALTER TABLE jobs ADD COLUMN av_tools_sha TEXT`), avec `Job.avToolsSha` et
   `JobPatch`.
-- **`null`** : `finish('blocked')` avec le message Sisyphe `renderAvToolsUnavailableComment`, en 🪨, qui dit
-  que les conventions av-tools sont illisibles et que doctor en donne la raison. Le ticket est rendu. Aucun
-  agent n'a tourné.
+- **`null`** :
+  - En phase A, le job continue sans version d'av-tools (`avToolsSha` reste nul), avec un avertissement au
+    journal. Rien ne se rend encore depuis av-tools, et bloquer ici arrêterait tous les jobs Jira tant que la
+    #53 n'est pas fusionnée.
+  - En phase B, `finish('blocked')` avec le message Sisyphe `renderAvToolsUnavailableComment`, en 🪨, qui dit
+    que les conventions av-tools sont illisibles et que doctor en donne la raison. Le ticket est rendu. Aucun
+    agent n'a tourné.
 - **Sorties anticipées** : une sortie qui arrive avant le chargement (une exception dans `relaunchFor`, par
   exemple) lit l'épingle. S'il n'y en a pas, elle poste le message de secours 🪨.
 
@@ -136,10 +141,11 @@ Un check « av-tools », ajouté quand `jira` est configuré. Il vérifie, dans 
 3. il est valide pour Sisyphe (§ 3.3).
 
 Sa réponse :
-- **ok** : `main @ <sha court>, 15 modèles` ;
-- **avertissement** : l'épingle a pris du retard sur la branche, ou le fichier y est absent alors qu'une
-  épingle existe ;
-- **échec** : pas d'accès, ou aucune version valide nulle part.
+- **ok** : `main valide, épingle <sha court>` ou `main valide, aucune épingle`. Si la branche est valide,
+  le prochain job l'épinglera : il n'y a pas de retard à signaler.
+- **avertissement** : la branche est inutilisable (fichier absent ou invalide), mais une épingle existe. Les
+  jobs gardent alors la dernière version validée, c'est-à-dire du retard sur la branche.
+- **échec** : pas d'accès au dépôt, ou branche inutilisable sans aucune épingle.
 
 ## 4. Phase B : rendre selon av-tools
 
