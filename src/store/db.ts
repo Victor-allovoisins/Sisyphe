@@ -116,6 +116,11 @@ const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE jobs ADD COLUMN issue_key TEXT;
   `,
+  // Le commit d'av-tools dont un job a tiré ses conventions de livraison. Nullable, simple ALTER comme
+  // `issue_key` : un job d'avant, sans suivi Jira ou sans version lisible, n'en a pas.
+  `
+  ALTER TABLE jobs ADD COLUMN av_tools_sha TEXT;
+  `,
 ];
 
 /** Version de schéma attendue : `PRAGMA user_version` d'une base à jour. L'UI s'en sert pour savoir s'il faut migrer. */

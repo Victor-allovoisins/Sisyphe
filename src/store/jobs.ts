@@ -20,6 +20,7 @@ function rowToJob(r: Row): Job {
     requeues: r.requeues as number,
     branch: (r.branch as string | null) ?? null,
     baseSha: (r.base_sha as string | null) ?? null,
+    avToolsSha: (r.av_tools_sha as string | null) ?? null,
     worktreePath: (r.worktree_path as string | null) ?? null,
     verdict: r.verdict_json ? JSON.parse(r.verdict_json as string) : null,
     report: r.report_json ? JSON.parse(r.report_json as string) : null,
@@ -45,7 +46,8 @@ export type JobPatch = Partial<Omit<Job, 'id' | 'createdAt' | 'updatedAt' | 'sta
 
 const COLUMNS: Record<keyof JobPatch, string> = {
   repo: 'repo', issueNumber: 'issue_number', issueTitle: 'issue_title', issueKey: 'issue_key', attempt: 'attempt', requeues: 'requeues',
-  branch: 'branch', baseSha: 'base_sha', worktreePath: 'worktree_path',
+  branch: 'branch', baseSha: 'base_sha',
+  avToolsSha: 'av_tools_sha', worktreePath: 'worktree_path',
   verdict: 'verdict_json', report: 'report_json', flags: 'flags_json',
   prNumber: 'pr_number', prUrl: 'pr_url', prState: 'pr_state', prMergedAt: 'pr_merged_at',
   costUsd: 'cost_usd', inputTokens: 'input_tokens', outputTokens: 'output_tokens', cacheReadTokens: 'cache_read_tokens',

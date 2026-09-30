@@ -202,6 +202,7 @@ describe('openDatabase', () => {
     const job = new JobStore(a).create({ repo: 'a/b', issueNumber: 1, issueTitle: 't' });
     const phase = new PhaseStore(a).start({ jobId: job.id, name: 'triage', attempt: 1 });
     a.exec('DROP TABLE actions');
+    a.exec('ALTER TABLE jobs DROP COLUMN av_tools_sha');
     a.exec('ALTER TABLE jobs DROP COLUMN issue_key');
     a.exec('PRAGMA user_version = 1');
     a.close();
@@ -225,8 +226,10 @@ describe('openDatabase', () => {
     // migration a ajouté. Une ligne écrite avant elle est ce qu'on veut voir survivre.
     const a = openDatabase(file);
     const before = new JobStore(a).create({ repo: 'a/b', issueNumber: 1, issueTitle: 't' });
+    // Ramenée juste avant `issue_key` (migration 4), donc sans les colonnes des migrations 4 et 5.
+    a.exec('ALTER TABLE jobs DROP COLUMN av_tools_sha');
     a.exec('ALTER TABLE jobs DROP COLUMN issue_key');
-    a.exec(`PRAGMA user_version = ${SCHEMA_VERSION - 1}`);
+    a.exec('PRAGMA user_version = 3');
     a.close();
 
     const b = openDatabase(file);
@@ -239,11 +242,30 @@ describe('openDatabase', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
+  it('ajoute av_tools_sha à une base peuplée, dont les lignes existantes restent sans SHA', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sisyphe-db-'));
+    const file = join(dir, 'sisyphe.db');
+    const a = openDatabase(file);
+    const before = new JobStore(a).create({ repo: 'a/b', issueNumber: 1, issueTitle: 't' });
+    a.exec('ALTER TABLE jobs DROP COLUMN av_tools_sha');
+    a.exec(`PRAGMA user_version = ${SCHEMA_VERSION - 1}`);
+    a.close();
+
+    const b = openDatabase(file);
+    const store = new JobStore(b);
+    expect(store.get(before.id)?.avToolsSha).toBeNull();
+    const sha = 'a'.repeat(40);
+    expect(store.update(before.id, { avToolsSha: sha }).avToolsSha).toBe(sha);
+    b.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
   it('deux migrateurs concurrents sur la même base : le second ne rejoue rien et les deux finissent à jour', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'sisyphe-db-'));
     const file = join(dir, 'sisyphe.db');
     const seed = openDatabase(file);
     seed.exec('DROP TABLE actions');
+    seed.exec('ALTER TABLE jobs DROP COLUMN av_tools_sha');
     seed.exec('ALTER TABLE jobs DROP COLUMN issue_key');
     seed.exec('PRAGMA user_version = 1'); // base v1, comme avant la migration 2
     seed.close();
