@@ -47,6 +47,10 @@ export class FakeIssueSource implements IssueSource {
   readonly selfLogin = 'sisyphe[bot]';
   defaultBranch = 'main';
   remoteUrl = 'file:///dev/null';
+  /** URL par dépôt (`owner/name`), prioritaire sur `remoteUrl` : un job et av-tools n'ont pas le même distant. */
+  remoteUrls: Record<string, string> = {};
+  /** Options reçues par le dernier `getAuthenticatedRemoteUrl`, par dépôt : les tests vérifient `readOnly`. */
+  remoteUrlOpts: Record<string, { readOnly?: boolean } | undefined> = {};
   private nextPr = 100;
   private commentSeq = 0;
 
@@ -169,8 +173,9 @@ export class FakeIssueSource implements IssueSource {
     return this.defaultBranch;
   }
 
-  async getAuthenticatedRemoteUrl(): Promise<string> {
-    return this.remoteUrl;
+  async getAuthenticatedRemoteUrl(repo: RepoRef, opts?: { readOnly?: boolean }): Promise<string> {
+    this.remoteUrlOpts[repo.full] = opts;
+    return this.remoteUrls[repo.full] ?? this.remoteUrl;
   }
 
   async openPullRequest(input: PullRequestInput): Promise<PullRef> {

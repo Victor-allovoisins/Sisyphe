@@ -333,3 +333,21 @@ describe('GitHubIssueSource (Octokit factice)', () => {
     expect(captured).toEqual({ owner: 'acme', repo: 'demo', issue_number: 1, labels: ['sisyphe'] });
   });
 });
+
+describe('getAuthenticatedRemoteUrl', () => {
+  it('réduit le jeton au dépôt demandé', async () => {
+    const src = makeClient();
+    const calls: unknown[] = [];
+    inject(src, { auth: async (o: unknown) => { calls.push(o); return { token: 'tok' }; } });
+    expect(await src.getAuthenticatedRemoteUrl(repo)).toBe('https://x-access-token:tok@github.com/acme/demo.git');
+    expect(calls).toEqual([{ type: 'installation', repositoryNames: ['demo'] }]);
+  });
+
+  it('readOnly le limite en plus à contents: read', async () => {
+    const src = makeClient();
+    const calls: unknown[] = [];
+    inject(src, { auth: async (o: unknown) => { calls.push(o); return { token: 'tok' }; } });
+    await src.getAuthenticatedRemoteUrl(repo, { readOnly: true });
+    expect(calls).toEqual([{ type: 'installation', repositoryNames: ['demo'], permissions: { contents: 'read' } }]);
+  });
+});
