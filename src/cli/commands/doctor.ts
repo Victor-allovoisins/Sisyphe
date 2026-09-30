@@ -9,6 +9,7 @@ import { loadMachineConfig, MachineConfigError, resolveAvTools, type AvToolsLoca
 import { dataPaths, type DataPaths } from '../../config/paths.js';
 import { REPO_CONFIG_FILENAME, parseRepoConfig } from '../../config/repo.js';
 import { assertSocketPathLength, MAX_SOCKET_PATH_BYTES } from '../../daemon/control.js';
+import { AVTOOLS_PIN_REF, Git } from '../../git/git.js';
 import { parseRepo, type RepoRef } from '../../github/source.js';
 import { isStaleLaunchAgentPlist, plistPath, STALE_PLIST_MESSAGE } from '../../service/launchd.js';
 import type { ServiceStatus } from '../../service/index.js';
@@ -59,7 +60,10 @@ export interface BuildChecksInput {
    * celui du service, et contredirait le daemon qui tourne ; `doctor` et `setup` gardent ces contrôles.
    */
   apiKeyChecks?: boolean;
-  /** SHA épinglé d'av-tools sur cette machine ; absent quand on ne sait pas le lire (pas d'app initialisée). */
+  /**
+   * SHA épinglé d'av-tools sur cette machine. Absent : lu dans le miroir de `paths` quand il est fourni,
+   * sinon aucune épingle n'est connue. Une injection sert aux tests.
+   */
   avToolsPin?: () => Promise<string | null>;
 }
 
@@ -370,8 +374,10 @@ export function buildChecks(input: BuildChecksInput): Check[] {
   if (input.machine?.jira && input.github) {
     const github = input.github;
     const loc = resolveAvTools(input.machine);
-    const pin = input.avToolsPin;
-    checks.push({ name: 'av-tools', run: () => checkAvTools(github, loc, pin) });
+    const pin = input.avToolsPin ?? (paths ? () => new Git(paths).resolveRef(loc.repo, AVTOOLS_PIN_REF).catch(() => null) : undefined);
+    // Phase A : av-tools n'est qu'enregistré, un échec ne doit pas empêcher `sisyphe setup` d'installer le
+    // service. La phase B (où les jobs en dépendront) reverra ce choix.
+    checks.push({ name: 'av-tools', warn: true, run: () => checkAvTools(github, loc, pin) });
   }
 
   // Le plugin n'est utile que si la phase `jira` peut charger un skill : suivi Jira, et un backend que
@@ -403,11 +409,7 @@ export async function doctorCommand(): Promise<void> {
   // Sans config, ni racine de données ni gestionnaire de service : le check « config machine » dit déjà tout.
   const paths = app?.paths ?? (machine ? dataPaths(machine.dataDir) : undefined);
   const service = machine && paths ? await serviceManagerFor(paths, machine) : undefined;
-  const avTools = app?.deps.avTools;
-  const checks = buildChecks({
-    machine, github: app?.github, jira: app?.jira, env: process.env, paths, service,
-    ...(avTools ? { avToolsPin: () => avTools.pinnedSha() } : {}),
-  });
+  const checks = buildChecks({ machine, github: app?.github, jira: app?.jira, env: process.env, paths, service });
 
   // La config invalide est déjà signalée par le check « config machine » : ne pas la répéter ici.
   if (initError && !(initError instanceof MachineConfigError)) {
