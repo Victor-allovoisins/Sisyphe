@@ -92,6 +92,15 @@ saisies. Elle ne sert que sous suivi Jira. `config/write.ts` doit la reporter à
    `fresh: false`, avec un avertissement dans le journal qui dit pourquoi.
 5. S'il n'y a pas d'épingle, elle rend `null`.
 
+**L'épingle se pose en compare-and-swap** : `pinRef(repo, ref, sha, attendu)` fait
+`git update-ref <ref> <sha> <attendu>`, avec l'OID nul quand l'épingle ne doit pas encore exister. La
+valeur attendue est lue **avant** le fetch. Deux jobs qui chargent en même temps ne peuvent donc pas faire
+reculer l'épingle.
+- **Course perdue** (« … but expected … », « reference already exists ») : notée au niveau debug. Le job
+  garde sa version, qui est valide.
+- **Tout autre refus** (un verrou `.lock` laissé par un crash, par exemple) : avertissement au journal. Sinon
+  l'épingle resterait figée sans que doctor le voie, puisqu'il ne juge que la branche.
+
 L'épingle a sa propre ref parce que les reflogs sont coupés (`core.logAllRefUpdates=false`) : après un
 force-push sur `main`, le dernier SHA validé ne serait plus référencé, et `git gc` pourrait l'effacer.
 
@@ -146,6 +155,14 @@ Sa réponse :
 - **avertissement** : la branche est inutilisable (fichier absent ou invalide), mais une épingle existe. Les
   jobs gardent alors la dernière version validée, c'est-à-dire du retard sur la branche.
 - **échec** : pas d'accès au dépôt, ou branche inutilisable sans aucune épingle.
+
+**En phase A, l'échec s'affiche en ⚠️ (`warn: true`)** : `sisyphe setup` réutilise ces checks et refuse
+d'installer le service au premier échec bloquant. Une machine neuve n'a pas d'épingle, et tant que le
+prérequis du § 2.1 ou le merge de la #53 manquent, le check échoue. La phase B décidera s'il redevient
+bloquant, une fois que Sisyphe rendra réellement depuis av-tools.
+
+Doctor lit l'épingle dans le miroir local dès qu'il connaît le répertoire de données (`paths`), que ce soit
+dans `doctor`, `setup` ou la page de réglages.
 
 ## 4. Phase B : rendre selon av-tools
 
@@ -262,3 +279,14 @@ produit av-tools, vérifié sur BACK-1116 : titres en `<strong>`, puces en `bull
 - **Les artefacts Notion** (CT, design).
 - **La restriction des jetons pour les appels REST** (issues, PR) : seuls les jetons passés à git sont
   réduits.
+
+### 6.1 Relevés par la revue de la phase A, laissés pour plus tard
+
+- **`avTools.branch` accepte un tag ou `refs/heads/…`.** Le job ne sait pas les rapatrier (`load()` rend
+  `null`), alors que doctor, qui passe par l'API, les accepterait probablement.
+- **Le fetch d'av-tools n'a pas de délai d'attente et n'écoute pas l'annulation.** Un fetch bloqué retiendrait
+  tous les jobs Jira derrière le verrou du miroir. C'est le même comportement que le miroir des dépôts cibles.
+- **`repositoryNames` pourrait être refusé pour un dépôt renommé ou transféré**, là où le jeton sans
+  restriction passait. Non démontré. Le 2026-09-30, sur `ILokYou/ILokYou-iOS`, GitHub a accepté le jeton
+  réduit, avec et sans lecture seule, et `git ls-remote` a répondu. Sur `IA-Claude-Marketplace`, il a répondu
+  422 (« not accessible to the parent installation ») : c'est le prérequis du § 2.1.
