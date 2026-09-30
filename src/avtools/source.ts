@@ -40,6 +40,8 @@ export class AvToolsSource implements AvToolsLoader {
     const { repo, branch } = this.d.location;
     let why: string;
     try {
+      // L'épingle est lue avant le fetch : c'est la valeur que l'écriture plus bas suppose encore vraie.
+      const pinBefore = await this.pinnedSha();
       // Lecture seule : ce jeton ne pourra jamais écrire sur av-tools, quoi qu'il arrive au processus.
       const url = await this.d.forge.getAuthenticatedRemoteUrl(parseRepo(repo), { readOnly: true });
       await this.d.git.ensureMirror(repo, url, `https://github.com/${repo}.git`, [branch]);
@@ -47,7 +49,7 @@ export class AvToolsSource implements AvToolsLoader {
       if (!sha) throw new Error(`branche ${branch} introuvable après le fetch`);
       const parsed = await this.parseAt(sha);
       if (parsed.ok) {
-        await this.d.git.pinRef(repo, AVTOOLS_PIN_REF, sha);
+        if (sha !== pinBefore) await this.pin(sha, pinBefore);
         return { sha, templates: parsed.value, fresh: true };
       }
       why = `${branch}@${sha.slice(0, 7)} : ${parsed.reason}`;
@@ -62,6 +64,18 @@ export class AvToolsSource implements AvToolsLoader {
     return this.d.git.resolveRef(this.d.location.repo, AVTOOLS_PIN_REF).catch(() => null);
   }
 
+  /**
+   * Épingle `sha` si l'épingle vaut encore `expectedOld`. Un refus veut dire qu'une autre lecture l'a déplacée
+   * pendant celle-ci : le job garde sa version valide, l'épingle reste à celle qui a gagné, qui ne recule pas.
+   */
+  private async pin(sha: string, expectedOld: string | null): Promise<void> {
+    try {
+      await this.d.git.pinRef(this.d.location.repo, AVTOOLS_PIN_REF, sha, expectedOld);
+    } catch (err) {
+      this.d.log.debug({ err, sha, expectedOld }, 'av-tools : épingle non posée, déplacée entre-temps par une autre lecture');
+    }
+  }
+
   private async parseAt(sha: string): Promise<ParseResult> {
     const text = await this.d.git.readFileAtSha(this.d.location.repo, sha, this.d.location.path);
     if (text === null) return { ok: false, reason: `${this.d.location.path} absent` };
@@ -70,14 +84,16 @@ export class AvToolsSource implements AvToolsLoader {
 
   private async fromPin(why: string): Promise<AvToolsSnapshot | null> {
     const pinned = await this.pinnedSha();
+    let pinReason: string | undefined;
     if (pinned) {
       const parsed = await this.parseAt(pinned).catch((err: unknown): ParseResult => ({ ok: false, reason: String(err) }));
       if (parsed.ok) {
         this.d.log.warn({ why, pinned }, 'av-tools : tête de branche inutilisable, repli sur la dernière version validée');
         return { sha: pinned, templates: parsed.value, fresh: false };
       }
+      pinReason = parsed.reason;
     }
-    this.d.log.warn({ why }, 'av-tools : aucune version validée disponible');
+    this.d.log.warn({ why, ...(pinned ? { pinned, pinReason } : {}) }, 'av-tools : aucune version validée disponible');
     return null;
   }
 }

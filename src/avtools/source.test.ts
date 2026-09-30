@@ -3,16 +3,38 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pino from 'pino';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FakeIssueSource } from '../../test/fakes/fake-issue-source.js';
 import { addCommit, createRemoteRepo } from '../../test/helpers/git-fixture.js';
 import { dataPaths } from '../config/paths.js';
-import { Git } from '../git/git.js';
+import { AVTOOLS_PIN_REF, Git } from '../git/git.js';
 import { AvToolsSource } from './source.js';
 
 const REPO = 'ILokYou/IA-Claude-Marketplace';
 const PATH = 'plugins/av-tools/skills/av-shared/reference/delivery-templates.yml';
 const FIXTURE = fileURLToPath(new URL('../../test/fixtures/av-tools/delivery-templates.yml', import.meta.url));
+
+/** Un `Git` dont la lecture d'un fichier laisse une autre lecture d'av-tools faire son travail, une seule fois. */
+class RacingGit extends Git {
+  constructor(paths: ConstructorParameters<typeof Git>[0], private interleave: (() => Promise<void>) | null) {
+    super(paths);
+  }
+
+  override async readFileAtSha(repo: string, sha: string, path: string): Promise<string | null> {
+    const text = await super.readFileAtSha(repo, sha, path);
+    const run = this.interleave;
+    this.interleave = null;
+    if (run) await run();
+    return text;
+  }
+}
+
+/** Journal capturé : chaque entrée est un objet pino déjà décodé. */
+function capture(level: 'debug' | 'warn'): { log: pino.Logger; entries: Array<{ level: number } & Record<string, unknown>> } {
+  const entries: Array<{ level: number } & Record<string, unknown>> = [];
+  const log = pino({ level }, { write: (line: string) => { entries.push(JSON.parse(line) as { level: number }); } });
+  return { log, entries };
+}
 
 describe('AvToolsSource', () => {
   let root: string;
@@ -69,6 +91,43 @@ describe('AvToolsSource', () => {
     const next = await addCommit(avRoot, { [PATH]: `${text}\n# relu\n` });
     expect(await source().load()).toMatchObject({ sha: next, fresh: true });
     expect(await source().pinnedSha()).toBe(next);
+  });
+
+  it('une tête déjà épinglée n’écrit rien', async () => {
+    await source().load();
+    const pin = vi.spyOn(git, 'pinRef');
+    expect(await source().load()).toMatchObject({ sha: headSha, fresh: true });
+    expect(pin).not.toHaveBeenCalled();
+  });
+
+  it('deux lectures concurrentes : l’épingle ne recule pas, la plus lente garde sa version', async () => {
+    await source().load();
+    const text = await readFile(FIXTURE, 'utf8');
+    const slow = await addCommit(avRoot, { [PATH]: `${text}\n# lente\n` });
+    let winner = '';
+    const racing = new RacingGit(dataPaths(join(root, 'data')), async () => {
+      // Pendant que la lecture lente valide `slow`, une autre a lu, épinglé la version suivante.
+      winner = await addCommit(avRoot, { [PATH]: `${text}\n# rapide\n` });
+      await git.ensureMirror(REPO, forge.remoteUrls[REPO] as string, `https://github.com/${REPO}.git`, ['main']);
+      await git.pinRef(REPO, AVTOOLS_PIN_REF, winner, headSha);
+    });
+    const { log, entries } = capture('debug');
+    const s = await new AvToolsSource({ git: racing, forge, location: { repo: REPO, branch: 'main', path: PATH }, log }).load();
+    expect(s).toMatchObject({ sha: slow, fresh: true });
+    expect(await source().pinnedSha()).toBe(winner);
+    expect(entries.filter((e) => e.level === 20)).toHaveLength(1);
+    expect(entries.filter((e) => e.level >= 40)).toEqual([]);
+  });
+
+  it('épingle présente mais invalide à son tour : le journal du repli dit pourquoi', async () => {
+    const bad = await addCommit(avRoot, { [PATH]: 'schema_version: 2\n' });
+    await git.ensureMirror(REPO, forge.remoteUrls[REPO] as string, `https://github.com/${REPO}.git`, ['main']);
+    await git.pinRef(REPO, AVTOOLS_PIN_REF, bad, null);
+    const { log, entries } = capture('warn');
+    const s = await new AvToolsSource({ git, forge, location: { repo: REPO, branch: 'main', path: PATH }, log }).load();
+    expect(s).toBeNull();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ pinned: bad, why: expect.stringContaining('schema_version'), pinReason: expect.stringContaining('schema_version') });
   });
 
   it('fichier absent et aucune épingle : null', async () => {

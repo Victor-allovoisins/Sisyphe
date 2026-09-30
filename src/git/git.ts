@@ -27,6 +27,9 @@ export const BASE_REF_PREFIX = 'refs/sisyphe/base/';
  */
 export const AVTOOLS_PIN_REF = 'refs/sisyphe/avtools/validated';
 
+/** L'OID nul de git : posé comme valeur attendue d'`update-ref`, il exige que la ref n'existe pas encore. */
+const ZERO_OID = '0'.repeat(40);
+
 /**
  * Environnement hermétique : ni config globale ni système (gpgsign, hooks, insteadOf, credential helper), pas de prompt.
  * LC_ALL=C : messages git en anglais, stables pour le matching.
@@ -165,10 +168,19 @@ export class Git {
     throw this.fail(['show'], result);
   }
 
-  /** Pose `ref` sur `sha` dans le miroir, sous le verrou du dépôt comme toute écriture du miroir. */
-  async pinRef(repo: string, ref: string, sha: string): Promise<void> {
+  /**
+   * Pose `ref` sur `sha` dans le miroir, sous le verrou du dépôt comme toute écriture du miroir.
+   *
+   * Compare-and-swap : `expectedOld` est la valeur de la ref que l'appelant a lue avant de décider, `null`
+   * quand elle ne devait pas exister. Si la ref a bougé depuis, git refuse et l'appel rejette, la ref garde
+   * la valeur de celui qui a gagné. Sans cela, deux lectures concurrentes pourraient reculer la ref : la plus
+   * lente écraserait la plus récente.
+   */
+  async pinRef(repo: string, ref: string, sha: string, expectedOld: string | null): Promise<void> {
+    // Le troisième argument de `update-ref` est la valeur attendue ; l'OID nul veut dire « la ref n'existe pas ».
+    const old = expectedOld ?? ZERO_OID;
     await this.withRepoLock(repo, async () => {
-      await this.run(['update-ref', ref, sha], mirrorPath(this.paths, repo));
+      await this.run(['update-ref', ref, sha, old], mirrorPath(this.paths, repo));
     });
   }
 

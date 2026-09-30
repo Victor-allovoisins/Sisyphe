@@ -508,7 +508,7 @@ describe('buildChecks — av-tools', () => {
       const paths = dataPaths(join(root, 'data'));
       const git = new Git(paths);
       await git.ensureMirror(AV, remotePath, remotePath, ['main']);
-      if (pin) await git.pinRef(AV, AVTOOLS_PIN_REF, headSha);
+      if (pin) await git.pinRef(AV, AVTOOLS_PIN_REF, headSha, null);
       return { paths, headSha };
     }
 

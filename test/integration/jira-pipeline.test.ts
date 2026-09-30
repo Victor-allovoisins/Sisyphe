@@ -1,3 +1,4 @@
+import pino from 'pino';
 import { describe, expect, it } from 'vitest';
 import { JIRA_STATUSES_DEFAULT } from '../../src/config/machine.js';
 import { JiraIssueTracker } from '../../src/jira/client.js';
@@ -449,5 +450,16 @@ describe('pipeline sur Jira — version d’av-tools', () => {
     expect(done.state).toBe('blocked');
     expect(done.error).toBe('triage : needs_clarification');
     expect(done.avToolsSha).toBeNull();
+  });
+
+  it('ne journalise pas une seconde fois : la source le fait déjà, avec la raison', async () => {
+    const j = fakeJira();
+    const h = await harnessOn(j.tracker, [{ output: blocked }, { output: jiraMuet }]);
+    const lines: string[] = [];
+    h.deps.log = pino({ level: 'warn' }, { write: (line: string) => { lines.push(line); } });
+    h.deps.avTools = { load: async () => null, pinnedSha: async () => null };
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    await runJob(job.id, h.deps, signal());
+    expect(lines.filter((l) => l.includes('av-tools'))).toEqual([]);
   });
 });

@@ -299,8 +299,8 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
     // rien — sans quoi aucun job Jira ne passerait tant que le fichier n'est pas sur `main`.
     if (loaded.tracker && deps.avTools) {
       const av = await deps.avTools.load();
+      // Pas de journal ici : la source a déjà dit pourquoi elle ne rend rien.
       job = store.update(job.id, { avToolsSha: av?.sha ?? null });
-      if (!av) log.warn('av-tools illisible : job poursuivi sans conventions de livraison');
     }
 
     // Git et configuration du repo : on ne rafraîchit que les branches de base, jamais celles des jobs.

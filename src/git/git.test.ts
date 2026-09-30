@@ -42,12 +42,47 @@ describe('Git', () => {
     });
 
     it("l'épingle retient un commit que main a perdu par un force-push", async () => {
-      await git.pinRef(repo, AVTOOLS_PIN_REF, headSha);
+      await git.pinRef(repo, AVTOOLS_PIN_REF, headSha, null);
       await addCommit(root, { 'README.md': '# réécrit\n' }, { amend: true });
       await git.ensureMirror(repo, remotePath, PUBLIC_URL, ['main']);
       expect(await git.resolveRef(repo, `${BASE_REF_PREFIX}main`)).not.toBe(headSha);
       expect(await git.resolveRef(repo, AVTOOLS_PIN_REF)).toBe(headSha);
       expect(await git.readFileAtSha(repo, headSha, 'README.md')).toBe('# demo');
+    });
+
+    describe('pinRef, compare-and-swap', () => {
+      /** Un second commit, présent dans le miroir. */
+      async function nextSha(): Promise<string> {
+        const next = await addCommit(root, { 'README.md': '# suite\n' });
+        await git.ensureMirror(repo, remotePath, PUBLIC_URL, ['main']);
+        return next;
+      }
+
+      it('null : pose la ref quand elle n’existe pas encore', async () => {
+        await git.pinRef(repo, AVTOOLS_PIN_REF, headSha, null);
+        expect(await git.resolveRef(repo, AVTOOLS_PIN_REF)).toBe(headSha);
+      });
+
+      it('la valeur attendue : déplace la ref', async () => {
+        const next = await nextSha();
+        await git.pinRef(repo, AVTOOLS_PIN_REF, headSha, null);
+        await git.pinRef(repo, AVTOOLS_PIN_REF, next, headSha);
+        expect(await git.resolveRef(repo, AVTOOLS_PIN_REF)).toBe(next);
+      });
+
+      it('une valeur attendue périmée : rejette et laisse la ref telle quelle', async () => {
+        const next = await nextSha();
+        await git.pinRef(repo, AVTOOLS_PIN_REF, next, null);
+        await expect(git.pinRef(repo, AVTOOLS_PIN_REF, headSha, headSha)).rejects.toThrow(GitError);
+        expect(await git.resolveRef(repo, AVTOOLS_PIN_REF)).toBe(next);
+      });
+
+      it('null alors que la ref existe : rejette et laisse la ref telle quelle', async () => {
+        const next = await nextSha();
+        await git.pinRef(repo, AVTOOLS_PIN_REF, headSha, null);
+        await expect(git.pinRef(repo, AVTOOLS_PIN_REF, next, null)).rejects.toThrow(GitError);
+        expect(await git.resolveRef(repo, AVTOOLS_PIN_REF)).toBe(headSha);
+      });
     });
 
     it('refuse autre chose qu’un SHA complet', async () => {
