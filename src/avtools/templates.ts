@@ -69,9 +69,11 @@ const TemplateSchema = z.strictObject({
 const FileSchema = z.strictObject({
   schema_version: z.literal(SCHEMA_VERSION),
   gitmoji: z
-    .record(z.string(), z.string().min(1))
+    .record(z.string(), z.string().refine((v) => v.trim() !== '', 'gitmoji vide'))
     .refine((g) => GITMOJI_KEYS.every((k) => k in g), `gitmoji incomplet : ${GITMOJI_KEYS.join(', ')} attendus`),
-  commit_rules: z.strictObject({ forbidden: z.array(z.string().min(1)) }),
+  // Non strict, comme le contrôle I d'av-tools : seuls le premier niveau et les entrées de `templates` refusent
+  // une clé en trop, une clé de plus sous `commit_rules` ne doit pas coûter à Sisyphe la version entière.
+  commit_rules: z.object({ forbidden: z.array(z.string().min(1)) }),
   templates: z.record(z.string(), TemplateSchema),
 });
 
@@ -80,11 +82,12 @@ const tokensOf = (text: string): string[] => [...text.matchAll(TOKEN)].map((m) =
 function structuralProblems(name: string, tpl: Template): string[] {
   const problems: string[] = [];
   const used = new Set(tokensOf(tpl.text));
-  for (const v of used) if (!(v in tpl.vars)) problems.push(`${name} : jeton {${v}} non déclaré`);
+  // Propriétés propres seulement : `{toString}` ne devient pas une variable déclarée parce qu'Object en a une.
+  for (const v of used) if (!Object.hasOwn(tpl.vars, v)) problems.push(`${name} : jeton {${v}} non déclaré`);
   for (const v of Object.keys(tpl.vars)) if (!used.has(v)) problems.push(`${name} : variable ${v} déclarée mais inutilisée`);
   for (const line of tpl.text.split('\n')) {
     for (const v of tokensOf(line)) {
-      if (tpl.vars[v] === 'list' && line !== `{${v}}`) problems.push(`${name} : la liste {${v}} doit être seule et non indentée sur sa ligne`);
+      if (Object.hasOwn(tpl.vars, v) && tpl.vars[v] === 'list' && line !== `{${v}}`) problems.push(`${name} : la liste {${v}} doit être seule et non indentée sur sa ligne`);
     }
   }
   if (SINGLE_LINE.has(name) && tpl.text.includes('\n')) problems.push(`${name} : modèle d'une ligne, sans saut de ligne`);
@@ -141,11 +144,12 @@ export function render<N extends TemplateName>(t: DeliveryTemplates, name: N, va
   const out: string[] = [];
   for (const line of tpl.text.split('\n')) {
     const lone = LONE_TOKEN.exec(line);
-    if (lone && tpl.vars[lone[1] as string] === 'list') {
+    if (lone && Object.hasOwn(tpl.vars, lone[1] as string) && tpl.vars[lone[1] as string] === 'list') {
       for (const item of vals[lone[1] as string] as readonly string[]) out.push(`- ${item}`);
       continue;
     }
-    out.push(line.replace(TOKEN, (_, v: string) => vals[v] as string));
+    // Un nom hérité d'Object n'est pas une variable : le jeton reste tel quel plutôt que de rendre `function …`.
+    out.push(line.replace(TOKEN, (token, v: string) => (Object.hasOwn(tpl.vars, v) && Object.hasOwn(vals, v) ? (vals[v] as string) : token)));
   }
   return out.join('\n').replace(/\n+$/, '');
 }

@@ -50,6 +50,23 @@ describe('parseDeliveryTemplates', () => {
     expect(await broken('mis en pause : {reason}', 'mis en pause : {raison}')).toContain('{raison}');
   });
 
+  it('refuse un jeton qui porte le nom d’une propriété héritée d’Object', async () => {
+    const reason = await broken('"{gitmoji}({KEY}): {description}"', '"{gitmoji}({KEY}): {description} {toString}"');
+    expect(reason).toContain('{toString}');
+  });
+
+  it('refuse un gitmoji blanc, comme le contrôle I d’av-tools', async () => {
+    expect(await broken('fix: "🐛"', 'fix: " "')).toContain('gitmoji');
+  });
+
+  it('tolère une clé en plus sous commit_rules : seuls le premier niveau et les modèles sont stricts', async () => {
+    const text = (await read()).replace('commit_rules:\n', 'commit_rules:\n  max_subject_length: 72\n');
+    expect(text).toContain('max_subject_length');
+    const r = parseDeliveryTemplates(text);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.forbidden).toEqual(['Co-Authored-By', 'Claude', 'Anthropic']);
+  });
+
   it('refuse une liste qui ne tient pas seule sur sa ligne', async () => {
     expect(await broken(/^      \{problem\}$/m, '      - {problem}')).toContain('{problem}');
   });
@@ -101,6 +118,12 @@ describe('render', () => {
   it('rend en une passe : un jeton dans une valeur reste littéral', async () => {
     const t = await valid();
     expect(render(t, 'pr_body_simple', { KEY: 'BACK-1', changes: ['voir {test_plan}'], test_plan: ['T'] })).toContain('- voir {test_plan}');
+  });
+
+  it('un jeton hérité d’Object n’est jamais une variable : il reste littéral', async () => {
+    const t = await valid();
+    const odd: DeliveryTemplates = { ...t, templates: { ...t.templates, jira_cancelled: { vars: {}, text: 'annulé {toString}' } } };
+    expect(render(odd, 'jira_cancelled', {})).toBe('annulé {toString}');
   });
 
   it('retire les sauts de ligne finaux', async () => {
