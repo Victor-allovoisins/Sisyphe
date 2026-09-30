@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,7 +6,7 @@ import pino from 'pino';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FakeIssueSource } from '../../test/fakes/fake-issue-source.js';
 import { addCommit, createRemoteRepo } from '../../test/helpers/git-fixture.js';
-import { dataPaths } from '../config/paths.js';
+import { dataPaths, mirrorPath } from '../config/paths.js';
 import { AVTOOLS_PIN_REF, Git } from '../git/git.js';
 import { AvToolsSource } from './source.js';
 
@@ -128,6 +128,20 @@ describe('AvToolsSource', () => {
     expect(s).toBeNull();
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({ pinned: bad, why: expect.stringContaining('schema_version'), pinReason: expect.stringContaining('schema_version') });
+  });
+
+  it("un refus qui n'est pas une course perdue se lit au journal", async () => {
+    await source().load();
+    // Le verrou qu'un crash au milieu de `update-ref` laisse derrière lui : l'épingle ne bouge plus.
+    await writeFile(join(mirrorPath(dataPaths(join(root, 'data')), REPO), 'refs/sisyphe/avtools/validated.lock'), '');
+    const text = await readFile(FIXTURE, 'utf8');
+    const next = await addCommit(avRoot, { [PATH]: `${text}\n# relu\n` });
+    const { log, entries } = capture('warn');
+    const s = await new AvToolsSource({ git, forge, location: { repo: REPO, branch: 'main', path: PATH }, log }).load();
+    expect(s).toMatchObject({ sha: next, fresh: true });
+    expect(await source().pinnedSha()).toBe(headSha);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ sha: next });
   });
 
   it('fichier absent et aucune épingle : null', async () => {
