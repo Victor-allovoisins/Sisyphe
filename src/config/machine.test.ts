@@ -175,4 +175,11 @@ describe('avTools', () => {
   it('une clé inconnue est refusée', () => {
     expect(() => parseMachineConfig(stringify({ ...base, avTools: { bogus: 1 } }))).toThrow(MachineConfigError);
   });
+
+  it('une section vide (YAML null, enfants tous commentés) ne casse pas la config', () => {
+    const text = `${stringify(base)}avTools:\n  # repo: ILokYou/IA-Claude-Marketplace\n  # branch: main\n`;
+    const m = parseMachineConfig(text);
+    expect(m.avTools).toBeUndefined();
+    expect(resolveAvTools(m)).toEqual(AV_TOOLS_DEFAULTS);
+  });
 });

@@ -105,7 +105,9 @@ export const MachineConfigSchema = z.strictObject({
       branch: z.string().min(1).optional(),
       path: z.string().min(1).optional(),
     })
-    .optional(),
+    // Comme `jira` : `avTools:` dont tous les enfants sont commentés se lit `null` en YAML, pas « absent ».
+    .nullish()
+    .transform((v) => v ?? undefined),
   dataDir: homeOrAbsolute.default('~/.sisyphe'),
 });
 export type MachineConfig = z.infer<typeof MachineConfigSchema>;
