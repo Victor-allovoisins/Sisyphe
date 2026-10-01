@@ -1,3 +1,4 @@
+import pino from 'pino';
 import { describe, expect, it } from 'vitest';
 import { JIRA_STATUSES_DEFAULT } from '../../src/config/machine.js';
 import { JiraIssueTracker } from '../../src/jira/client.js';
@@ -419,5 +420,46 @@ describe('pipeline sur Jira', () => {
     // Un seul commentaire, et c'est celui de l'agent : le message scripté ne doit pas s'y ajouter.
     expect(j.state.comments).toHaveLength(1);
     expect(j.state.comments[0]).toContain('https://example.test/pr/1');
+  });
+});
+
+describe('pipeline sur Jira — version d’av-tools', () => {
+  const blocked = { ...readyVerdict, verdict: 'needs_clarification', note: 'Il manque un écran.', questions: ['Quel écran ?'] };
+
+  it('note le SHA de la version lue', async () => {
+    const j = fakeJira();
+    const h = await harnessOn(j.tracker, [{ output: blocked }, { output: jiraMuet }]);
+    const calls: string[] = [];
+    h.deps.avTools = {
+      load: async () => { calls.push('load'); return { sha: 'a'.repeat(40), templates: { gitmoji: {}, forbidden: [], templates: {} }, fresh: true }; },
+      pinnedSha: async () => null,
+    };
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    const done = await runJob(job.id, h.deps, signal());
+    expect(calls).toEqual(['load']);
+    expect(done.avToolsSha).toBe('a'.repeat(40));
+  });
+
+  it('en phase A, une version illisible ne bloque rien', async () => {
+    const j = fakeJira();
+    const h = await harnessOn(j.tracker, [{ output: blocked }, { output: jiraMuet }]);
+    h.deps.avTools = { load: async () => null, pinnedSha: async () => null };
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    const done = await runJob(job.id, h.deps, signal());
+    // Le triage a tourné et décidé : le blocage vient de lui, pas d'av-tools.
+    expect(done.state).toBe('blocked');
+    expect(done.error).toBe('triage : needs_clarification');
+    expect(done.avToolsSha).toBeNull();
+  });
+
+  it('ne journalise pas une seconde fois : la source le fait déjà, avec la raison', async () => {
+    const j = fakeJira();
+    const h = await harnessOn(j.tracker, [{ output: blocked }, { output: jiraMuet }]);
+    const lines: string[] = [];
+    h.deps.log = pino({ level: 'warn' }, { write: (line: string) => { lines.push(line); } });
+    h.deps.avTools = { load: async () => null, pinnedSha: async () => null };
+    const job = h.store.create({ repo: REPO, issueNumber: 7, issueTitle: 'Ajouter feature hello' });
+    await runJob(job.id, h.deps, signal());
+    expect(lines.filter((l) => l.includes('av-tools'))).toEqual([]);
   });
 });

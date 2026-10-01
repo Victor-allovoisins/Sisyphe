@@ -1,14 +1,18 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { stringify } from 'yaml';
+import { createRemoteRepo } from '../../../test/helpers/git-fixture.js';
 import { parseMachineConfig, type MachineConfig } from '../../config/machine.js';
 import { dataPaths, type DataPaths } from '../../config/paths.js';
 import { REPO_CONFIG_FILENAME } from '../../config/repo.js';
 import { MAX_SOCKET_PATH_BYTES } from '../../daemon/control.js';
+import { AVTOOLS_PIN_REF, Git } from '../../git/git.js';
 import { renderPlist } from '../../service/launchd.js';
 import type { ServiceStatus } from '../../service/index.js';
+import { runChecks } from '../checks.js';
 import { buildChecks, parseAuthStatus, parseOpenCodeAuthStatus, type DoctorGitHub, type DoctorService } from './doctor.js';
 
 /** Répertoires de fixtures (plists), effacés à la fin. */
@@ -445,3 +449,106 @@ describe('buildChecks — clé API (appel minimal), fetch simulé (jamais de ré
 // Volontairement non exercés (au-delà de la sonde de clé API ci-dessus, mockée) : lecture du vrai
 // config.yml (config machine), `statfs` réel (espace disque) et `loginctl` (linger, Linux seulement).
 // Ces checks sont couverts par leur seule présence dans buildChecks ; leur .run() n'est jamais invoqué ici.
+
+describe('buildChecks — av-tools', () => {
+  const AV = 'ILokYou/IA-Claude-Marketplace';
+  const machine = machineWithJira('sdk');
+  const fixture = () => readFile(fileURLToPath(new URL('../../../test/fixtures/av-tools/delivery-templates.yml', import.meta.url)), 'utf8');
+
+  it('absent sans suivi Jira', () => {
+    const names = buildChecks({ env: {}, machine: machineWith(['acme/one']), github: fakeGithub(async () => null) }).map((c) => c.name);
+    expect(names).not.toContain('av-tools');
+  });
+
+  it("échoue quand l'app ne voit pas le dépôt, et dit où l'ajouter", async () => {
+    const github = fakeGithub(async () => null, { appSlug: 'allo-sisyphe', repos: ['acme/one'] });
+    const r = await run(buildChecks({ env: {}, machine, github }), 'av-tools');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.message).toContain('Repository access');
+  });
+
+  it('réussit sur une branche valide', async () => {
+    const text = await fixture();
+    const github = fakeGithub(async (repo, path, ref) => (repo.full === AV && ref === 'main' ? text : null), { appSlug: 'a', repos: ['acme/one', AV] });
+    const r = await run(buildChecks({ env: {}, machine, github, avToolsPin: async () => 'b'.repeat(40) }), 'av-tools');
+    expect(r).toEqual({ ok: true, detail: 'main valide, épingle bbbbbbb' });
+  });
+
+  it('compare le nom du dépôt sans tenir compte de la casse, comme GitHub', async () => {
+    const text = await fixture();
+    const github = fakeGithub(async () => text, { appSlug: 'a', repos: [AV.toLowerCase()] });
+    const r = await run(buildChecks({ env: {}, machine, github, avToolsPin: async () => null }), 'av-tools');
+    expect(r).toEqual({ ok: true, detail: 'main valide, aucune épingle' });
+  });
+
+  it('avertit quand la branche est inutilisable mais qu’une épingle existe', async () => {
+    const github = fakeGithub(async () => null, { appSlug: 'a', repos: [AV] });
+    const check = buildChecks({ env: {}, machine, github, avToolsPin: async () => 'b'.repeat(40) }).find((c) => c.name === 'av-tools');
+    expect(await check?.run()).toEqual({ warn: true, message: expect.stringContaining('absent sur main') });
+  });
+
+  it('échoue quand rien n’est valide, ni la branche ni une épingle', async () => {
+    const github = fakeGithub(async () => 'schema_version: 2\n', { appSlug: 'a', repos: [AV] });
+    const r = await run(buildChecks({ env: {}, machine, github }), 'av-tools');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.message).toContain('aucune version validée');
+  });
+
+  it('est déclaré non bloquant (warn: true)', () => {
+    const github = fakeGithub(async () => null);
+    expect(buildChecks({ env: {}, machine, github }).find((c) => c.name === 'av-tools')?.warn).toBe(true);
+  });
+
+  it('runChecks reste ok, en ⚠️, quand l’app ne voit pas le dépôt', async () => {
+    const github = fakeGithub(async () => null, { appSlug: 'allo-sisyphe', repos: ['acme/one'] });
+    const r = await runChecks(buildChecks({ env: {}, machine, github }).filter((c) => c.name === 'av-tools'));
+    expect(r.ok).toBe(true);
+    expect(r.lines[0]).toMatch(/^⚠️ av-tools/);
+  });
+
+  describe('épingle lue dans le miroir quand `paths` est fourni', () => {
+    /** Miroir d'av-tools sous une racine de données neuve ; `pin` : épingler la tête, comme le fait un job. */
+    async function mirror(pin: boolean): Promise<{ paths: DataPaths; headSha: string }> {
+      const root = await mkdtemp(join(tmpdir(), 'sisyphe-doctor-avtools-'));
+      tempDirs.push(root);
+      const { remotePath, headSha } = await createRemoteRepo(join(root, 'av'), { 'delivery-templates.yml': await fixture() });
+      const paths = dataPaths(join(root, 'data'));
+      const git = new Git(paths);
+      await git.ensureMirror(AV, remotePath, remotePath, ['main']);
+      if (pin) await git.pinRef(AV, AVTOOLS_PIN_REF, headSha, null);
+      return { paths, headSha };
+    }
+
+    it('branche invalide et miroir épinglé : avertit avec les 7 premiers caractères de l’épingle, sans `avToolsPin`', async () => {
+      const { paths, headSha } = await mirror(true);
+      const github = fakeGithub(async () => null, { appSlug: 'a', repos: [AV] });
+      const check = buildChecks({ env: {}, machine, github, paths }).find((c) => c.name === 'av-tools');
+      expect(await check?.run()).toEqual({ warn: true, message: expect.stringContaining(`épingle ${headSha.slice(0, 7)}`) });
+    });
+
+    it('branche valide et miroir épinglé : le message porte l’épingle', async () => {
+      const { paths, headSha } = await mirror(true);
+      const text = await fixture();
+      const github = fakeGithub(async () => text, { appSlug: 'a', repos: [AV] });
+      const r = await run(buildChecks({ env: {}, machine, github, paths }), 'av-tools');
+      expect(r).toEqual({ ok: true, detail: `main valide, épingle ${headSha.slice(0, 7)}` });
+    });
+
+    it('miroir sans épingle (ou sans miroir) : « main valide, aucune épingle »', async () => {
+      const { paths } = await mirror(false);
+      const text = await fixture();
+      const github = fakeGithub(async () => text, { appSlug: 'a', repos: [AV] });
+      expect(await run(buildChecks({ env: {}, machine, github, paths }), 'av-tools')).toEqual({ ok: true, detail: 'main valide, aucune épingle' });
+      const nowhere = fakePaths(join(paths.root, 'nulle-part'));
+      expect(await run(buildChecks({ env: {}, machine, github, paths: nowhere }), 'av-tools')).toEqual({ ok: true, detail: 'main valide, aucune épingle' });
+    });
+
+    it('`avToolsPin` reste prioritaire sur la lecture du miroir', async () => {
+      const { paths } = await mirror(true);
+      const text = await fixture();
+      const github = fakeGithub(async () => text, { appSlug: 'a', repos: [AV] });
+      const r = await run(buildChecks({ env: {}, machine, github, paths, avToolsPin: async () => 'c'.repeat(40) }), 'av-tools');
+      expect(r).toEqual({ ok: true, detail: 'main valide, épingle ccccccc' });
+    });
+  });
+});

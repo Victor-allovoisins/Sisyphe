@@ -266,3 +266,16 @@ describe('writeMachineConfig', () => {
     expect((await readdir(dir)).sort()).toEqual(['app.pem', 'config.yml']);
   });
 });
+
+describe('validateMachineConfigInput — avTools', () => {
+  it('reporte la section avTools que la page de réglages ne renvoie pas', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sisyphe-write-'));
+    const key = join(dir, 'k.pem');
+    await writeFile(key, 'x');
+    const raw = { github: { appId: 1, installationId: 1, privateKeyPath: key }, repos: ['a/b'] };
+    const r = await validateMachineConfigInput(raw, { dataDir: '~/.sisyphe', jira: undefined, avTools: { branch: 'x' } });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.config.avTools).toEqual({ branch: 'x' });
+    await rm(dir, { recursive: true, force: true });
+  });
+});

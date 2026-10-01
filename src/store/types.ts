@@ -55,6 +55,8 @@ export interface Job {
   requeues: number;
   branch: string | null;
   baseSha: string | null;
+  /** Commit d'av-tools dont ce job tire ses conventions de livraison ; null sans suivi Jira ou sans version lisible. */
+  avToolsSha: string | null;
   worktreePath: string | null;
   verdict: TriageVerdict | null;
   report: ImplementationReport | null;

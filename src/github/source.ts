@@ -123,8 +123,13 @@ export interface IssueTracker {
  */
 export interface Forge {
   getDefaultBranch(repo: RepoRef): Promise<string>;
-  /** URL HTTPS avec token d'installation, valide environ une heure : à ré-obtenir juste avant chaque fetch ou push, jamais mémorisée au-delà d'une opération. */
-  getAuthenticatedRemoteUrl(repo: RepoRef): Promise<string>;
+  /**
+   * URL HTTPS avec un jeton d'installation **réduit à ce seul dépôt**, valide environ une heure : à ré-obtenir
+   * juste avant chaque fetch ou push, jamais mémorisée au-delà d'une opération. `readOnly` le limite en plus
+   * à `contents: read` : c'est la forme des lectures d'av-tools, dont le `main` n'est pas protégé et part chez
+   * tous les devs.
+   */
+  getAuthenticatedRemoteUrl(repo: RepoRef, opts?: { readOnly?: boolean }): Promise<string>;
   openPullRequest(input: PullRequestInput): Promise<PullRef>;
   updatePullRequest(ref: PullRef, patch: { title: string; body: string; draft: boolean; base: string }): Promise<void>;
   /** Recherche la PR ouverte dont la branche source est headBranch ; les PR fermées ou fusionnées ne comptent pas. */

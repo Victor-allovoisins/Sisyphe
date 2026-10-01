@@ -40,13 +40,18 @@ async function isReadableFile(path: string): Promise<boolean> {
 
 export async function validateMachineConfigInput(
   raw: unknown,
-  current: Pick<MachineConfig, 'dataDir' | 'jira'>,
+  current: Pick<MachineConfig, 'dataDir' | 'jira' | 'avTools'>,
 ): Promise<ValidateMachineConfigResult> {
   // La page de réglages ne gère pas la section `jira` et ne la renvoie donc pas. Sans ce report, le simple
   // fait d'enregistrer un budget effacerait tout le suivi Jira — en silence, et sans que rien ne le dise
   // avant le prochain démarrage du daemon.
   if (current.jira && raw !== null && typeof raw === 'object' && !('jira' in raw)) {
     raw = { ...(raw as Record<string, unknown>), jira: current.jira };
+  }
+  // Même report pour `avTools`, que la page ne gère pas non plus : l'enregistrer effacerait sinon le réglage
+  // de branche, et les jobs retomberaient sur `main` sans que personne l'ait demandé.
+  if (current.avTools && raw !== null && typeof raw === 'object' && !('avTools' in raw)) {
+    raw = { ...(raw as Record<string, unknown>), avTools: current.avTools };
   }
   // `raw` tel quel, sans `?? {}` : un corps nul est un corps invalide, et « objet attendu » sur la racine est
   // plus parlant pour la page qu'une liste de champs manquants.

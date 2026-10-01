@@ -88,6 +88,7 @@ describe('openUiDatabase', () => {
     const seed = openDatabase(dbPath);
     const job = new JobStore(seed).create({ repo: 'a/b', issueNumber: 1, issueTitle: 't' });
     seed.exec('DROP TABLE actions');
+    seed.exec('ALTER TABLE jobs DROP COLUMN av_tools_sha');
     seed.exec('ALTER TABLE jobs DROP COLUMN issue_key');
     seed.exec('PRAGMA user_version = 1');
     seed.close();

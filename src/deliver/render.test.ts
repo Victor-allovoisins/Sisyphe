@@ -9,7 +9,7 @@ import { clampForGitHub, sanitizeCodeSpan, sanitizeModelText } from './sanitize.
 
 const job: Job = {
   id: 'job-1', repo: 'acme/demo', issueNumber: 7, issueTitle: 'Ajouter un bouton', issueKey: null, state: 'delivering', attempt: 2, requeues: 0,
-  branch: 'feature/issue-7-x', baseSha: 'abc', worktreePath: '/wt', verdict: null, report: null,
+  branch: 'feature/issue-7-x', baseSha: 'abc', avToolsSha: null, worktreePath: '/wt', verdict: null, report: null,
   flags: { ...emptyFlags(), largeDiff: true, protectedPathsTouched: ['App/Config.xcconfig'], earlyStop: 'max_budget' },
   prNumber: null, prUrl: null, prState: null, prMergedAt: null, costUsd: 3.4567, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0,
   durationMs: 0, error: null, createdAt: '', startedAt: null, finishedAt: null, updatedAt: '',

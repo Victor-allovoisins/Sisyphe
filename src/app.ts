@@ -1,5 +1,6 @@
 import { createAgentRunner } from './agent/index.js';
-import { SANDBOX_BACKEND_ERROR, loadMachineConfig, type MachineConfig } from './config/machine.js';
+import { AvToolsSource } from './avtools/source.js';
+import { SANDBOX_BACKEND_ERROR, loadMachineConfig, resolveAvTools, type MachineConfig } from './config/machine.js';
 import { dataPaths, ensureDataDirs, machineConfigPath, type DataPaths } from './config/paths.js';
 import { Git } from './git/git.js';
 import { GitHubIssueSource } from './github/client.js';
@@ -61,8 +62,11 @@ export async function createApp(opts: { logToFile?: boolean; needsAgent?: boolea
     }
   }
   const agent = createAgentRunner(machine.agentBackend, { sandbox: machine.sandbox });
+  const git = new Git(paths);
   const deps: PipelineDeps = {
-    store: new JobStore(db), phases: new PhaseStore(db), actions: new ActionStore(db), source: jira ?? github, forge: github, agent, git: new Git(paths), paths, machine, log, env: process.env,
+    store: new JobStore(db), phases: new PhaseStore(db), actions: new ActionStore(db), source: jira ?? github, forge: github, agent, git, paths, machine, log, env: process.env,
+    // Seulement sous suivi Jira, comme le pipeline qui s'en sert.
+    ...(jira ? { avTools: new AvToolsSource({ git, forge: github, location: resolveAvTools(machine), log: log.child({ component: 'av-tools' }) }) } : {}),
   };
   return { machine, paths, deps, github, jira };
 }

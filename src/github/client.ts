@@ -260,8 +260,16 @@ export class GitHubIssueSource implements IssueSource {
     return r.data.default_branch;
   }
 
-  async getAuthenticatedRemoteUrl(repo: RepoRef): Promise<string> {
-    const auth = await this.call(async (o) => (await o.auth({ type: 'installation' })) as { token: string });
+  async getAuthenticatedRemoteUrl(repo: RepoRef, opts: { readOnly?: boolean } = {}): Promise<string> {
+    // Sans `repositoryNames`, le jeton couvre toute l'installation : un jeton demandé pour pousser sur l'app
+    // iOS pourrait écrire sur av-tools. GitHub réduit le jeton à sa création, rien d'autre n'est à gérer.
+    const auth = await this.call(async (o) =>
+      (await o.auth({
+        type: 'installation',
+        repositoryNames: [repo.name],
+        ...(opts.readOnly ? { permissions: { contents: 'read' } } : {}),
+      })) as { token: string },
+    );
     return `https://x-access-token:${auth.token}@github.com/${repo.full}.git`;
   }
 

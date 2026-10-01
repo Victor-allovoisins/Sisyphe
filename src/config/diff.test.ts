@@ -2,7 +2,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { diffMachineConfig } from './diff.js';
-import { MachineConfigSchema, type MachineConfig } from './machine.js';
+import { AV_TOOLS_DEFAULTS, MachineConfigSchema, type MachineConfig } from './machine.js';
 
 // Pur : aucune lecture de fichier, `homedir()` ne sert qu'à fabriquer la forme développée d'un chemin.
 const base: MachineConfig = MachineConfigSchema.parse({
@@ -43,5 +43,15 @@ describe('diffMachineConfig', () => {
     const a: MachineConfig = { ...base, agentModels: { triage: 'gpt-5-codex', implement: 'gpt-5-codex' } };
     const b: MachineConfig = { ...base, agentModels: { triage: 'gpt-5-codex', implement: 'gpt-5-codex' } };
     expect(diffMachineConfig(a, b)).toEqual({ hot: [], restart: [] });
+  });
+
+  it('avTools : changer la branche est structurel', () => {
+    const next: MachineConfig = { ...base, avTools: { branch: 'feature/delivery-templates' } };
+    expect(diffMachineConfig(base, next).restart).toContain('avTools');
+  });
+
+  it('avTools : une section absente et une section aux valeurs par défaut ne remontent rien', () => {
+    const next: MachineConfig = { ...base, avTools: { ...AV_TOOLS_DEFAULTS } };
+    expect(diffMachineConfig(base, next).restart).not.toContain('avTools');
   });
 });

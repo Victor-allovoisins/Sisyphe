@@ -1,0 +1,210 @@
+# Delivery templates — commit subject, PR title and body, Jira comments.
+#
+# Single source of truth for:
+#   - the av-tools skills that deliver a ticket (av-jira-implement, av-jira-review, av-jira-deliver,
+#     av-treat-jira-ticket, av-phases): they read this file instead of carrying the text inline;
+#   - autonomous agents (Sisyphe) that read this file from the repository at runtime.
+#     The jira_handback_*, jira_pr_draft and jira_cancelled templates are cited by no skill: they exist
+#     for those agents. validate_av_tools.py (check I) requires them — do not delete them as dead.
+#
+# ⚠️  One copy remains outside this file: the CLAUDE.md snippet of README.md § 4 ("Commit format in
+#   CLAUDE.md") repeats commit_subject and commit_rules.forbidden. After any change here, update it.
+#
+# Rendering rules (identical for a skill and for a program):
+#   - {name} of a `text` variable is replaced by its value, verbatim.
+#   - {name} of a `list` variable sits alone and unindented on its line, and becomes one "- item" line
+#     per entry; an empty list removes the line. Entries carry no leading dash: rendering adds it.
+#   - Substitution is a single pass: an inserted value is never scanned again for tokens.
+#   - Every token of `text` is declared in `vars`, and every declared variable appears in `text`.
+#   - Single-line templates (commit_subject, pr_title, jira_pr_opened) are quoted scalars, never `|`
+#     blocks. Rendering strips every trailing newline.
+#   - `gitmoji` is picked by its key from the primary change type of the work (fix, feature,
+#     refactor, chore, docs): a judgment of the consumer, not a mapping of the Jira issue type.
+#   - The result is Markdown: a GitHub PR, or a Jira comment converted to ADF (**bold** included).
+#   - A commit message never contains any word of commit_rules.forbidden (case-insensitive, trailers
+#     included).
+#
+# Texts are French, except the PR headings and "Pull Request opened:", kept as they always were.
+# Outside the yaml-lite subset of scripts/lib (block scalars): read by PyYAML (validator) and by the
+# full YAML parsers of consumers, never by av.mjs.
+# schema_version changes only when the structure breaks (key renamed, new variable type).
+# Design: plugins/av-tools/docs/plans/2026-09-30-delivery-templates-design.md
+# Last updated: 2026-09-30
+
+schema_version: 1
+
+gitmoji:
+  fix: "🐛"
+  feature: "✨"
+  refactor: "♻️"
+  # 🔧 is also the review-fix marker of av-jira-review-fixes (🔧({KEY}): fix review — …).
+  chore: "🔧"
+  docs: "📝"
+
+commit_rules:
+  forbidden: ["Co-Authored-By", "Claude", "Anthropic"]
+
+templates:
+  commit_subject:
+    vars:
+      gitmoji: text
+      KEY: text
+      description: text
+    text: "{gitmoji}({KEY}): {description}"
+
+  pr_title:
+    vars:
+      gitmoji: text
+      KEY: text
+      short_description: text
+    text: "{gitmoji}({KEY}): {short_description}"
+
+  pr_body_simple:
+    vars:
+      KEY: text
+      changes: list
+      test_plan: list
+    text: |
+      ## Summary
+      - Ticket: [{KEY}](https://allovoisins.atlassian.net/browse/{KEY})
+      {changes}
+
+      ## Test plan
+      {test_plan}
+
+  pr_body_standard:
+    vars:
+      KEY: text
+      changes: list
+      test_plan: list
+      design_doc_path: text
+    text: |
+      ## Summary
+      - Ticket: [{KEY}](https://allovoisins.atlassian.net/browse/{KEY})
+      {changes}
+
+      ## Test plan
+      {test_plan}
+
+      ## Design
+      - Plan: `{design_doc_path}`
+
+  jira_pr_opened:
+    vars:
+      pr_url: text
+    text: "Pull Request opened: {pr_url}"
+
+  jira_review_summary:
+    vars:
+      problem: list
+      fixed: list
+      impact: list
+    text: |
+      **Analyse et correction**
+
+      **Problème identifié :**
+      {problem}
+
+      **Ce qui a été corrigé :**
+      {fixed}
+
+      **Impact :**
+      {impact}
+
+  # --- Handing a ticket back (agents with nobody to ask) ---
+  # `assignee` is the display name of the account to reassign the ticket to in order to relaunch it:
+  # the agent's own account, never the reporter. Audience: the reporter — no jargon, no file name.
+
+  jira_handback_needs_information:
+    vars:
+      reason: text
+      questions: list
+      assignee: text
+    text: |
+      Ce ticket est mis en pause : {reason}
+
+      Pour avancer :
+      {questions}
+
+      Pour relancer : répondez dans ce ticket, puis réassignez-le à {assignee}.
+
+  jira_handback_too_big:
+    vars:
+      reason: text
+      split: list
+      assignee: text
+    text: |
+      Ce ticket est trop large pour être traité d'un bloc : {reason}
+
+      Découpage proposé :
+      {split}
+
+      Pour relancer : découpez le ticket ou précisez la partie à traiter en premier, puis réassignez-le à {assignee}.
+
+  jira_handback_out_of_scope:
+    vars:
+      reason: text
+      assignee: text
+    text: |
+      Ce ticket ne semble pas concerner ce projet : {reason}
+
+      Si c'est une erreur, précisez-le dans le ticket, puis réassignez-le à {assignee}. Sinon, confiez-le à l'équipe concernée.
+
+  jira_handback_ambiguous_version:
+    vars:
+      reason: text
+      assignee: text
+    text: |
+      Impossible de savoir sur quelle version corriger ce ticket : {reason}
+
+      Pour relancer : corrigez la version cible du ticket, puis réassignez-le à {assignee}.
+
+  jira_handback_nothing_to_deliver:
+    vars:
+      reason: text
+      assignee: text
+    text: |
+      Aucune modification n'a été produite pour ce ticket : {reason}
+
+      Pour relancer : précisez le comportement attendu dans le ticket, puis réassignez-le à {assignee}.
+
+  # Each finding names its nature and the file: "secret potentiel : <fichier>" or "fichier protégé
+  # modifié : <fichier>". Never the matched value — this comment is visible to every watcher.
+  jira_handback_unsafe_change:
+    vars:
+      findings: list
+      assignee: text
+    text: |
+      Rien n'a été poussé : la modification touchait des éléments sensibles.
+
+      {findings}
+
+      Un développeur doit regarder ce ticket avant toute relance. Une fois le point réglé, réassignez-le à {assignee}.
+
+  # `reason` is one plain sentence for the reporter: no stack trace, no path, no command output.
+  jira_handback_technical_failure:
+    vars:
+      reason: text
+      assignee: text
+    text: |
+      Le traitement de ce ticket a échoué pour une raison technique : {reason}
+
+      Pour relancer : réassignez-le à {assignee}.
+
+  # PR opened as a draft because a check is still red. The PR body is unchanged: the first test_plan
+  # bullet says what still fails. `attempts` is a number carried as text.
+  jira_pr_draft:
+    vars:
+      pr_url: text
+      failed_check: text
+      attempts: text
+    text: |
+      Une Pull Request a été ouverte en brouillon : {pr_url}
+
+      La vérification « {failed_check} » échoue encore après {attempts} tentative(s). Un développeur doit reprendre la correction avant la relecture.
+
+  # No variable: `{}` is the only flow mapping of the file, YAML has no block form for an empty one.
+  jira_cancelled:
+    vars: {}
+    text: |
+      Le traitement de ce ticket a été annulé.

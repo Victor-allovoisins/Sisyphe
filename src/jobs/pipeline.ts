@@ -9,6 +9,7 @@ import {
   ImplementationReportSchema, TriageVerdictSchema, fallbackReport, reportJsonSchema, triageJsonSchema,
   type ImplementationReport, type TriageVerdict,
 } from '../agent/schemas.js';
+import type { AvToolsLoader } from '../avtools/source.js';
 import { phaseModel, type MachineConfig } from '../config/machine.js';
 import { jobDir as jobDirFor, repoCachePath, type DataPaths } from '../config/paths.js';
 import { REPO_CONFIG_FILENAME, RepoConfigError, parseRepoConfig, type RepoConfig } from '../config/repo.js';
@@ -49,6 +50,8 @@ export interface PipelineDeps {
   log: Logger;
   env: NodeJS.ProcessEnv;
   scan?: ScanFn;
+  /** Conventions de livraison d'av-tools. Absent sans suivi Jira : av-tools ne parle que de tickets Jira. */
+  avTools?: AvToolsLoader;
 }
 
 export const TRIAGE_TOOLS = ['Read', 'Glob', 'Grep'];
@@ -290,6 +293,15 @@ export async function runJob(jobId: string, deps: PipelineDeps, signal: AbortSig
     // Constante, comme `wtPath` plus bas : le `let` sert à la clôture, qui lit le ticket depuis le `catch`,
     // mais son rétrécissement à `Issue` ne survit ni aux `await` qui suivent ni aux closures.
     const loaded = issue;
+
+    // Sous suivi Jira, la version d'av-tools du job est fixée ici, avant tout ce qui pourrait s'en servir.
+    // Phase A : elle n'est que notée. Rien ne se rend encore depuis elle, et une version illisible ne bloque
+    // rien — sans quoi aucun job Jira ne passerait tant que le fichier n'est pas sur `main`.
+    if (loaded.tracker && deps.avTools) {
+      const av = await deps.avTools.load();
+      // Pas de journal ici : la source a déjà dit pourquoi elle ne rend rien.
+      job = store.update(job.id, { avToolsSha: av?.sha ?? null });
+    }
 
     // Git et configuration du repo : on ne rafraîchit que les branches de base, jamais celles des jobs.
     const fetchUrl = await forge.getAuthenticatedRemoteUrl(issueRef.repo);
