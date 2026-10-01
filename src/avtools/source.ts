@@ -72,11 +72,13 @@ export class AvToolsSource implements AvToolsLoader {
     try {
       await this.d.git.pinRef(this.d.location.repo, AVTOOLS_PIN_REF, sha, expectedOld);
     } catch (err) {
-      // Une course perdue, git la dit « … but expected … » ou « reference already exists » : c'est le cas
-      // prévu, sans intérêt au-delà du debug. Toute autre panne (verrou `.lock` laissé par un crash, disque
-      // plein) figerait l'épingle sans que doctor le voie, puisqu'il ne juge que la branche : elle se lit ici.
+      // Une course perdue, git la dit « … but expected … » : c'est le cas prévu, sans intérêt au-delà du
+      // debug. « reference already exists », lui, n'est pas traité comme tel : il arrive aussi quand la
+      // lecture de l'épingle a échoué de façon passagère (`pinnedSha` rend alors null). Toute autre panne
+      // (verrou `.lock` laissé par un crash, disque plein) figerait l'épingle sans que doctor le voie, puisqu'il
+      // ne juge que la branche : elle se lit ici.
       const output = err instanceof GitError ? err.output : String(err);
-      if (/but expected|reference already exists/.test(output)) {
+      if (/but expected/.test(output)) {
         this.d.log.debug({ err, sha, expectedOld }, 'av-tools : épingle non posée, déplacée entre-temps par une autre lecture');
       } else {
         this.d.log.warn({ err, sha, expectedOld }, "av-tools : épingle non posée, elle reste sur l'ancienne version");

@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { parse } from 'yaml';
 import { z } from 'zod';
+import { isValidBranchName } from '../jobs/slug.js';
 import { expandHome } from './paths.js';
 
 /** Absolu ou relatif au home : un chemin relatif au cwd serait relatif à `/` sous launchd. */
@@ -102,7 +103,9 @@ export const MachineConfigSchema = z.strictObject({
   avTools: z
     .strictObject({
       repo: z.string().regex(REPO_PATTERN, 'format attendu : owner/repo').optional(),
-      branch: z.string().min(1).optional(),
+      // Validée comme les branches de base : un nom invalide ferait échouer chaque fetch, et le job resterait
+      // sur l'épingle pour toujours avec un simple avertissement.
+      branch: z.string().min(1).refine(isValidBranchName, 'nom de branche invalide').optional(),
       path: z.string().min(1).optional(),
     })
     // Comme `jira` : `avTools:` dont tous les enfants sont commentés se lit `null` en YAML, pas « absent ».

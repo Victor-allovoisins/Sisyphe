@@ -223,7 +223,8 @@ export async function checkAvTools(
   pin?: () => Promise<string | null>,
 ): Promise<string | CheckWarnResult> {
   const access = await github.checkAccess();
-  if (!access.repos.includes(loc.repo)) {
+  // GitHub ignore la casse des noms de dépôt : `ilokyou/ia-claude-marketplace` désigne le même.
+  if (!access.repos.some((r) => r.toLowerCase() === loc.repo.toLowerCase())) {
     throw new Error(`l'installation ${access.appSlug} n'a pas accès à ${loc.repo} : l'ajouter dans GitHub → Settings → Applications → ${access.appSlug} → Repository access`);
   }
   const pinned = pin ? await pin().catch(() => null) : null;

@@ -172,6 +172,11 @@ describe('avTools', () => {
     expect(resolveAvTools(m)).toEqual({ ...AV_TOOLS_DEFAULTS, branch: 'feature/delivery-templates' });
   });
 
+  it('une branche au nom invalide est refusée', () => {
+    expect(() => parseMachineConfig(stringify({ ...base, avTools: { branch: 'feature..x' } }))).toThrow(MachineConfigError);
+    expect(() => parseMachineConfig(stringify({ ...base, avTools: { branch: '-main' } }))).toThrow(MachineConfigError);
+  });
+
   it('une clé inconnue est refusée', () => {
     expect(() => parseMachineConfig(stringify({ ...base, avTools: { bogus: 1 } }))).toThrow(MachineConfigError);
   });

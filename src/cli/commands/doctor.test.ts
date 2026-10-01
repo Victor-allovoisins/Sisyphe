@@ -474,6 +474,13 @@ describe('buildChecks — av-tools', () => {
     expect(r).toEqual({ ok: true, detail: 'main valide, épingle bbbbbbb' });
   });
 
+  it('compare le nom du dépôt sans tenir compte de la casse, comme GitHub', async () => {
+    const text = await fixture();
+    const github = fakeGithub(async () => text, { appSlug: 'a', repos: [AV.toLowerCase()] });
+    const r = await run(buildChecks({ env: {}, machine, github, avToolsPin: async () => null }), 'av-tools');
+    expect(r).toEqual({ ok: true, detail: 'main valide, aucune épingle' });
+  });
+
   it('avertit quand la branche est inutilisable mais qu’une épingle existe', async () => {
     const github = fakeGithub(async () => null, { appSlug: 'a', repos: [AV] });
     const check = buildChecks({ env: {}, machine, github, avToolsPin: async () => 'b'.repeat(40) }).find((c) => c.name === 'av-tools');

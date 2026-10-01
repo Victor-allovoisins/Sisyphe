@@ -130,6 +130,25 @@ describe('AvToolsSource', () => {
     expect(entries[0]).toMatchObject({ pinned: bad, why: expect.stringContaining('schema_version'), pinReason: expect.stringContaining('schema_version') });
   });
 
+  it("une lecture d'épingle ratée ne se fait pas passer pour une course perdue", async () => {
+    await source().load();
+    const text = await readFile(FIXTURE, 'utf8');
+    const next = await addCommit(avRoot, { [PATH]: `${text}\n# relu\n` });
+    const { log, entries } = capture('warn');
+    // La lecture de l'épingle échoue une fois : la pose suppose alors qu'elle n'existe pas, et git refuse.
+    class FlakyPin extends AvToolsSource {
+      private first = true;
+      override async pinnedSha(): Promise<string | null> {
+        if (this.first) { this.first = false; return null; }
+        return super.pinnedSha();
+      }
+    }
+    const s = await new FlakyPin({ git, forge, location: { repo: REPO, branch: 'main', path: PATH }, log }).load();
+    expect(s).toMatchObject({ sha: next, fresh: true });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ sha: next, expectedOld: null });
+  });
+
   it("un refus qui n'est pas une course perdue se lit au journal", async () => {
     await source().load();
     // Le verrou qu'un crash au milieu de `update-ref` laisse derrière lui : l'épingle ne bouge plus.
